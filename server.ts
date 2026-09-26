@@ -4,6 +4,7 @@ import path from 'path';
 import {
   createGuestUser,
   findUserById,
+  getOtpRecord,
   saveOtp,
   verifyOtp,
   loginOrRegisterVerifiedUser,
@@ -81,6 +82,7 @@ import {
   suggestPantryMealsWithGemini,
   estimatePortionWithGemini
 } from './src/server/aiFeatures.js';
+import { sendVerificationEmail } from './src/server/emailService.js';
 
 dotenv.config();
 
@@ -124,21 +126,34 @@ app.post('/api/auth/guest', (req, res) => {
   }
 });
 
-app.post('/api/auth/otp/send', (req, res) => {
+app.post('/api/auth/otp/send', async (req, res) => {
   try {
-    const { email } = req.body;
-    if (!email || !email.includes('@')) {
+    const { email, isResend } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim() : '';
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       res.status(400).json({ error: 'Please enter a valid email address' });
       return;
     }
 
+    const existing = getOtpRecord(cleanEmail);
+    if (isResend && existing && Date.now() - existing.createdAt < 30 * 1000) {
+      const waitSec = Math.ceil((30 * 1000 - (Date.now() - existing.createdAt)) / 1000);
+      res.status(429).json({
+        error: `Please wait ${waitSec}s before requesting a new code.`,
+        retryAfterSeconds: waitSec
+      });
+      return;
+    }
+
     const code = Math.floor(100000 + Math.random() * 900000).toString();
-    saveOtp(email, code);
+    saveOtp(cleanEmail, code);
+
+    await sendVerificationEmail(cleanEmail, code);
 
     res.json({
       success: true,
-      message: `Verification code sent to ${email}`,
-      previewCode: process.env.NODE_ENV !== 'production' ? code : undefined
+      message: `We sent a 6-digit verification code to ${cleanEmail}`,
+      resendCooldownSeconds: 30
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Failed to send verification code' });
@@ -153,9 +168,13 @@ app.post('/api/auth/otp/verify', (req, res) => {
       return;
     }
 
-    const isValid = verifyOtp(email, code);
-    if (!isValid) {
-      res.status(400).json({ error: 'Invalid or expired verification code' });
+    const verification = verifyOtp(email, String(code));
+    if (!verification.valid) {
+      res.status(400).json({
+        error: verification.message || "That code isn't right. Check your email and try again.",
+        reason: verification.reason,
+        attemptsRemaining: verification.attemptsRemaining
+      });
       return;
     }
 

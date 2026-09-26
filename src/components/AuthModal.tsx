@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Mail, KeyRound, ArrowRight, CheckCircle2, X, RefreshCw, Shield } from 'lucide-react';
 import { api } from '../services/api.js';
 import { useApp } from '../context/AppContext.js';
@@ -10,28 +10,40 @@ export const AuthModal: React.FC = () => {
   const [otpCode, setOtpCode] = useState('');
   const [step, setStep] = useState<'email' | 'otp'>('email');
   const [isLoading, setIsLoading] = useState(false);
+  const [isResending, setIsResending] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [statusMsg, setStatusMsg] = useState('');
-  const [previewCode, setPreviewCode] = useState<string | null>(null);
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [isCodeLocked, setIsCodeLocked] = useState(false);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
 
   if (!isAuthModalOpen) return null;
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !email.includes('@')) {
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       setErrorMsg('Please enter a valid email address');
       return;
     }
 
     setErrorMsg('');
+    setStatusMsg('');
     setIsLoading(true);
     try {
-      const res = await api.sendOtp(email);
+      const res = await api.sendOtp(cleanEmail, false);
       setStep('otp');
+      setOtpCode('');
+      setIsCodeLocked(false);
       setStatusMsg(res.message);
-      if (res.previewCode) {
-        setPreviewCode(res.previewCode);
-      }
+      setResendCooldown(res.resendCooldownSeconds ?? 30);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to send verification code');
     } finally {
@@ -39,17 +51,44 @@ export const AuthModal: React.FC = () => {
     }
   };
 
+  const handleResendOtp = async () => {
+    if (resendCooldown > 0 || isResending) return;
+    const cleanEmail = email.trim();
+    setErrorMsg('');
+    setStatusMsg('');
+    setIsResending(true);
+    try {
+      const res = await api.sendOtp(cleanEmail, true);
+      setOtpCode('');
+      setIsCodeLocked(false);
+      setStatusMsg(res.message);
+      setResendCooldown(res.resendCooldownSeconds ?? 30);
+    } catch (err: any) {
+      if (err.retryAfterSeconds) {
+        setResendCooldown(err.retryAfterSeconds);
+      }
+      setErrorMsg(err.message || 'Failed to resend verification code');
+    } finally {
+      setIsResending(false);
+    }
+  };
+
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!otpCode || otpCode.length < 4) {
-      setErrorMsg('Please enter the 6-digit code');
+    if (isCodeLocked) {
+      setErrorMsg('Too many failed attempts. This code is locked. Tap Resend to get a new one.');
+      return;
+    }
+    if (!otpCode || otpCode.trim().length !== 6) {
+      setErrorMsg("That code isn't right. Check your email and try again.");
       return;
     }
 
     setErrorMsg('');
+    setStatusMsg('');
     setIsLoading(true);
     try {
-      const res = await api.verifyOtp(email, otpCode);
+      const res = await api.verifyOtp(email.trim(), otpCode.trim());
       setStatusMsg(res.message);
       await onAuthSuccess();
       if (referralCode.trim()) {
@@ -67,10 +106,15 @@ export const AuthModal: React.FC = () => {
         setStep('email');
         setOtpCode('');
         setReferralCode('');
-        setPreviewCode(null);
-      }, 1000);
+        setErrorMsg('');
+        setStatusMsg('');
+        setIsCodeLocked(false);
+      }, 900);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Invalid verification code');
+      if (err.reason === 'locked') {
+        setIsCodeLocked(true);
+      }
+      setErrorMsg(err.message || "That code isn't right. Check your email and try again.");
     } finally {
       setIsLoading(false);
     }
@@ -114,15 +158,6 @@ export const AuthModal: React.FC = () => {
           </div>
         )}
 
-        {previewCode && (
-          <div className="mb-4 p-2.5 bg-zinc-800/80 border border-zinc-700 rounded-xl text-xs text-zinc-300 flex items-center justify-between">
-            <span>Dev Verification Code:</span>
-            <code className="font-mono text-teal-300 font-semibold bg-zinc-900 px-2 py-0.5 rounded">
-              {previewCode}
-            </code>
-          </div>
-        )}
-
         {step === 'email' ? (
           <form onSubmit={handleSendOtp} className="space-y-4">
             <div>
@@ -163,11 +198,11 @@ export const AuthModal: React.FC = () => {
               {isLoading ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  Sending code...
+                  Signing up...
                 </>
               ) : (
                 <>
-                  Send OTP Code
+                  Sign up
                   <ArrowRight className="w-3.5 h-3.5" />
                 </>
               )}
@@ -182,7 +217,11 @@ export const AuthModal: React.FC = () => {
                 </label>
                 <button
                   type="button"
-                  onClick={() => setStep('email')}
+                  onClick={() => {
+                    setStep('email');
+                    setErrorMsg('');
+                    setStatusMsg('');
+                  }}
                   className="text-xs text-teal-400 hover:underline"
                 >
                   Change email
@@ -192,19 +231,39 @@ export const AuthModal: React.FC = () => {
                 <KeyRound className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
                 <input
                   type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
                   maxLength={6}
                   value={otpCode}
+                  disabled={isCodeLocked}
                   onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
                   placeholder="123456"
                   required
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 tracking-widest font-mono"
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 tracking-widest font-mono disabled:opacity-50"
                 />
+              </div>
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-[11px] text-zinc-500">
+                  Code expires in 10 minutes
+                </span>
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={resendCooldown > 0 || isResending}
+                  className="text-xs font-medium text-teal-400 hover:text-teal-300 disabled:text-zinc-500 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isResending
+                    ? 'Sending...'
+                    : resendCooldown > 0
+                    ? `Resend (${resendCooldown}s)`
+                    : 'Resend'}
+                </button>
               </div>
             </div>
 
             <button
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || isCodeLocked}
               className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
             >
               {isLoading ? (
@@ -214,7 +273,7 @@ export const AuthModal: React.FC = () => {
                 </>
               ) : (
                 <>
-                  Verify & Sync Account
+                  Verify
                   <CheckCircle2 className="w-3.5 h-3.5" />
                 </>
               )}

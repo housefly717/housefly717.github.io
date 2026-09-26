@@ -173,28 +173,19 @@ class ApiService {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
+    let res: Response;
     try {
-      const res = await fetch(endpoint, {
+      res = await fetch(endpoint, {
         ...options,
         headers
       });
-
-      if (!res.ok) {
-        if (endpoint.startsWith('/api/ai/')) {
-          throw new Error('The AI is busy. Try again in a minute, or use Manual entry.');
-        }
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.error || `Request failed with status ${res.status}`);
-      }
-
-      return await res.json();
-    } catch (err: any) {
+    } catch (networkErr: any) {
       if (endpoint.startsWith('/api/ai/')) {
         throw new Error('The AI is busy. Try again in a minute, or use Manual entry.');
       }
-      // Offline mode fallback for POST/PUT/DELETE mutations
+      // Offline mode fallback for POST/PUT/DELETE mutations (excluding auth)
       const method = (options.method || 'GET').toUpperCase();
-      if (!skipQueue && (method === 'POST' || method === 'PUT' || method === 'DELETE')) {
+      if (!skipQueue && !endpoint.startsWith('/api/auth/') && (method === 'POST' || method === 'PUT' || method === 'DELETE')) {
         const parsedBody = options.body ? JSON.parse(String(options.body)) : undefined;
         this.enqueueOffline(endpoint, method, parsedBody);
         return {
@@ -210,6 +201,20 @@ class ApiService {
         "Can't reach the server right now. Your data is saved on this device and will sync when you're back online."
       );
     }
+
+    if (!res.ok) {
+      if (endpoint.startsWith('/api/ai/')) {
+        throw new Error('The AI is busy. Try again in a minute, or use Manual entry.');
+      }
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      const customErr: any = new Error(err.error || `Request failed with status ${res.status}`);
+      customErr.reason = err.reason;
+      customErr.attemptsRemaining = err.attemptsRemaining;
+      customErr.retryAfterSeconds = err.retryAfterSeconds;
+      throw customErr;
+    }
+
+    return await res.json();
   }
 
   // Auth
@@ -217,31 +222,31 @@ class ApiService {
     if (!this.token) {
       const guestRes = await this.request<{ userId: string; isGuest: boolean; token: string }>('/api/auth/guest', {
         method: 'POST'
-      });
+      }, true);
       this.setToken(guestRes.token, true);
     }
 
     try {
-      const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me');
+      const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
       this.initSse();
       return me;
     } catch (e) {
       this.clearToken();
       const guestRes = await this.request<{ userId: string; isGuest: boolean; token: string }>('/api/auth/guest', {
         method: 'POST'
-      });
+      }, true);
       this.setToken(guestRes.token, true);
-      const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me');
+      const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
       this.initSse();
       return me;
     }
   }
 
-  async sendOtp(email: string): Promise<{ success: boolean; message: string; previewCode?: string }> {
+  async sendOtp(email: string, isResend: boolean = false): Promise<{ success: boolean; message: string; resendCooldownSeconds?: number }> {
     return this.request('/api/auth/otp/send', {
       method: 'POST',
-      body: JSON.stringify({ email })
-    });
+      body: JSON.stringify({ email, isResend })
+    }, true);
   }
 
   async verifyOtp(email: string, code: string): Promise<{ userId: string; email: string; token: string; message: string }> {
@@ -249,7 +254,7 @@ class ApiService {
     const res = await this.request<{ userId: string; email: string; token: string; message: string }>('/api/auth/otp/verify', {
       method: 'POST',
       body: JSON.stringify({ email, code, guestId })
-    });
+    }, true);
     this.setToken(res.token, false);
     return res;
   }

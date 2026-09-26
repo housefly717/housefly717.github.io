@@ -35,6 +35,9 @@ export interface OtpCodeRow {
   email: string;
   code: string;
   expiresAt: number;
+  attempts: number;
+  locked: boolean;
+  createdAt: number;
 }
 
 export interface SettingsRow {
@@ -313,31 +316,88 @@ export function findUserByEmail(email: string): UserRow | undefined {
   return Object.values(db.users).find(u => u.email === norm);
 }
 
+export function getOtpRecord(email: string): OtpCodeRow | undefined {
+  const norm = email.toLowerCase().trim();
+  return db.otpCodes[norm];
+}
+
 export function saveOtp(email: string, code: string) {
   const norm = email.toLowerCase().trim();
   db.otpCodes[norm] = {
     email: norm,
     code,
-    expiresAt: Date.now() + 10 * 60 * 1000
+    expiresAt: Date.now() + 10 * 60 * 1000,
+    attempts: 0,
+    locked: false,
+    createdAt: Date.now()
   };
   saveDb();
 }
 
-export function verifyOtp(email: string, code: string): boolean {
+export interface VerifyOtpResult {
+  valid: boolean;
+  reason?: 'expired' | 'wrong_code' | 'locked';
+  message?: string;
+  attemptsRemaining?: number;
+}
+
+export function verifyOtp(email: string, code: string): VerifyOtpResult {
   const norm = email.toLowerCase().trim();
   const record = db.otpCodes[norm];
-  if (!record) return false;
+  if (!record) {
+    return {
+      valid: false,
+      reason: 'expired',
+      message: 'That code has expired. Tap Resend to get a new one.'
+    };
+  }
+
   if (Date.now() > record.expiresAt) {
     delete db.otpCodes[norm];
     saveDb();
-    return false;
+    return {
+      valid: false,
+      reason: 'expired',
+      message: 'That code has expired. Tap Resend to get a new one.'
+    };
   }
-  const match = record.code.trim() === code.trim();
-  if (match) {
-    delete db.otpCodes[norm];
+
+  if (record.locked || (record.attempts || 0) >= 5) {
+    record.locked = true;
     saveDb();
+    return {
+      valid: false,
+      reason: 'locked',
+      message: 'Too many failed attempts. This code is locked. Tap Resend to get a new one.',
+      attemptsRemaining: 0
+    };
   }
-  return match;
+
+  const match = record.code.trim() === code.trim();
+  if (!match) {
+    record.attempts = (record.attempts || 0) + 1;
+    if (record.attempts >= 5) {
+      record.locked = true;
+      saveDb();
+      return {
+        valid: false,
+        reason: 'locked',
+        message: 'Too many failed attempts. This code is locked. Tap Resend to get a new one.',
+        attemptsRemaining: 0
+      };
+    }
+    saveDb();
+    return {
+      valid: false,
+      reason: 'wrong_code',
+      message: "That code isn't right. Check your email and try again.",
+      attemptsRemaining: 5 - record.attempts
+    };
+  }
+
+  delete db.otpCodes[norm];
+  saveDb();
+  return { valid: true };
 }
 
 export function loginOrRegisterVerifiedUser(email: string, guestIdToMigrate?: string): UserRow {
