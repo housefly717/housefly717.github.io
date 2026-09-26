@@ -14,16 +14,19 @@ import { WeeklyRecapModal } from './components/WeeklyRecapModal.js';
 import { LegalFooter } from './components/LegalFooter.js';
 import { AdminSetupPage } from './components/AdminSetupPage.js';
 import { DescriptionPage } from './components/DescriptionPage.js';
+import { PrivacyPolicyPage } from './components/PrivacyPolicyPage.js';
 import { DesktopScrollbar } from './components/DesktopScrollbar.js';
 
 interface MainAppContentProps {
   onOpenDescription: () => void;
+  onOpenPrivacy: () => void;
   initialTab?: TabType;
   autoOpenAuth?: boolean;
 }
 
 const MainAppContent: React.FC<MainAppContentProps> = ({
   onOpenDescription,
+  onOpenPrivacy,
   initialTab = 'diary',
   autoOpenAuth = false
 }) => {
@@ -83,9 +86,14 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
         {currentTab === 'fitness' && <FitnessTab />}
         {currentTab === 'plan' && <PlanTab />}
         {currentTab === 'reports' && <ReportsTab />}
-        {currentTab === 'me' && <MeTab onOpenDescription={onOpenDescription} />}
+        {currentTab === 'me' && (
+          <MeTab
+            onOpenDescription={onOpenDescription}
+            onOpenPrivacy={onOpenPrivacy}
+          />
+        )}
 
-        <LegalFooter />
+        <LegalFooter onOpenPrivacy={onOpenPrivacy} />
       </main>
 
       {/* #58 5-second Undo Toast */}
@@ -131,9 +139,11 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
 
 export default function App() {
   const [pathname, setPathname] = useState(window.location.pathname);
-  const [activeView, setActiveView] = useState<'landing' | 'app'>(() => {
-    // If explicit query ?view=app or path is /app, go to app
+  const [activeView, setActiveView] = useState<'landing' | 'app' | 'privacy'>(() => {
     const params = new URLSearchParams(window.location.search);
+    if (window.location.pathname === '/privacy' || params.get('view') === 'privacy') {
+      return 'privacy';
+    }
     if (params.get('view') === 'app' || window.location.pathname === '/app') {
       return 'app';
     }
@@ -147,7 +157,9 @@ export default function App() {
     const handlePopState = () => {
       setPathname(window.location.pathname);
       const params = new URLSearchParams(window.location.search);
-      if (params.get('view') === 'app' || window.location.pathname === '/app') {
+      if (window.location.pathname === '/privacy' || params.get('view') === 'privacy') {
+        setActiveView('privacy');
+      } else if (params.get('view') === 'app' || window.location.pathname === '/app') {
         setActiveView('app');
       } else {
         setActiveView('landing');
@@ -184,10 +196,27 @@ export default function App() {
     window.history.pushState({}, '', '/');
   };
 
+  const handleOpenPrivacy = () => {
+    setActiveView('privacy');
+    window.history.pushState({}, '', '/privacy');
+  };
+
+  if (activeView === 'privacy') {
+    return (
+      <>
+        <PrivacyPolicyPage onBackToLanding={handleOpenDescription} />
+        <DesktopScrollbar />
+      </>
+    );
+  }
+
   if (activeView === 'landing') {
     return (
       <>
-        <DescriptionPage onOpenApp={handleOpenApp} />
+        <DescriptionPage
+          onOpenApp={handleOpenApp}
+          onOpenPrivacy={handleOpenPrivacy}
+        />
         <DesktopScrollbar />
       </>
     );
@@ -197,6 +226,7 @@ export default function App() {
     <AppProvider>
       <MainAppContent
         onOpenDescription={handleOpenDescription}
+        onOpenPrivacy={handleOpenPrivacy}
         initialTab={initialTab}
         autoOpenAuth={autoOpenAuth}
       />

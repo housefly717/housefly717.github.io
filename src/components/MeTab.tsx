@@ -52,9 +52,10 @@ const BADGE_DEFINITIONS: Array<{ id: string; title: string; desc: string }> = [
 
 interface MeTabProps {
   onOpenDescription?: () => void;
+  onOpenPrivacy?: () => void;
 }
 
-export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription }) => {
+export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription, onOpenPrivacy }) => {
   const {
     profile,
     updateUserProfile,
@@ -979,6 +980,20 @@ export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription }) => {
               View Caloriq website & description page
             </button>
           )}
+
+          <a
+            href="/privacy"
+            onClick={(e) => {
+              if (onOpenPrivacy) {
+                e.preventDefault();
+                onOpenPrivacy();
+              }
+            }}
+            className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
+          >
+            <Shield className="w-4 h-4 text-teal-400" />
+            Privacy Policy
+          </a>
 
           <button
             onClick={handleExportData}
