@@ -15,6 +15,7 @@ import type {
 import { api } from '../services/api.js';
 import { calculateDailyCalorieTarget, calculateMacroTargets } from '../utils/nutritionMath.js';
 import { triggerHaptic } from '../utils/haptics.js';
+import { detectDefaultLanguage, SupportedLanguage } from '../utils/i18n.js';
 
 export interface UndoToastItem {
   id: string;
@@ -22,10 +23,32 @@ export interface UndoToastItem {
   onUndo: () => Promise<void>;
 }
 
+export type FastingPreset = '16:8' | '18:6' | '20:4' | '5:2';
+
 interface AppContextType {
   userId: string;
   userEmail?: string;
   isGuest: boolean;
+  guestRemainingMs: number;
+  isGuestExpired: boolean;
+  guestAiUsed: boolean;
+  consumeGuestAiCall: () => boolean;
+  isGuestLockOpen: boolean;
+  openGuestLock: () => void;
+  closeGuestLock: () => void;
+  resetGuestSession: () => Promise<void>;
+  language: SupportedLanguage;
+  setLanguage: (lang: SupportedLanguage) => void;
+  fastingPreset: FastingPreset;
+  setFastingPreset: (preset: FastingPreset) => void;
+  fastingStartedAt: number | null;
+  fastingTargetHours: number;
+  fastingRemainingSec: number;
+  completedFasts: Record<string, string[]>;
+  startFasting: (preset?: FastingPreset) => void;
+  stopFasting: (markComplete?: boolean) => void;
+  milestoneCelebration: number | null;
+  dismissMilestone: () => void;
   activeDate: string;
   setActiveDate: (date: string) => void;
   diaryItems: FoodItem[];
@@ -110,7 +133,134 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [userId, setUserId] = useState<string>('');
   const [userEmail, setUserEmail] = useState<string | undefined>(undefined);
   const [isGuest, setIsGuest] = useState<boolean>(true);
-  const [activeDate, setActiveDate] = useState<string>(getTodayStr());
+  const [activeDate, setActiveDateState] = useState<string>(getTodayStr());
+
+  // Guest 24-hour clock & 1-call AI limit
+  const [guestStartedAt, setGuestStartedAt] = useState<number>(() => {
+    const raw = localStorage.getItem('caloriq_guest_started_at');
+    if (raw) {
+      const parsed = Number(raw);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    const now = Date.now();
+    localStorage.setItem('caloriq_guest_started_at', String(now));
+    return now;
+  });
+  const [guestRemainingMs, setGuestRemainingMs] = useState<number>(() =>
+    Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - guestStartedAt))
+  );
+  const [guestAiUsed, setGuestAiUsed] = useState<boolean>(() =>
+    localStorage.getItem('caloriq_guest_ai_used') === 'true'
+  );
+  const [isGuestLockOpen, setIsGuestLockOpen] = useState<boolean>(false);
+
+  // Multi-language
+  const [language, setLanguageState] = useState<SupportedLanguage>(() => detectDefaultLanguage());
+  const setLanguage = (lang: SupportedLanguage) => {
+    setLanguageState(lang);
+    localStorage.setItem('caloriq_lang', lang);
+  };
+
+  // Fasting timer (#13)
+  const [fastingPreset, setFastingPreset] = useState<FastingPreset>(() => {
+    return (localStorage.getItem('caloriq_fast_preset') as FastingPreset) || '16:8';
+  });
+  const [fastingStartedAt, setFastingStartedAt] = useState<number | null>(() => {
+    const raw = localStorage.getItem('caloriq_fast_started_at');
+    return raw ? Number(raw) : null;
+  });
+  const [fastingRemainingSec, setFastingRemainingSec] = useState<number>(0);
+  const [completedFasts, setCompletedFasts] = useState<Record<string, string[]>>(() => {
+    try {
+      const raw = localStorage.getItem('caloriq_completed_fasts');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Milestone confetti (#34)
+  const [milestoneCelebration, setMilestoneCelebration] = useState<number | null>(null);
+  const dismissMilestone = () => setMilestoneCelebration(null);
+
+  const openGuestLock = useCallback(() => setIsGuestLockOpen(true), []);
+  const closeGuestLock = useCallback(() => setIsGuestLockOpen(false), []);
+
+  const setActiveDate = useCallback((date: string) => {
+    if (isGuest && date !== getTodayStr()) {
+      openGuestLock();
+      return;
+    }
+    setActiveDateState(date);
+  }, [isGuest, openGuestLock]);
+
+  const consumeGuestAiCall = useCallback((): boolean => {
+    if (!isGuest) return true;
+    if (guestAiUsed) {
+      openGuestLock();
+      return false;
+    }
+    setGuestAiUsed(true);
+    localStorage.setItem('caloriq_guest_ai_used', 'true');
+    return true;
+  }, [isGuest, guestAiUsed, openGuestLock]);
+
+  const getFastingHoursForPreset = (preset: FastingPreset): number => {
+    if (preset === '18:6') return 18;
+    if (preset === '20:4') return 20;
+    if (preset === '5:2') return 24;
+    return 16;
+  };
+
+  const fastingTargetHours = getFastingHoursForPreset(fastingPreset);
+
+  const startFasting = (preset?: FastingPreset) => {
+    const chosen = preset || fastingPreset;
+    setFastingPreset(chosen);
+    localStorage.setItem('caloriq_fast_preset', chosen);
+    const now = Date.now();
+    setFastingStartedAt(now);
+    localStorage.setItem('caloriq_fast_started_at', String(now));
+  };
+
+  const stopFasting = useCallback((markComplete: boolean = false) => {
+    if (markComplete || (fastingStartedAt && Date.now() - fastingStartedAt >= 3600 * 1000)) {
+      const dStr = getTodayStr();
+      setCompletedFasts(prev => {
+        const list = prev[dStr] || [];
+        const badgeLabel = `${fastingPreset} Fast Completed`;
+        const nextList = list.includes(badgeLabel) ? list : [...list, badgeLabel];
+        const next = { ...prev, [dStr]: nextList };
+        localStorage.setItem('caloriq_completed_fasts', JSON.stringify(next));
+        return next;
+      });
+    }
+    setFastingStartedAt(null);
+    setFastingRemainingSec(0);
+    localStorage.removeItem('caloriq_fast_started_at');
+  }, [fastingPreset, fastingStartedAt]);
+
+  // Guest 24h live countdown & Fasting live countdown
+  useEffect(() => {
+    const tick = () => {
+      if (isGuest) {
+        const rem = Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - guestStartedAt));
+        setGuestRemainingMs(rem);
+      }
+      if (fastingStartedAt) {
+        const totalSec = getFastingHoursForPreset(fastingPreset) * 3600;
+        const elapsedSec = Math.floor((Date.now() - fastingStartedAt) / 1000);
+        const remSec = Math.max(0, totalSec - elapsedSec);
+        setFastingRemainingSec(remSec);
+        if (remSec === 0) {
+          stopFasting(true);
+        }
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [isGuest, guestStartedAt, fastingStartedAt, fastingPreset, stopFasting]);
 
   const [diaryItems, setDiaryItems] = useState<FoodItem[]>([]);
   const [allDiaryItems, setAllDiaryItems] = useState<FoodItem[]>([]);
@@ -143,23 +293,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const dailyCalories = calculateDailyCalorieTarget(profile);
   const macroTarget = calculateMacroTargets(dailyCalories);
 
-  // Apply theme mode (dark / light / auto by time of day)
+  // Apply theme mode (dark / light / auto follows device setting)
   useEffect(() => {
     const mode = profile.themeMode || 'dark';
     const root = document.documentElement;
-    let useLight = false;
-    if (mode === 'light') {
-      useLight = true;
-    } else if (mode === 'auto') {
-      const hr = new Date().getHours();
-      useLight = hr >= 7 && hr < 19;
-    }
-    if (useLight) {
-      root.classList.add('light-mode');
-      root.classList.remove('dark');
-    } else {
-      root.classList.remove('light-mode');
-      root.classList.add('dark');
+    const applyTheme = () => {
+      let useLight = false;
+      if (mode === 'light') {
+        useLight = true;
+      } else if (mode === 'auto') {
+        if (typeof window !== 'undefined' && window.matchMedia) {
+          useLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+        }
+      }
+      if (useLight) {
+        root.classList.add('light-mode');
+        root.classList.remove('dark');
+      } else {
+        root.classList.remove('light-mode');
+        root.classList.add('dark');
+      }
+    };
+    applyTheme();
+    if (mode === 'auto' && typeof window !== 'undefined' && window.matchMedia) {
+      const mq = window.matchMedia('(prefers-color-scheme: light)');
+      mq.addEventListener?.('change', applyTheme);
+      return () => mq.removeEventListener?.('change', applyTheme);
     }
   }, [profile.themeMode]);
 
@@ -377,6 +536,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addExerciseItem = async (exercise: Omit<ExerciseItem, 'id' | 'userId' | 'createdAt'>): Promise<ExerciseItem> => {
+    if (isGuest) {
+      openGuestLock();
+      throw new Error('Guest account locked');
+    }
     triggerHaptic('medium');
     const item = await api.addExercise(exercise);
     setExercises(prev => [...prev, item]);
@@ -399,16 +562,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addWeightLog = async (weightKg: number, date: string = activeDate): Promise<void> => {
+    if (isGuest) {
+      openGuestLock();
+      return;
+    }
     triggerHaptic('light');
     const record = await api.addWeight(date, weightKg);
     setWeights(prev => {
       const idx = prev.findIndex(w => w.date === date);
+      let next: WeightRecord[];
       if (idx !== -1) {
         const copy = [...prev];
         copy[idx] = record;
-        return copy;
+        next = copy;
+      } else {
+        next = [...prev, record].sort((a, b) => a.date.localeCompare(b.date));
       }
-      return [...prev, record].sort((a, b) => a.date.localeCompare(b.date));
+      if (next.length >= 2) {
+        const baseline = next[0].weightKg;
+        const delta = Math.abs(weightKg - baseline);
+        const milestones = [25, 10, 5, 1];
+        for (const m of milestones) {
+          const seenKey = `caloriq_milestone_${m}kg`;
+          if (delta >= m && !localStorage.getItem(seenKey)) {
+            localStorage.setItem(seenKey, 'true');
+            setMilestoneCelebration(m);
+            break;
+          }
+        }
+      }
+      return next;
     });
     setProfile(prev => ({ ...prev, currentWeightKg: weightKg }));
     loadGeneralData();
@@ -519,8 +702,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUserId(session.userId);
     setUserEmail(session.email);
     setIsGuest(session.isGuest);
+    setIsGuestLockOpen(false);
     if (session.profile) setProfile(session.profile);
     if (session.stats) setStats(session.stats);
+    await refreshDayData();
+  };
+
+  const resetGuestSession = async () => {
+    try {
+      await api.clearAllData();
+    } catch {
+      // ignore
+    }
+    const now = Date.now();
+    localStorage.setItem('caloriq_guest_started_at', String(now));
+    localStorage.setItem('caloriq_guest_ai_used', 'false');
+    setGuestStartedAt(now);
+    setGuestRemainingMs(24 * 60 * 60 * 1000);
+    setGuestAiUsed(false);
+    setActiveDateState(getTodayStr());
     await refreshDayData();
   };
 
@@ -530,6 +730,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         userId,
         userEmail,
         isGuest,
+        guestRemainingMs,
+        isGuestExpired: isGuest && guestRemainingMs <= 0,
+        guestAiUsed,
+        consumeGuestAiCall,
+        isGuestLockOpen,
+        openGuestLock,
+        closeGuestLock,
+        resetGuestSession,
+        language,
+        setLanguage,
+        fastingPreset,
+        setFastingPreset,
+        fastingStartedAt,
+        fastingTargetHours,
+        fastingRemainingSec,
+        completedFasts,
+        startFasting,
+        stopFasting,
+        milestoneCelebration,
+        dismissMilestone,
         activeDate,
         setActiveDate,
         diaryItems,

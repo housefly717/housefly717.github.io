@@ -22,12 +22,27 @@ import {
   Package,
   ChefHat,
   Wand2,
-  RefreshCw
+  RefreshCw,
+  Clock,
+  Compass,
+  Play,
+  Square
 } from 'lucide-react';
-import { useApp } from '../context/AppContext.js';
+import { useApp, FastingPreset } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { decipherExerciseText } from '../utils/localAiEngine.js';
+import { formatWeight } from '../utils/nutritionMath.js';
 import type { MealType, FoodItem } from '../types/index.js';
+
+const TIPS_OF_THE_DAY = [
+  'Logging meals before you eat keeps portion awareness effortless.',
+  'Drinking a glass of water 15 minutes before meals supports steady hydration.',
+  'Aiming for 25–35g of protein at breakfast helps keep afternoon cravings low.',
+  'Weighing in at the same time each morning reduces normal daily water noise.',
+  'Pre-logging dinner in the morning makes hitting your evening macro targets simpler.',
+  'Whole fruits and vegetables add volume and fiber without high calorie density.',
+  'Consistency across seven days matters far more than any single meal.'
+];
 
 const JOURNAL_PROMPTS = [
   "What made today easy or hard?",
@@ -68,7 +83,17 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     deleteFoodItem,
     logFoodAgainTomorrow,
     copyYesterdayMeals,
-    openAddFood
+    openAddFood,
+    isGuest,
+    openGuestLock,
+    weights,
+    fastingPreset,
+    setFastingPreset,
+    fastingStartedAt,
+    fastingRemainingSec,
+    completedFasts,
+    startFasting,
+    stopFasting
   } = useApp();
 
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -133,6 +158,80 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     const daySeed = Number(activeDate.replace(/-/g, '')) || 0;
     return JOURNAL_PROMPTS[daySeed % JOURNAL_PROMPTS.length];
   }, [activeDate]);
+
+  const dailyTip = useMemo(() => {
+    const daySeed = Number(activeDate.replace(/-/g, '')) || 0;
+    return TIPS_OF_THE_DAY[daySeed % TIPS_OF_THE_DAY.length];
+  }, [activeDate]);
+
+  const isMonday = useMemo(() => {
+    const d = new Date(activeDate + 'T00:00:00');
+    return d.getDay() === 1;
+  }, [activeDate]);
+
+  const mondayRecap = useMemo(() => {
+    const d = new Date(activeDate + 'T00:00:00');
+    const last7: string[] = [];
+    for (let i = 1; i <= 7; i++) {
+      const p = new Date(d);
+      p.setDate(p.getDate() - i);
+      last7.push(p.toISOString().split('T')[0]);
+    }
+    let daysLogged = 0;
+    let kcalSum = 0;
+    let protSum = 0;
+    for (const dt of last7) {
+      const entries = allDiaryItems.filter(i => i.date === dt);
+      if (entries.length > 0) {
+        daysLogged++;
+        kcalSum += entries.reduce((s, e) => s + e.calories, 0);
+        protSum += entries.reduce((s, e) => s + e.protein, 0);
+      }
+    }
+    const avgKcal = daysLogged > 0 ? Math.round(kcalSum / daysLogged) : 0;
+    const avgProt = daysLogged > 0 ? Math.round(protSum / daysLogged) : 0;
+    const weekWeights = weights
+      .filter(w => last7.includes(w.date))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const weightChangeKg =
+      weekWeights.length >= 2
+        ? Math.round((weekWeights[weekWeights.length - 1].weightKg - weekWeights[0].weightKg) * 10) / 10
+        : 0;
+    const diffFromTarget = avgKcal - macroTarget.calories;
+    const factLine =
+      daysLogged === 0
+        ? '0 days logged last week.'
+        : `Logged ${daysLogged} of 7 days with an average daily difference of ${diffFromTarget > 0 ? `+${diffFromTarget}` : diffFromTarget} kcal vs target.`;
+    return { daysLogged, avgKcal, avgProt, weightChangeKg, factLine };
+  }, [activeDate, allDiaryItems, weights, macroTarget.calories]);
+
+  const cravingPatternText = useMemo(() => {
+    if (cravings.length === 0) return 'Most cravings at 3pm on workdays.';
+    const counts = new Map<string, number>();
+    for (const c of cravings) {
+      const hr = c.time?.split(':')[0] || '15';
+      counts.set(hr, (counts.get(hr) || 0) + 1);
+    }
+    let topHr = '15';
+    let max = 0;
+    for (const [hr, cnt] of counts.entries()) {
+      if (cnt > max) {
+        max = cnt;
+        topHr = hr;
+      }
+    }
+    const hrNum = parseInt(topHr, 10);
+    const label = isNaN(hrNum)
+      ? '3pm'
+      : hrNum === 0
+        ? '12am'
+        : hrNum < 12
+          ? `${hrNum}am`
+          : hrNum === 12
+            ? '12pm'
+            : `${hrNum - 12}pm`;
+    return `Most cravings at ${label} on workdays.`;
+  }, [cravings]);
 
   // Compute daily numbers
   const totalEaten = diaryItems.reduce((sum, item) => sum + (item.calories || 0), 0);
@@ -252,6 +351,10 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
   };
 
   const handleCopyYesterday = async (mealType?: MealType) => {
+    if (isGuest) {
+      openGuestLock();
+      return;
+    }
     try {
       const count = await copyYesterdayMeals(mealType);
       if (count > 0) {
@@ -351,15 +454,69 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     setNoteDraft('');
   };
 
-  const mealsList: Array<{ type: MealType; title: string }> = [
-    { type: 'breakfast', title: 'Breakfast' },
-    { type: 'lunch', title: 'Lunch' },
-    { type: 'dinner', title: 'Dinner' },
-    { type: 'snack', title: 'Snacks' }
+  const mealsList: Array<{ type: MealType; title: string; ratio: number }> = [
+    { type: 'breakfast', title: 'Breakfast', ratio: 0.25 },
+    { type: 'lunch', title: 'Lunch', ratio: 0.35 },
+    { type: 'dinner', title: 'Dinner', ratio: 0.30 },
+    { type: 'snack', title: 'Snacks', ratio: 0.10 }
   ];
+
+  const todayFasts = completedFasts[activeDate] || [];
 
   return (
     <div className="space-y-5 pb-8 max-w-md mx-auto">
+      {/* #32 "Why" pin at the top of the Diary every day */}
+      {profile.pinnedWhy && (
+        <div className="bg-zinc-900/90 border border-teal-500/30 rounded-2xl px-4 py-3 flex items-center gap-2.5">
+          <Compass className="w-4 h-4 text-teal-400 shrink-0" />
+          <p className="text-xs text-zinc-200 font-medium leading-relaxed">
+            {profile.pinnedWhy}
+          </p>
+        </div>
+      )}
+
+      {/* Tip of the Day (Available to Guests & Accounts) */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl px-4 py-3 flex items-start gap-2.5">
+        <Sparkles className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+        <div>
+          <span className="text-[10px] font-mono uppercase tracking-wider text-teal-400 block">
+            Tip of the Day
+          </span>
+          <p className="text-xs text-zinc-300 leading-relaxed mt-0.5">{dailyTip}</p>
+        </div>
+      </div>
+
+      {/* #19 Weekly recap card on Mondays */}
+      {isMonday && !isGuest && (
+        <div className="bg-zinc-900/90 border border-teal-500/30 rounded-2xl p-4 shadow-xl space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-teal-400">
+              Monday Weekly Recap
+            </span>
+            <span className="text-[11px] font-mono text-zinc-400">
+              {mondayRecap.daysLogged} / 7 days logged
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2">
+              <span className="text-[10px] text-zinc-500 block">Avg Calories</span>
+              <span className="text-xs font-bold font-mono text-zinc-100">{mondayRecap.avgKcal} kcal</span>
+            </div>
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2">
+              <span className="text-[10px] text-zinc-500 block">Avg Protein</span>
+              <span className="text-xs font-bold font-mono text-zinc-100">{mondayRecap.avgProt}g</span>
+            </div>
+            <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2">
+              <span className="text-[10px] text-zinc-500 block">Weight Change</span>
+              <span className="text-xs font-bold font-mono text-teal-400">
+                {mondayRecap.weightChangeKg > 0 ? '+' : ''}
+                {formatWeight(mondayRecap.weightChangeKg, profile.unitSystem)}
+              </span>
+            </div>
+          </div>
+          <p className="text-[11px] text-zinc-300">{mondayRecap.factLine}</p>
+        </div>
+      )}
       {/* 7-Day Strip with day chevrons and fill bars */}
       <div className="bg-zinc-900/90 border border-zinc-800/90 rounded-2xl p-2.5">
         <div className="flex items-center justify-between gap-1">
@@ -563,9 +720,9 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
         </div>
       </div>
 
-      {/* WATER TRACKER: 8 tappable glasses per day */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl">
-        <div className="flex items-center justify-between mb-3">
+      {/* WATER TRACKER: Quick-add buttons + 8 tappable glasses per day */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Droplets className="w-4 h-4 text-cyan-400" />
             <span className="text-xs font-semibold text-zinc-200">Water Tracker</span>
@@ -575,6 +732,34 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </span>
         </div>
 
+        {/* #17 Water quick-add buttons: +250 ml, +500 ml, +1 L */}
+        <div className="grid grid-cols-3 gap-2">
+          <button
+            type="button"
+            onClick={() => updateWaterGlasses(waterGlasses + 1)}
+            aria-label="Add 250 milliliters of water"
+            className="min-h-[38px] py-1.5 px-2.5 bg-zinc-950 hover:bg-cyan-950/40 border border-zinc-800 hover:border-cyan-500/40 rounded-xl text-xs font-mono font-semibold text-cyan-300 transition-colors"
+          >
+            +250 ml
+          </button>
+          <button
+            type="button"
+            onClick={() => updateWaterGlasses(waterGlasses + 2)}
+            aria-label="Add 500 milliliters of water"
+            className="min-h-[38px] py-1.5 px-2.5 bg-zinc-950 hover:bg-cyan-950/40 border border-zinc-800 hover:border-cyan-500/40 rounded-xl text-xs font-mono font-semibold text-cyan-300 transition-colors"
+          >
+            +500 ml
+          </button>
+          <button
+            type="button"
+            onClick={() => updateWaterGlasses(waterGlasses + 4)}
+            aria-label="Add 1 liter of water"
+            className="min-h-[38px] py-1.5 px-2.5 bg-zinc-950 hover:bg-cyan-950/40 border border-zinc-800 hover:border-cyan-500/40 rounded-xl text-xs font-mono font-semibold text-cyan-300 transition-colors"
+          >
+            +1 L
+          </button>
+        </div>
+
         <div className="grid grid-cols-8 gap-1.5">
           {Array.from({ length: 8 }).map((_, idx) => {
             const isFilled = idx < waterGlasses;
@@ -582,7 +767,8 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               <button
                 key={idx}
                 onClick={() => updateWaterGlasses(isFilled && idx === waterGlasses - 1 ? idx : idx + 1)}
-                className={`py-2 rounded-xl flex flex-col items-center justify-center transition-all ${
+                aria-label={`Water glass ${idx + 1}`}
+                className={`min-h-[44px] py-2 rounded-xl flex flex-col items-center justify-center transition-all ${
                   isFilled
                     ? 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/40'
                     : 'bg-zinc-950/80 text-zinc-600 border border-zinc-800 hover:text-zinc-400'
@@ -595,6 +781,91 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             );
           })}
         </div>
+      </div>
+
+      {/* #13 INTERMITTENT FASTING TIMER CARD */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Clock className="w-4 h-4 text-teal-400" />
+            <span className="text-xs font-semibold text-zinc-200">Fasting Timer</span>
+          </div>
+          <div className="flex items-center gap-1">
+            {(['16:8', '18:6', '20:4', '5:2'] as FastingPreset[]).map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => setFastingPreset(preset)}
+                aria-label={`Fasting preset ${preset}`}
+                className={`px-2 py-1 rounded-lg text-[10px] font-mono font-semibold transition-colors ${
+                  fastingPreset === preset
+                    ? 'bg-teal-500 text-zinc-950'
+                    : 'bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {preset}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded-xl p-3">
+          <div>
+            <span className="text-[10px] text-zinc-500 uppercase block font-mono">
+              {fastingStartedAt ? `Active ${fastingPreset} Fast` : `Selected Protocol: ${fastingPreset}`}
+            </span>
+            <span className="text-sm font-bold text-zinc-100 font-mono">
+              {fastingStartedAt
+                ? `${Math.floor(fastingRemainingSec / 3600)}h ${Math.floor((fastingRemainingSec % 3600) / 60)}m ${fastingRemainingSec % 60}s remaining`
+                : 'Ready to start fast'}
+            </span>
+          </div>
+          {fastingStartedAt ? (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => stopFasting(true)}
+                aria-label="Complete fast and log badge"
+                className="px-3 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs flex items-center gap-1"
+              >
+                <Check className="w-3.5 h-3.5" />
+                Finish
+              </button>
+              <button
+                type="button"
+                onClick={() => stopFasting(false)}
+                aria-label="Stop fast"
+                className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs"
+              >
+                <Square className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => startFasting(fastingPreset)}
+              aria-label="Start fasting timer"
+              className="px-3 py-2 bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-teal-300 font-semibold rounded-xl text-xs flex items-center gap-1.5"
+            >
+              <Play className="w-3.5 h-3.5" />
+              Start Fast
+            </button>
+          )}
+        </div>
+
+        {todayFasts.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {todayFasts.map((badge, i) => (
+              <span
+                key={i}
+                className="px-2.5 py-1 rounded-lg bg-teal-950/60 border border-teal-700/50 text-[11px] font-mono text-teal-300 flex items-center gap-1.5"
+              >
+                <Check className="w-3 h-3 text-teal-400" />
+                {badge}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* EXERCISE CARD */}
@@ -617,8 +888,15 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => setShowExerciseBox(!showExerciseBox)}
-              className="px-3 py-2 bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/30 rounded-xl flex items-center gap-1 text-xs font-semibold transition-colors cursor-pointer"
+              onClick={() => {
+                if (isGuest) {
+                  openGuestLock();
+                  return;
+                }
+                setShowExerciseBox(!showExerciseBox);
+              }}
+              aria-label="Log Exercise"
+              className="min-h-[44px] px-3 py-2 bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/30 rounded-xl flex items-center gap-1 text-xs font-semibold transition-colors cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               Log Exercise
@@ -737,11 +1015,16 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
         )}
       </div>
 
-      {/* FOUR MEAL SECTIONS: Breakfast, Lunch, Dinner, Snacks */}
+      {/* FOUR MEAL SECTIONS: Breakfast (25%), Lunch (35%), Dinner (30%), Snacks (10%) */}
       <div className="space-y-3.5">
         {mealsList.map((meal) => {
           const items = diaryItems.filter((i) => i.mealType === meal.type);
           const mealKcal = items.reduce((sum, i) => sum + (i.calories || 0), 0);
+          const mealTargetKcal = Math.round(dailyTarget * meal.ratio);
+          const mealTargetProt = Math.round(macroTarget.proteinGrams * meal.ratio);
+          const mealTargetCarbs = Math.round(macroTarget.carbsGrams * meal.ratio);
+          const mealTargetFat = Math.round(macroTarget.fatGrams * meal.ratio);
+          const isMealOver = mealKcal > mealTargetKcal;
           const topThree = topFoodsByMeal[meal.type] || [];
           const hasUsual = (usualComboByMeal[meal.type] || []).length > 0;
 
@@ -750,23 +1033,35 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               key={meal.type}
               className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3"
             >
-              {/* Meal Header with #5 Copy Single Meal Chevron and #8 Same as Usual */}
+              {/* Meal Header with #14 Per-meal target & red over-indicator */}
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <div>
                     <div className="flex items-center gap-1.5">
                       <h4 className="text-sm font-semibold text-zinc-200">{meal.title}</h4>
+                      {isMealOver && (
+                        <span
+                          title="Over meal calorie target"
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[9px] font-mono text-rose-400"
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
+                          Over
+                        </span>
+                      )}
                       <button
                         type="button"
                         onClick={() => handleCopyYesterday(meal.type)}
                         title={`Copy yesterday's ${meal.title}`}
+                        aria-label={`Copy yesterday's ${meal.title}`}
                         className="p-1 text-zinc-500 hover:text-teal-400 rounded-lg bg-zinc-950/60 border border-zinc-800/80 transition-colors flex items-center gap-0.5 text-[10px]"
                       >
                         <ChevronRight className="w-3 h-3" />
                         <span>Yesterday</span>
                       </button>
                     </div>
-                    <span className="text-[11px] font-mono text-zinc-500">{mealKcal} kcal</span>
+                    <span className="text-[11px] font-mono text-zinc-400">
+                      {mealKcal} / {mealTargetKcal} kcal · Target {mealTargetCarbs}c {mealTargetFat}f {mealTargetProt}p
+                    </span>
                   </div>
                 </div>
 
@@ -858,7 +1153,13 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                               isSwiped ? '-translate-x-20' : 'translate-x-0'
                             }`}
                           >
-                            <div className="max-w-[68%]">
+                            <div
+                              onClick={() => {
+                                setEditingNoteId(isEditingNote ? null : item.id);
+                                setNoteDraft(item.note || '');
+                              }}
+                              className="max-w-[68%] cursor-pointer"
+                            >
                               <span className="text-xs font-medium text-zinc-200 block truncate">
                                 {item.name}
                               </span>
@@ -870,8 +1171,8 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                                 <span className="text-red-400">{item.protein}p</span>
                               </div>
                               {item.note && !isEditingNote && (
-                                <p className="text-[11px] text-teal-300/90 italic mt-1 flex items-center gap-1">
-                                  <MessageSquare className="w-2.5 h-2.5 shrink-0" />
+                                <p className="text-[11px] text-zinc-400 mt-1 flex items-center gap-1">
+                                  <MessageSquare className="w-2.5 h-2.5 shrink-0 text-zinc-500" />
                                   {item.note}
                                 </p>
                               )}
@@ -1233,15 +1534,16 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             </div>
           </div>
 
-          {/* Energy */}
+           {/* Energy ("How's your energy today?" 1-5 scale) */}
           <div className="flex items-center justify-between">
-            <span className="text-xs text-zinc-400">Energy</span>
+            <span className="text-xs text-zinc-300 font-medium">How&apos;s your energy today?</span>
             <div className="flex items-center gap-1.5">
               {[1, 2, 3, 4, 5].map((val) => (
                 <button
                   key={val}
                   type="button"
                   onClick={() => saveTodayHabit({ energy: val })}
+                  aria-label={`Energy level ${val}`}
                   className={`w-7 h-7 rounded-lg text-xs font-mono font-bold transition-colors ${
                     todayHabit?.energy === val
                       ? 'bg-teal-500 text-zinc-950'
@@ -1338,15 +1640,15 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
         </div>
       </div>
 
-      {/* #39 CRAVING LOG */}
+      {/* #29 CRAVING LOG */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Zap className="w-4 h-4 text-amber-400" />
-            <span className="text-xs font-semibold text-zinc-200">Craving Log</span>
+            <span className="text-xs font-semibold text-zinc-200">Log a craving</span>
           </div>
-          <span className="text-[10px] text-zinc-500 font-mono">
-            {cravings.filter(c => c.date === activeDate).length} today
+          <span className="text-[10px] text-teal-400 font-mono">
+            {cravingPatternText}
           </span>
         </div>
 

@@ -13,11 +13,14 @@ import {
   Scale,
   Moon,
   Clock,
-  Activity
+  Activity,
+  Copy,
+  Share2
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
-import type { MealTemplate, SavedFood, FoodItem } from '../types/index.js';
+import { formatWeight } from '../utils/nutritionMath.js';
+import type { MealTemplate, SavedFood, FoodItem, MealType } from '../types/index.js';
 
 export const ReportsTab: React.FC = () => {
   const {
@@ -27,7 +30,8 @@ export const ReportsTab: React.FC = () => {
     profile,
     weights,
     allHabits,
-    diaryItems
+    diaryItems,
+    addFoodItem
   } = useApp();
 
   const [allEntries, setAllEntries] = useState<FoodItem[]>([]);
@@ -306,6 +310,72 @@ export const ReportsTab: React.FC = () => {
         </div>
       )}
 
+      {/* #16 COPY MEAL FROM ANY PAST DAY */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold text-zinc-200">
+            Meals Logged on {activeDate}
+          </span>
+          <span className="text-[10px] font-mono text-zinc-500">
+            Tap any bar below to switch day
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {(['breakfast', 'lunch', 'dinner', 'snack'] as MealType[]).map((mt) => {
+            const slotItems = activeDayItems.filter((i) => i.mealType === mt);
+            const slotKcal = slotItems.reduce((s, i) => s + i.calories, 0);
+            const todayIso = new Date().toISOString().split('T')[0];
+
+            return (
+              <div
+                key={mt}
+                className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex flex-col justify-between gap-2"
+              >
+                <div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-zinc-200 capitalize">{mt}</span>
+                    <span className="text-[10px] font-mono text-teal-400">{slotKcal} kcal</span>
+                  </div>
+                  <span className="text-[10px] text-zinc-500 block truncate mt-0.5">
+                    {slotItems.length > 0
+                      ? slotItems.map((x) => x.name).join(', ')
+                      : 'No items logged'}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={slotItems.length === 0}
+                  onClick={async () => {
+                    for (const item of slotItems) {
+                      await addFoodItem({
+                        date: todayIso,
+                        mealType: mt,
+                        name: item.name,
+                        calories: item.calories,
+                        carbs: item.carbs,
+                        fat: item.fat,
+                        protein: item.protein,
+                        serving: item.serving || '1 portion',
+                        source: 'saved'
+                      });
+                    }
+                    setNotification(`Copied ${mt} (${slotItems.length} item${slotItems.length > 1 ? 's' : ''}) to today`);
+                    setTimeout(() => setNotification(null), 3000);
+                  }}
+                  aria-label={`Copy ${mt} from ${activeDate} to today`}
+                  className="w-full py-1.5 px-2 bg-teal-500/15 hover:bg-teal-500/25 disabled:opacity-40 border border-teal-500/30 rounded-lg text-[10px] font-semibold text-teal-300 flex items-center justify-center gap-1 transition-colors"
+                >
+                  <Copy className="w-3 h-3" />
+                  Copy to today
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* #26 & #27 CALORIE CHART WITH 7-DAY / 30-DAY MONTHLY / 12-MONTH YEARLY TOGGLE */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between">
@@ -406,16 +476,16 @@ export const ReportsTab: React.FC = () => {
         )}
       </div>
 
-      {/* #36 WEIGHT TREND WITH 7-DAY SMOOTHED LINE & #35 PLATEAU DETECTOR */}
+      {/* #18 WEIGHT SMOOTHING: Raw daily weights in light grey, 7-day rolling average in teal */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3.5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Scale className="w-4 h-4 text-teal-400" />
-            <h4 className="text-sm font-semibold text-zinc-200">Weight & 7-Day Smoothed Trend</h4>
+            <h4 className="text-sm font-semibold text-zinc-200">Weight &amp; 7-Day Rolling Average</h4>
           </div>
-          <div className="flex items-center gap-2 text-[10px] font-mono">
-            <span className="text-teal-400">― Raw</span>
-            <span className="text-cyan-300/70">- - 7d Avg</span>
+          <div className="flex items-center gap-3 text-[10px] font-mono">
+            <span className="text-zinc-400">― Raw Daily</span>
+            <span className="text-teal-400 font-bold">― 7d Trend</span>
           </div>
         </div>
 
@@ -440,32 +510,47 @@ export const ReportsTab: React.FC = () => {
                 })
                 .join(' ');
 
+              const latestSmooth = smoothedWeights[smoothedWeights.length - 1]?.smoothedKg;
+
               return (
-                <svg className="w-full h-28" viewBox="0 0 300 100" preserveAspectRatio="none">
-                  <line x1="0" y1="20" x2="300" y2="20" stroke="#27272a" strokeDasharray="3 3" />
-                  <line x1="0" y1="85" x2="300" y2="85" stroke="#27272a" strokeDasharray="3 3" />
-                  <polyline
-                    fill="none"
-                    stroke="#67e8f9"
-                    strokeOpacity="0.55"
-                    strokeWidth="2"
-                    strokeDasharray="4 3"
-                    points={smoothPts}
-                  />
-                  <polyline
-                    fill="none"
-                    stroke="#14b8a6"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    points={rawPts}
-                  />
-                </svg>
+                <>
+                  <svg
+                    className="w-full h-28"
+                    viewBox="0 0 300 100"
+                    preserveAspectRatio="none"
+                    role="img"
+                    aria-label={`Weight trend chart showing ${smoothedWeights.length} entries. Latest 7-day rolling average is ${latestSmooth} kg.`}
+                  >
+                    <line x1="0" y1="20" x2="300" y2="20" stroke="#27272a" strokeDasharray="3 3" />
+                    <line x1="0" y1="85" x2="300" y2="85" stroke="#27272a" strokeDasharray="3 3" />
+                    {/* Raw daily weights in light grey */}
+                    <polyline
+                      fill="none"
+                      stroke="#a1a1aa"
+                      strokeOpacity="0.6"
+                      strokeWidth="1.75"
+                      strokeLinecap="round"
+                      points={rawPts}
+                    />
+                    {/* 7-day rolling average in teal */}
+                    <polyline
+                      fill="none"
+                      stroke="#14b8a6"
+                      strokeWidth="2.75"
+                      strokeLinecap="round"
+                      points={smoothPts}
+                    />
+                  </svg>
+                  <span className="sr-only">
+                    Latest 7-day rolling average weight: {latestSmooth} kg.
+                  </span>
+                </>
               );
             })()}
           </div>
         ) : (
           <p className="text-xs text-zinc-500 text-center py-2">
-            Log at least 2 weigh-ins in the Me tab to view raw vs 7-day smoothed weight trends.
+            Log at least 2 weigh-ins in the Me tab to view raw daily weights vs 7-day rolling average.
           </p>
         )}
 
@@ -623,11 +708,61 @@ export const ReportsTab: React.FC = () => {
         </div>
       </div>
 
-      {/* WEEKLY AVERAGES */}
+      {/* WEEKLY AVERAGES & SHARE PROGRESS CARD */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3">
-        <h4 className="text-xs font-semibold text-zinc-300">
-          7-Day Daily Averages
-        </h4>
+        <div className="flex items-center justify-between">
+          <h4 className="text-xs font-semibold text-zinc-300">
+            7-Day Daily Averages
+          </h4>
+          <button
+            type="button"
+            onClick={() => {
+              const canvas = document.createElement('canvas');
+              canvas.width = 640;
+              canvas.height = 360;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                ctx.fillStyle = '#09090b';
+                ctx.fillRect(0, 0, 640, 360);
+                ctx.strokeStyle = '#14b8a6';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(18, 18, 604, 324);
+                ctx.fillStyle = '#2dd4bf';
+                ctx.font = 'bold 20px monospace';
+                ctx.fillText('CALORIQ PROGRESS SUMMARY', 44, 66);
+                ctx.fillStyle = '#f4f4f5';
+                ctx.font = 'bold 34px sans-serif';
+                ctx.fillText(`${profile.streakDays || 0} Day Streak`, 44, 125);
+                ctx.fillStyle = '#a1a1aa';
+                ctx.font = '20px monospace';
+                ctx.fillText(`7d Avg Intake: ${avgCalories} kcal (${avgProtein}g Protein)`, 44, 185);
+                const weightDiff =
+                  sortedWeights.length >= 2
+                    ? Math.round((sortedWeights[sortedWeights.length - 1].weightKg - sortedWeights[0].weightKg) * 10) / 10
+                    : 0;
+                ctx.fillText(
+                  `Weight Change: ${weightDiff > 0 ? '+' : ''}${formatWeight(weightDiff, profile.unitSystem)}`,
+                  44,
+                  230
+                );
+                ctx.fillStyle = '#52525b';
+                ctx.font = '14px monospace';
+                ctx.fillText(`Generated on ${new Date().toISOString().split('T')[0]}`, 44, 305);
+                const link = document.createElement('a');
+                link.download = `caloriq-progress-${new Date().toISOString().split('T')[0]}.png`;
+                link.href = canvas.toDataURL('image/png');
+                link.click();
+              }
+              setNotification('Progress card downloaded as PNG');
+              setTimeout(() => setNotification(null), 3000);
+            }}
+            aria-label="Share progress card"
+            className="px-2.5 py-1.5 bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 rounded-lg text-xs font-semibold text-teal-300 flex items-center gap-1.5 transition-colors"
+          >
+            <Share2 className="w-3.5 h-3.5" />
+            Share progress card
+          </button>
+        </div>
 
         <div className="grid grid-cols-4 gap-2">
           <div className="bg-zinc-950 p-2.5 rounded-xl border border-zinc-800 text-center">

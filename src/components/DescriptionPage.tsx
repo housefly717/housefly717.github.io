@@ -23,6 +23,7 @@ import {
 interface DescriptionPageProps {
   onOpenApp: (initialAction?: 'guest' | 'login' | 'program', programSlug?: string) => void;
   onOpenPrivacy?: () => void;
+  onOpenTerms?: () => void;
 }
 
 const STEPS = [
@@ -220,7 +221,11 @@ const FAQ = [
   }
 ];
 
-export const DescriptionPage: React.FC<DescriptionPageProps> = ({ onOpenApp, onOpenPrivacy }) => {
+export const DescriptionPage: React.FC<DescriptionPageProps> = ({
+  onOpenApp,
+  onOpenPrivacy,
+  onOpenTerms
+}) => {
   const [selectedGoal, setSelectedGoal] = useState<string>('all');
   const [openFaq, setOpenFaq] = useState<string | null>(null);
 
@@ -785,31 +790,75 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({ onOpenApp, onO
         </section>
 
         {/* Footer */}
-        <footer className="flex flex-col items-start justify-between gap-6 border-t border-zinc-800/70 py-8 text-xs text-zinc-500 sm:flex-row sm:items-center">
-          <div className="flex flex-wrap items-center gap-4">
+        <footer className="border-t border-zinc-800/70 py-8 text-xs text-zinc-400 space-y-3">
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
             <div className="flex items-center gap-2.5">
               <span className="flex size-6 items-center justify-center rounded-full border border-teal-500/30 bg-teal-500/10 text-[10px] font-semibold text-teal-400">
                 C
               </span>
-              <span>Caloriq — calorie and macro tracking.</span>
+              <span className="text-zinc-300">Caloriq — calorie and macro tracking.</span>
             </div>
-            <a
-              href="/privacy"
-              onClick={(e) => {
-                if (onOpenPrivacy) {
-                  e.preventDefault();
-                  onOpenPrivacy();
-                }
-              }}
-              className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
-            >
-              Privacy Policy
-            </a>
+
+            <div className="flex items-center gap-2 text-zinc-400">
+              <a
+                href="/privacy"
+                onClick={(e) => {
+                  if (onOpenPrivacy) {
+                    e.preventDefault();
+                    onOpenPrivacy();
+                  }
+                }}
+                className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
+              >
+                Privacy
+              </a>
+              <span>·</span>
+              <a
+                href="/terms"
+                onClick={(e) => {
+                  if (onOpenTerms) {
+                    e.preventDefault();
+                    onOpenTerms();
+                  }
+                }}
+                className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
+              >
+                Terms
+              </a>
+              <span>·</span>
+              <a
+                href="mailto:housefly@mail2world.com"
+                className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
+              >
+                Contact
+              </a>
+            </div>
           </div>
 
-          <span className="max-w-md leading-relaxed text-zinc-500">
-            Caloriq provides weight-management tracking tools and is not a medical provider. Speak to your doctor before changing how you eat or train.
-          </span>
+          <div className="space-y-1.5 text-zinc-400">
+            <p className="leading-relaxed">
+              Caloriq provides weight-management tracking tools and is not a medical provider. Speak to your doctor before changing how you eat or train.
+            </p>
+            <p className="leading-relaxed">
+              If you&apos;re under 18, use Caloriq with a parent or guardian.
+            </p>
+            <p className="leading-relaxed">
+              Caloriq uses local storage to keep you signed in and remember your theme. It does not use tracking cookies. See our{' '}
+              <a
+                href="/privacy"
+                onClick={(e) => {
+                  if (onOpenPrivacy) {
+                    e.preventDefault();
+                    onOpenPrivacy();
+                  }
+                }}
+                className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
+              >
+                Privacy Policy
+              </a>
+              .
+            </p>
+          </div>
         </footer>
       </div>
     </div>

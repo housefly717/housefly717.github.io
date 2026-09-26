@@ -47,7 +47,15 @@ interface IngredientRow {
 }
 
 export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, defaultMeal }) => {
-  const { activeDate, addFoodItem } = useApp();
+  const {
+    activeDate,
+    addFoodItem,
+    isGuest,
+    openGuestLock,
+    guestAiUsed,
+    consumeGuestAiCall,
+    isOnline
+  } = useApp();
   const [mealType, setMealType] = useState<MealType>(defaultMeal);
   const [activeTab, setActiveTab] = useState<ModeTab>('smart');
 
@@ -58,6 +66,13 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   const handleSaveSmartFood = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!smartFoodText.trim() || decipheredFood.items.length === 0) return;
+
+    if (isGuest) {
+      const allowed = consumeGuestAiCall();
+      if (!allowed) {
+        return;
+      }
+    }
 
     await addFoodItem({
       date: activeDate,
@@ -477,6 +492,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
             <select
               value={mealType}
               onChange={(e) => setMealType(e.target.value as MealType)}
+              aria-label="Select meal slot"
               className="bg-zinc-800 border border-zinc-700 text-teal-400 font-semibold text-xs rounded-lg px-2.5 py-1 focus:outline-none focus:border-teal-500 capitalize"
             >
               <option value="breakfast">Breakfast</option>
@@ -485,19 +501,39 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
               <option value="snack">Snacks</option>
             </select>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
-            aria-label="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            {/* #15 Barcode quick log icon on the Add screen */}
+            <button
+              type="button"
+              onClick={() => setIsScannerOpen(true)}
+              className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-teal-300 flex items-center gap-1.5 text-xs font-medium transition-colors"
+              aria-label="Barcode quick log"
+              title="Scan barcode"
+            >
+              <Scan className="w-4 h-4" />
+              <span>Scan</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="p-2 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Mode Tabs */}
         <div className="px-4 pt-3 pb-2 flex items-center gap-1 border-b border-zinc-850">
           <button
-            onClick={() => setActiveTab('smart')}
+            onClick={() => {
+              if (isGuest && guestAiUsed) {
+                openGuestLock();
+                return;
+              }
+              setActiveTab('smart');
+            }}
+            aria-label="Smart AI tab"
             className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-1 ${
               activeTab === 'smart'
                 ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
@@ -509,6 +545,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
           </button>
           <button
             onClick={() => setActiveTab('manual')}
+            aria-label="Manual entry tab"
             className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${
               activeTab === 'manual'
                 ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
@@ -518,7 +555,14 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
             Manual
           </button>
           <button
-            onClick={() => setActiveTab('recipe')}
+            onClick={() => {
+              if (isGuest) {
+                openGuestLock();
+                return;
+              }
+              setActiveTab('recipe');
+            }}
+            aria-label="Recipe tab"
             className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-1 ${
               activeTab === 'recipe'
                 ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
@@ -529,6 +573,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
           </button>
           <button
             onClick={() => setActiveTab('packaged')}
+            aria-label="Packaged food tab"
             className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-1 ${
               activeTab === 'packaged'
                 ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
@@ -542,14 +587,27 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
 
         {/* Content Body */}
         <div className="p-4 overflow-y-auto flex-1 space-y-4">
+          {!isOnline && (
+            <div className="p-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-[11px] text-zinc-400">
+              Offline — cloud AI features are paused. Manual entry and local deciphering work offline.
+            </div>
+          )}
+
           {/* Quick Saved Foods Drawer Toggle */}
           <div className="flex items-center justify-between bg-zinc-950/60 border border-zinc-800 rounded-xl p-2.5">
             <div className="flex items-center gap-2 text-xs text-zinc-300">
               <Bookmark className="w-3.5 h-3.5 text-teal-400" />
-              <span>Saved Foods ({savedFoods.length})</span>
+              <span>Saved Foods ({isGuest ? 'Locked' : savedFoods.length})</span>
             </div>
             <button
-              onClick={() => setShowSavedList(!showSavedList)}
+              onClick={() => {
+                if (isGuest) {
+                  openGuestLock();
+                  return;
+                }
+                setShowSavedList(!showSavedList);
+              }}
+              aria-label="Browse saved foods"
               className="text-[11px] font-medium text-teal-400 hover:underline"
             >
               {showSavedList ? 'Hide List' : 'Browse & Re-add'}
@@ -1395,9 +1453,34 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       <BarcodeScannerModal
         isOpen={isScannerOpen}
         onClose={() => setIsScannerOpen(false)}
-        onDetected={(query) => {
+        onDetected={async (query) => {
           setPackagedQuery(query);
-          setActiveTab('packaged');
+          try {
+            const res = await api.searchUsda(query, '');
+            if (res.available && res.foods && res.foods.length > 0) {
+              selectPackagedFood(res.foods[0]);
+              return;
+            }
+          } catch {
+            // fallback to manual serving drawer
+          }
+          const parsed = decipherFoodText(query);
+          if (parsed.items.length > 0) {
+            setManualName(parsed.mealSummaryName);
+            setManualCalories(String(parsed.totalCalories));
+            setManualCarbs(String(parsed.totalCarbs));
+            setManualFat(String(parsed.totalFat));
+            setManualProtein(String(parsed.totalProtein));
+            setManualServing('1 scanned package');
+          } else {
+            setManualName(`Scanned Item (${query})`);
+            setManualCalories('210');
+            setManualCarbs('24');
+            setManualFat('8');
+            setManualProtein('10');
+            setManualServing('1 package');
+          }
+          setActiveTab('manual');
         }}
       />
     </div>

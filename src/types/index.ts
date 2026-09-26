@@ -70,7 +70,7 @@ export interface ProgressPhoto {
   id: string;
   userId: string;
   date: string;
-  label: 'before' | 'after' | 'progress';
+  label: 'before' | 'after' | 'progress' | 'front' | 'side' | 'back';
   dataUrl: string;
   weightKg?: number;
   note?: string;
@@ -231,6 +231,11 @@ export interface UserProfile {
   accountabilityPartner?: string;
   streakOptIn?: boolean;
   waterChallengeJoined?: boolean;
+  language?: 'en' | 'es' | 'fr' | 'de';
+  referralCode?: string;
+  usedReferrals?: string[];
+  xp?: number;
+  streakDays?: number;
 }
 
 export interface MacroTarget {

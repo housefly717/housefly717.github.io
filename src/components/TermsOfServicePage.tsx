@@ -1,14 +1,14 @@
 import React, { useEffect } from 'react';
 import { ArrowLeft } from 'lucide-react';
 
-interface PrivacyPolicyPageProps {
+interface TermsOfServicePageProps {
   onBackToLanding: () => void;
-  onOpenTerms?: () => void;
+  onOpenPrivacy: () => void;
 }
 
-export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
+export const TermsOfServicePage: React.FC<TermsOfServicePageProps> = ({
   onBackToLanding,
-  onOpenTerms
+  onOpenPrivacy
 }) => {
   const todayFormatted = new Date().toLocaleDateString('en-US', {
     month: 'long',
@@ -18,7 +18,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = 'Privacy Policy — Caloriq';
+    document.title = 'Terms of Service — Caloriq';
 
     let metaDesc = document.querySelector('meta[name="description"]');
     const previousDesc = metaDesc ? metaDesc.getAttribute('content') : null;
@@ -30,7 +30,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
     }
     metaDesc.setAttribute(
       'content',
-      "Caloriq Privacy Policy — what data we collect, how it's stored, and your rights."
+      'Caloriq Terms of Service — plain-English terms for using the Caloriq calorie and macro tracker.'
     );
 
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -51,7 +51,8 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
           <button
             type="button"
             onClick={onBackToLanding}
-            className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/90 px-4 py-2.5 text-xs font-medium text-zinc-200 transition-colors hover:border-teal-500/40 hover:text-teal-300"
+            aria-label="Back to landing page"
+            className="inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/90 px-4 py-2.5 text-xs font-medium text-zinc-200 transition-colors hover:border-teal-500/40 hover:text-teal-300"
           >
             <ArrowLeft className="size-4 text-teal-400" />
             <span>Back to landing page</span>
@@ -67,139 +68,92 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
           </div>
         </div>
 
-        {/* Main Policy Card */}
+        {/* Main Terms Card */}
         <article className="surface p-6 sm:p-10 space-y-10 max-w-[65ch] mx-auto">
-          {/* Header & 1. Effective date */}
           <header className="border-b border-zinc-800/80 pb-6 space-y-2">
             <h2 className="font-display text-3xl sm:text-4xl font-semibold tracking-tight text-zinc-100">
-              Privacy Policy
+              Terms of Service
             </h2>
             <p className="text-sm text-teal-400 font-mono">
               Effective {todayFormatted}
             </p>
           </header>
 
-          {/* 2. Who we are */}
+          {/* What Caloriq is and isn't */}
           <section className="space-y-3">
             <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Who we are
+              What Caloriq is and isn&apos;t
             </h3>
             <p className="text-sm leading-relaxed text-zinc-300">
-              Caloriq is a free calorie and macro tracking app. It is not a medical service. It does not diagnose, treat, or prescribe.
+              Caloriq is a free calorie, macro, water, and activity tracking tool. It helps you log what you eat and calculate daily targets from your own stats.
+            </p>
+            <p className="text-sm leading-relaxed text-zinc-300">
+              Caloriq is not a medical service and is not a medical provider. It does not diagnose, treat, cure, or prescribe anything. Always speak to your doctor before changing how you eat or train.
             </p>
           </section>
 
-          {/* 3. What we collect */}
+          {/* Age requirements */}
           <section className="space-y-3">
             <h3 className="font-display text-xl font-semibold text-zinc-100">
-              What we collect
-            </h3>
-            <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed text-zinc-300 marker:text-teal-400">
-              <li>Your email address (for sign-in)</li>
-              <li>Your profile: name, age, gender, height, weight, activity level, goal</li>
-              <li>Your diary: foods, calories, macros, water, exercise, weight entries</li>
-              <li>Any messages you send through the chat feature</li>
-              <li>Basic app usage: when you open the app and which screens you use</li>
-            </ul>
-          </section>
-
-          {/* 4. What we do NOT collect */}
-          <section className="space-y-3">
-            <h3 className="font-display text-xl font-semibold text-zinc-100">
-              What we do NOT collect
-            </h3>
-            <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed text-zinc-300 marker:text-teal-400">
-              <li>We do not collect your location</li>
-              <li>We do not collect your contacts</li>
-              <li>We do not collect your photos unless you upload one</li>
-              <li>We do not sell your data to anyone</li>
-            </ul>
-          </section>
-
-          {/* 5. Where your data is stored */}
-          <section className="space-y-3">
-            <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Where your data is stored
+              Age requirements
             </h3>
             <p className="text-sm leading-relaxed text-zinc-300">
-              Your data is stored in a Google Firebase database. Firebase is a service provided by Google, and your data is stored on Google&apos;s servers. We use Google Firebase to store your data. Google&apos;s own privacy policy also applies.
+              Caloriq is not for children under 13. If you are under 18, you must use Caloriq with a parent or guardian.
             </p>
           </section>
 
-          {/* 6. Who can see your data */}
+          {/* Acceptable use */}
           <section className="space-y-3">
             <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Who can see your data
+              Acceptable use
             </h3>
+            <p className="text-sm leading-relaxed text-zinc-300">
+              When using Caloriq, you agree to use the app fairly and respectfully:
+            </p>
             <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed text-zinc-300 marker:text-teal-400">
-              <li>Only you can see your diary, weight log, profile, and messages</li>
-              <li>No Caloriq staff member reads your diary</li>
-              <li>If you join the community or add friends, only what you choose to share is visible to them</li>
+              <li>No scraping, automated bots, or bulk data extraction</li>
+              <li>No abuse, harassment, or spam in community or chat features</li>
+              <li>No illegal activity or attempts to break or overload the app</li>
             </ul>
           </section>
 
-          {/* 7. Third-party services we use */}
+          {/* Where your data is stored */}
           <section className="space-y-3">
             <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Third-party services we use
-            </h3>
-            <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed text-zinc-300 marker:text-teal-400">
-              <li>Google Firebase — stores your account and data</li>
-              <li>USDA FoodData Central — provides packaged food nutrition data (queries are sent without your account info)</li>
-              <li>Google Gemini — powers the AI text logging and meal planning (queries are sent without your account info)</li>
-            </ul>
-          </section>
-
-          {/* 8. Cookies and local storage */}
-          <section className="space-y-3">
-            <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Cookies and local storage
+              Data storage
             </h3>
             <p className="text-sm leading-relaxed text-zinc-300">
-              Caloriq uses browser local storage to keep you signed in and to remember your theme. It does not use tracking cookies.
+              Account data is stored in Google Firebase. By creating an account, you understand that your data is stored on Google Firebase servers as described in our Privacy Policy.
             </p>
           </section>
 
-          {/* 9. Your rights */}
+          {/* No warranty */}
           <section className="space-y-3">
             <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Your rights
-            </h3>
-            <ul className="list-disc pl-5 space-y-2 text-sm leading-relaxed text-zinc-300 marker:text-teal-400">
-              <li>You can export all your data as a JSON file from the Me tab at any time</li>
-              <li>You can delete your account and all your data from the Me tab at any time</li>
-              <li>Deletion is permanent</li>
-              <li>If you&apos;re under 18, a parent or guardian should manage your account</li>
-            </ul>
-          </section>
-
-          {/* 10. Children */}
-          <section className="space-y-3">
-            <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Children
+              Provided as-is
             </h3>
             <p className="text-sm leading-relaxed text-zinc-300">
-              Caloriq is not designed for children under 13. If you&apos;re under 18, use Caloriq with a parent or guardian. We do not knowingly collect data from children under 13. If you believe a child under 13 has created an account, contact us and we will delete it.
+              Caloriq is provided as-is with no warranty of any kind. Nutrition numbers, barcode matches, and AI estimates are approximations and may contain errors. You use the app at your own risk.
             </p>
           </section>
 
-          {/* 11. Changes to this policy */}
+          {/* Deleting your account */}
           <section className="space-y-3">
             <h3 className="font-display text-xl font-semibold text-zinc-100">
-              Changes to this policy
+              Account deletion
             </h3>
             <p className="text-sm leading-relaxed text-zinc-300">
-              If this policy changes, the effective date at the top will update. Continued use of Caloriq after a change means you accept the new policy.
+              You can export your data or permanently delete your account and all your data at any time from the Me tab.
             </p>
           </section>
 
-          {/* 12. Contact */}
+          {/* Contact */}
           <section className="space-y-3 pt-2 border-t border-zinc-800/80">
             <h3 className="font-display text-xl font-semibold text-zinc-100">
               Contact
             </h3>
             <p className="text-sm leading-relaxed text-zinc-300">
-              Questions about this policy? Email{' '}
+              Questions about these terms? Email{' '}
               <a
                 href="mailto:housefly@mail2world.com"
                 className="text-teal-400 underline underline-offset-4 hover:text-teal-300"
@@ -220,12 +174,26 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
             If you&apos;re under 18, use Caloriq with a parent or guardian.
           </p>
           <p className="leading-relaxed">
-            Caloriq uses local storage to keep you signed in and remember your theme. It does not use tracking cookies. See our Privacy Policy.
+            Caloriq uses local storage to keep you signed in and remember your theme. It does not use tracking cookies. See our{' '}
+            <a
+              href="/privacy"
+              onClick={(e) => {
+                e.preventDefault();
+                onOpenPrivacy();
+              }}
+              className="text-teal-400 underline underline-offset-4 hover:text-teal-300"
+            >
+              Privacy Policy
+            </a>
+            .
           </p>
           <div className="flex items-center justify-center gap-2 pt-1 text-zinc-300">
             <a
               href="/privacy"
-              onClick={(e) => e.preventDefault()}
+              onClick={(e) => {
+                e.preventDefault();
+                onOpenPrivacy();
+              }}
               className="text-teal-400 hover:text-teal-300 underline underline-offset-4"
             >
               Privacy
@@ -233,12 +201,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
             <span>·</span>
             <a
               href="/terms"
-              onClick={(e) => {
-                if (onOpenTerms) {
-                  e.preventDefault();
-                  onOpenTerms();
-                }
-              }}
+              onClick={(e) => e.preventDefault()}
               className="text-teal-400 hover:text-teal-300 underline underline-offset-4"
             >
               Terms

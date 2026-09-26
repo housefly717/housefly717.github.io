@@ -180,15 +180,21 @@ class ApiService {
       });
 
       if (!res.ok) {
+        if (endpoint.startsWith('/api/ai/')) {
+          throw new Error('The AI is busy. Try again in a minute, or use Manual entry.');
+        }
         const err = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(err.error || `Request failed with status ${res.status}`);
       }
 
       return await res.json();
     } catch (err: any) {
+      if (endpoint.startsWith('/api/ai/')) {
+        throw new Error('The AI is busy. Try again in a minute, or use Manual entry.');
+      }
       // Offline mode fallback for POST/PUT/DELETE mutations
       const method = (options.method || 'GET').toUpperCase();
-      if (!skipQueue && (method === 'POST' || method === 'PUT' || method === 'DELETE') && !navigator.onLine) {
+      if (!skipQueue && (method === 'POST' || method === 'PUT' || method === 'DELETE')) {
         const parsedBody = options.body ? JSON.parse(String(options.body)) : undefined;
         this.enqueueOffline(endpoint, method, parsedBody);
         return {
@@ -200,7 +206,9 @@ class ApiService {
           success: true
         } as unknown as T;
       }
-      throw err;
+      throw new Error(
+        "Can't reach the server right now. Your data is saved on this device and will sync when you're back online."
+      );
     }
   }
 

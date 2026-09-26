@@ -19,7 +19,17 @@ import {
   Compass,
   Bell,
   Smartphone,
-  Calendar
+  Calendar,
+  BarChart3,
+  CalendarCheck,
+  Flame,
+  BookOpen,
+  Bookmark,
+  Lock,
+  Gift,
+  Copy,
+  Check,
+  Globe
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
@@ -31,6 +41,7 @@ import {
   calculateProjectedGoalDate,
   formatWeight
 } from '../utils/nutritionMath.js';
+import type { SupportedLanguage } from '../utils/i18n.js';
 import type { UserProfile, ChatMessage } from '../types/index.js';
 
 const BADGE_DEFINITIONS: Array<{ id: string; title: string; desc: string }> = [
@@ -53,10 +64,16 @@ const BADGE_DEFINITIONS: Array<{ id: string; title: string; desc: string }> = [
 interface MeTabProps {
   onOpenDescription?: () => void;
   onOpenPrivacy?: () => void;
+  onOpenTerms?: () => void;
 }
 
-export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription, onOpenPrivacy }) => {
+export const MeTab: React.FC<MeTabProps> = ({
+  onOpenDescription,
+  onOpenPrivacy,
+  onOpenTerms
+}) => {
   const {
+    userId,
     profile,
     updateUserProfile,
     weights,
@@ -65,8 +82,36 @@ export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription, onOpenPrivacy }
     stats,
     victories,
     addVictoryItem,
-    deleteVictoryItem
+    deleteVictoryItem,
+    isGuest,
+    guestRemainingMs,
+    openAuthModal,
+    resetGuestSession,
+    allDiaryItems,
+    exercises,
+    waterGlasses,
+    language,
+    setLanguage
   } = useApp();
+
+  // Account deletion 2-step state & notice
+  const [deleteStep, setDeleteStep] = useState<0 | 1>(0);
+  const [deletedBanner, setDeletedBanner] = useState<string | null>(() => {
+    const msg = sessionStorage.getItem('caloriq_deleted_notice');
+    if (msg) {
+      sessionStorage.removeItem('caloriq_deleted_notice');
+      return msg;
+    }
+    return null;
+  });
+
+  // Referral code state
+  const myReferralCode =
+    profile.referralCode ||
+    `CQ${(userId || 'GUEST').replace(/[^a-zA-Z0-9]/g, '').slice(0, 5).toUpperCase()}`;
+  const [friendCodeInput, setFriendCodeInput] = useState('');
+  const [referralMsg, setReferralMsg] = useState<string | null>(null);
+  const [copiedRef, setCopiedRef] = useState(false);
 
   // Form State
   const [formData, setFormData] = useState<UserProfile>(profile);
@@ -196,19 +241,97 @@ export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription, onOpenPrivacy }
   };
 
   const handleExportData = async () => {
+    if (isGuest) return;
     try {
-      const res = await fetch(`/api/export?token=${api.getToken() || ''}`);
-      const data = await res.json();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const [allRes, savedRes, tmplRes, chatRes] = await Promise.all([
+        api.getAllDiary().catch(() => ({ items: allDiaryItems })),
+        api.getSavedFoods().catch(() => ({ foods: [] })),
+        api.getTemplates().catch(() => ({ templates: [] })),
+        api.getChat().catch(() => ({ messages: chatMessages }))
+      ]);
+
+      const diaryByDate: Record<string, any[]> = {};
+      for (const item of allRes.items || allDiaryItems) {
+        if (!diaryByDate[item.date]) diaryByDate[item.date] = [];
+        diaryByDate[item.date].push(item);
+      }
+
+      let serverExport: any = {};
+      try {
+        const res = await fetch(`/api/export?token=${api.getToken() || ''}`);
+        if (res.ok) serverExport = await res.json();
+      } catch {
+        // ignore
+      }
+
+      const cleanExport = {
+        profile,
+        diary: diaryByDate,
+        weights,
+        water: serverExport.water || { [new Date().toISOString().split('T')[0]]: waterGlasses },
+        savedFoods: savedRes.foods || serverExport.savedFoods || [],
+        recipes: serverExport.recipes || [],
+        templates: tmplRes.templates || serverExport.templates || [],
+        exercise: serverExport.exercise || exercises,
+        plans: serverExport.plans || [],
+        chat: chatRes.messages || serverExport.chat || []
+      };
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      const blob = new Blob([JSON.stringify(cleanExport, null, 2)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'caloriq-backup.json';
+      a.download = `caloriq-export-${todayStr}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {
       // ignore
     }
+  };
+
+  const handlePermanentDeleteAccount = async () => {
+    try {
+      await api.clearAllData();
+    } catch {
+      // ignore
+    }
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('caloriq')) keysToRemove.push(k);
+    }
+    keysToRemove.forEach((k) => localStorage.removeItem(k));
+    sessionStorage.setItem(
+      'caloriq_deleted_notice',
+      'Your account and all your data have been deleted.'
+    );
+    await resetGuestSession();
+    setDeleteStep(0);
+    setDeletedBanner('Your account and all your data have been deleted.');
+  };
+
+  const handleRedeemReferral = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = friendCodeInput.trim().toUpperCase();
+    if (!code) return;
+    if (code === myReferralCode) {
+      setReferralMsg('You cannot use your own referral code.');
+      return;
+    }
+    const used = profile.usedReferrals || [];
+    if (used.includes(code)) {
+      setReferralMsg('This referral code has already been used.');
+      return;
+    }
+    const nextXp = (profile.xp || stats.xp || 0) + 500;
+    await updateUserProfile({
+      xp: nextXp,
+      referralCode: myReferralCode,
+      usedReferrals: [...used, code]
+    });
+    setFriendCodeInput('');
+    setReferralMsg('Referral applied. You and your friend both earned +500 XP.');
   };
 
   const handleDownloadStandaloneHtml = () => {
@@ -244,8 +367,134 @@ export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription, onOpenPrivacy }
     return `${x},${y}`;
   }).join(' ');
 
+  // GUEST MODE ME TAB
+  if (isGuest) {
+    const hoursLeft = Math.max(0, Math.ceil(guestRemainingMs / (1000 * 60 * 60)));
+    const h = Math.floor(guestRemainingMs / (1000 * 60 * 60));
+    const m = Math.floor((guestRemainingMs % (1000 * 60 * 60)) / (1000 * 60));
+    const s = Math.floor((guestRemainingMs % (1000 * 60)) / 1000);
+
+    const lockedFeatures = [
+      { label: 'Reports', icon: BarChart3 },
+      { label: 'Weight tracking', icon: Scale },
+      { label: 'Meal plans', icon: CalendarCheck },
+      { label: 'Exercise log', icon: Flame },
+      { label: 'Recipes', icon: BookOpen },
+      { label: 'Saved foods', icon: Bookmark },
+      { label: 'Streaks', icon: Award },
+      { label: 'Export', icon: Download }
+    ];
+
+    return (
+      <div className="space-y-5 pb-8 max-w-md mx-auto">
+        {deletedBanner && (
+          <div className="p-4 bg-teal-950/60 border border-teal-500/40 rounded-2xl text-xs text-teal-200 font-medium text-center">
+            {deletedBanner}
+          </div>
+        )}
+
+        <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-6 shadow-xl space-y-5 text-center">
+          <div className="w-12 h-12 rounded-2xl bg-teal-500/15 border border-teal-500/30 flex items-center justify-center text-teal-400 mx-auto">
+            <Clock className="w-6 h-6" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h2 className="font-display text-lg font-semibold text-zinc-100">
+              Guest session — expires in {hoursLeft} {hoursLeft === 1 ? 'hour' : 'hours'}
+            </h2>
+            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800 font-mono text-sm font-bold text-teal-400">
+              <span>
+                {String(h).padStart(2, '0')}h : {String(m).padStart(2, '0')}m : {String(s).padStart(2, '0')}s
+              </span>
+            </div>
+            <p className="text-xs text-zinc-400 pt-1">
+              Sign up within 24 hours to keep everything you logged today and sync across devices.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={openAuthModal}
+            aria-label="Create your account"
+            className="w-full min-h-[48px] py-3 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors shadow-lg shadow-teal-500/20"
+          >
+            Create your account
+          </button>
+
+          <div className="pt-4 border-t border-zinc-800 text-left space-y-3">
+            <span className="text-[11px] font-mono uppercase tracking-wider text-zinc-400 block">
+              What you&apos;ll unlock
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              {lockedFeatures.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <div
+                    key={item.label}
+                    className="p-2.5 rounded-xl bg-zinc-950/70 border border-zinc-800/80 flex items-center gap-2.5 text-zinc-500"
+                  >
+                    <Icon className="w-4 h-4 text-zinc-600 shrink-0" />
+                    <span className="text-xs text-zinc-400">{item.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Legal & Website Links */}
+        <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-2">
+          {onOpenDescription && (
+            <button
+              type="button"
+              onClick={onOpenDescription}
+              aria-label="View Caloriq landing page"
+              className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-teal-300 flex items-center justify-center gap-2 transition-colors"
+            >
+              <Sparkles className="w-4 h-4 text-teal-400" />
+              About Caloriq
+            </button>
+          )}
+          <div className="grid grid-cols-2 gap-2">
+            <a
+              href="/privacy"
+              onClick={(e) => {
+                if (onOpenPrivacy) {
+                  e.preventDefault();
+                  onOpenPrivacy();
+                }
+              }}
+              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Shield className="w-3.5 h-3.5 text-teal-400" />
+              Privacy Policy
+            </a>
+            <a
+              href="/terms"
+              onClick={(e) => {
+                if (onOpenTerms) {
+                  e.preventDefault();
+                  onOpenTerms();
+                }
+              }}
+              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Lock className="w-3.5 h-3.5 text-teal-400" />
+              Terms of Service
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5 pb-8 max-w-md mx-auto">
+      {deletedBanner && (
+        <div className="p-4 bg-teal-950/60 border border-teal-500/40 rounded-2xl text-xs text-teal-200 font-medium text-center">
+          {deletedBanner}
+        </div>
+      )}
       {/* #42 "Why I started" Card — Pinned to the top of the Me tab */}
       <div className="bg-zinc-900/90 border border-teal-500/30 rounded-2xl p-4 shadow-xl space-y-2.5">
         <div className="flex items-center justify-between">
@@ -423,6 +672,85 @@ export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription, onOpenPrivacy }
             </button>
           </div>
         </div>
+
+        {/* Language Selector (EN / ES / FR / DE) */}
+        <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Globe className="w-3.5 h-3.5 text-teal-400" />
+            <span className="text-xs font-medium text-zinc-300">Language</span>
+          </div>
+          <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800">
+            {(['en', 'es', 'fr', 'de'] as SupportedLanguage[]).map((langCode) => (
+              <button
+                key={langCode}
+                type="button"
+                onClick={() => setLanguage(langCode)}
+                aria-label={`Set language to ${langCode.toUpperCase()}`}
+                className={`px-2 py-1 rounded-md text-[10px] font-mono uppercase transition-colors ${
+                  language === langCode
+                    ? 'bg-teal-500 text-zinc-950 font-bold'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                {langCode}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* REFERRAL CODE CARD (+500 XP for both friends) */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Gift className="w-4 h-4 text-teal-400" />
+            <h4 className="text-sm font-semibold text-zinc-200">Referral Code (+500 XP)</h4>
+          </div>
+          <span className="text-[10px] font-mono text-teal-400">One-time use per friend</span>
+        </div>
+
+        <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between">
+          <div>
+            <span className="text-[10px] text-zinc-500 uppercase block">Your Invite Code</span>
+            <span className="text-sm font-bold font-mono text-teal-300 tracking-wider">
+              {myReferralCode}
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              navigator.clipboard?.writeText(myReferralCode);
+              setCopiedRef(true);
+              setTimeout(() => setCopiedRef(false), 2000);
+            }}
+            aria-label="Copy referral code"
+            className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
+          >
+            {copiedRef ? <Check className="w-3.5 h-3.5 text-teal-400" /> : <Copy className="w-3.5 h-3.5" />}
+            {copiedRef ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+
+        <form onSubmit={handleRedeemReferral} className="flex gap-2">
+          <input
+            type="text"
+            value={friendCodeInput}
+            onChange={(e) => setFriendCodeInput(e.target.value)}
+            placeholder="Enter a friend's code for +500 XP..."
+            className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 font-mono uppercase placeholder:normal-case placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+          />
+          <button
+            type="submit"
+            aria-label="Redeem referral code"
+            className="px-3 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs shrink-0 transition-colors"
+          >
+            Redeem
+          </button>
+        </form>
+
+        {referralMsg && (
+          <p className="text-[11px] text-teal-300 font-medium">{referralMsg}</p>
+        )}
       </div>
 
       {saveStatus && (
@@ -981,43 +1309,90 @@ export const MeTab: React.FC<MeTabProps> = ({ onOpenDescription, onOpenPrivacy }
             </button>
           )}
 
-          <a
-            href="/privacy"
-            onClick={(e) => {
-              if (onOpenPrivacy) {
-                e.preventDefault();
-                onOpenPrivacy();
-              }
-            }}
-            className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
-          >
-            <Shield className="w-4 h-4 text-teal-400" />
-            Privacy Policy
-          </a>
+          <div className="grid grid-cols-2 gap-2">
+            <a
+              href="/privacy"
+              onClick={(e) => {
+                if (onOpenPrivacy) {
+                  e.preventDefault();
+                  onOpenPrivacy();
+                }
+              }}
+              className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
+            >
+              <Shield className="w-4 h-4 text-teal-400" />
+              Privacy Policy
+            </a>
+
+            <a
+              href="/terms"
+              onClick={(e) => {
+                if (onOpenTerms) {
+                  e.preventDefault();
+                  onOpenTerms();
+                }
+              }}
+              className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
+            >
+              <Lock className="w-4 h-4 text-teal-400" />
+              Terms of Service
+            </a>
+          </div>
 
           <button
             onClick={handleExportData}
+            aria-label="Export all data as JSON"
             className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
           >
             <Download className="w-4 h-4 text-teal-400" />
-            Export all data as JSON
+            Export all data as JSON (caloriq-export-YYYY-MM-DD.json)
           </button>
 
           <button
             onClick={handleDownloadStandaloneHtml}
+            aria-label="Download standalone index.html"
             className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-teal-500/30 rounded-xl text-xs font-medium text-teal-300 flex items-center justify-center gap-2 transition-colors"
           >
             <Download className="w-4 h-4 text-teal-400" />
             Download standalone index.html
           </button>
 
-          <button
-            onClick={() => setShowClearConfirm(true)}
-            className="w-full p-2.5 bg-rose-950/20 hover:bg-rose-950/40 border border-rose-900/40 text-rose-300 rounded-xl text-xs font-medium flex items-center justify-center gap-2 transition-colors"
-          >
-            <AlertTriangle className="w-4 h-4 text-rose-400" />
-            Clear all tracked data
-          </button>
+          {/* #4 Two-Step Account Deletion */}
+          {deleteStep === 0 ? (
+            <button
+              type="button"
+              onClick={() => setDeleteStep(1)}
+              aria-label="Delete account"
+              className="w-full min-h-[44px] p-2.5 bg-rose-950/20 hover:bg-rose-950/40 border border-rose-900/40 text-rose-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors"
+            >
+              <AlertTriangle className="w-4 h-4 text-rose-400" />
+              Delete account?
+            </button>
+          ) : (
+            <div className="p-3 bg-rose-950/30 border border-rose-500/50 rounded-xl space-y-2.5">
+              <p className="text-xs text-rose-200 font-medium text-center">
+                Are you sure? This permanently deletes your account and all your data.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={handlePermanentDeleteAccount}
+                  aria-label="Yes, delete everything permanently"
+                  className="flex-1 min-h-[44px] py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl text-xs transition-colors shadow-lg shadow-rose-600/30"
+                >
+                  Yes, delete everything permanently.
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDeleteStep(0)}
+                  aria-label="Cancel account deletion"
+                  className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs font-medium"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

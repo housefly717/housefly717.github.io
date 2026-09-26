@@ -4,8 +4,9 @@ import { api } from '../services/api.js';
 import { useApp } from '../context/AppContext.js';
 
 export const AuthModal: React.FC = () => {
-  const { isAuthModalOpen, closeAuthModal, isGuest, userEmail, onAuthSuccess } = useApp();
+  const { isAuthModalOpen, closeAuthModal, isGuest, userEmail, onAuthSuccess, profile, updateUserProfile } = useApp();
   const [email, setEmail] = useState('');
+  const [referralCode, setReferralCode] = useState('');
   const [otpCode, setOtpCode] = useState('');
   const [step, setStep] = useState<'email' | 'otp'>('email');
   const [isLoading, setIsLoading] = useState(false);
@@ -51,10 +52,21 @@ export const AuthModal: React.FC = () => {
       const res = await api.verifyOtp(email, otpCode);
       setStatusMsg(res.message);
       await onAuthSuccess();
+      if (referralCode.trim()) {
+        const cleanRef = referralCode.trim().toUpperCase();
+        const used = profile.usedReferrals || [];
+        if (!used.includes(cleanRef)) {
+          await updateUserProfile({
+            xp: (profile.xp || 0) + 500,
+            usedReferrals: [...used, cleanRef]
+          });
+        }
+      }
       setTimeout(() => {
         closeAuthModal();
         setStep('email');
         setOtpCode('');
+        setReferralCode('');
         setPreviewCode(null);
       }, 1000);
     } catch (err: any) {
@@ -128,6 +140,19 @@ export const AuthModal: React.FC = () => {
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                Referral Code (Optional — +500 XP)
+              </label>
+              <input
+                type="text"
+                value={referralCode}
+                onChange={(e) => setReferralCode(e.target.value)}
+                placeholder="e.g. CQ7A9B2"
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono uppercase placeholder:normal-case text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+              />
             </div>
 
             <button

@@ -15,11 +15,20 @@ import { LegalFooter } from './components/LegalFooter.js';
 import { AdminSetupPage } from './components/AdminSetupPage.js';
 import { DescriptionPage } from './components/DescriptionPage.js';
 import { PrivacyPolicyPage } from './components/PrivacyPolicyPage.js';
+import { TermsOfServicePage } from './components/TermsOfServicePage.js';
 import { DesktopScrollbar } from './components/DesktopScrollbar.js';
+import {
+  GuestLockSheet,
+  GuestExpiredOverlay,
+  FirstRunTooltips,
+  KeyboardShortcutsModal,
+  MilestoneConfettiModal
+} from './components/GuestModals.js';
 
 interface MainAppContentProps {
   onOpenDescription: () => void;
   onOpenPrivacy: () => void;
+  onOpenTerms: () => void;
   initialTab?: TabType;
   autoOpenAuth?: boolean;
 }
@@ -27,12 +36,15 @@ interface MainAppContentProps {
 const MainAppContent: React.FC<MainAppContentProps> = ({
   onOpenDescription,
   onOpenPrivacy,
+  onOpenTerms,
   initialTab = 'diary',
   autoOpenAuth = false
 }) => {
   const [currentTab, setCurrentTab] = useState<TabType>(initialTab);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const {
     isAddFoodOpen,
+    openAddFood,
     closeAddFood,
     selectedMealForAdd,
     isLoading,
@@ -40,7 +52,11 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
     undoToast,
     dismissUndoToast,
     isOnline,
-    offlineQueueCount
+    offlineQueueCount,
+    waterGlasses,
+    updateWaterGlasses,
+    isGuest,
+    openGuestLock
   } = useApp();
 
   useEffect(() => {
@@ -48,6 +64,44 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
       openAuthModal();
     }
   }, [autoOpenAuth, openAuthModal]);
+
+  // #9 Keyboard shortcuts (desktop): N = Add Food, W = log water, E = exercise log, ? = shortcuts list
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      const key = e.key.toLowerCase();
+      if (key === 'n') {
+        e.preventDefault();
+        openAddFood('breakfast');
+      } else if (key === 'w') {
+        e.preventDefault();
+        updateWaterGlasses(Math.min(8, waterGlasses + 1));
+      } else if (key === 'e') {
+        e.preventDefault();
+        if (isGuest) {
+          openGuestLock();
+        } else {
+          setCurrentTab('fitness');
+        }
+      } else if (e.key === '?') {
+        e.preventDefault();
+        setIsShortcutsOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [openAddFood, updateWaterGlasses, waterGlasses, isGuest, openGuestLock]);
 
   if (isLoading) {
     return (
@@ -72,7 +126,7 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
           <div className="px-3 py-1.5 rounded-xl bg-amber-950/40 border border-amber-800/50 text-[11px] text-amber-300 flex items-center justify-between font-mono">
             <span>
               {!isOnline
-                ? 'Offline Mode — logs saved locally & sync automatically when online'
+                ? "Can't reach the server right now. Your data is saved on this device and will sync when you're back online."
                 : `Syncing ${offlineQueueCount} offline entry(s)...`}
             </span>
           </div>
@@ -81,7 +135,15 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
 
       <main className="flex-1 px-4 pt-4 pb-20 max-w-md mx-auto w-full">
         {currentTab === 'diary' && (
-          <DiaryTab onNavigateToFitness={() => setCurrentTab('fitness')} />
+          <DiaryTab
+            onNavigateToFitness={() => {
+              if (isGuest) {
+                openGuestLock();
+              } else {
+                setCurrentTab('fitness');
+              }
+            }}
+          />
         )}
         {currentTab === 'fitness' && <FitnessTab />}
         {currentTab === 'plan' && <PlanTab />}
@@ -90,10 +152,11 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
           <MeTab
             onOpenDescription={onOpenDescription}
             onOpenPrivacy={onOpenPrivacy}
+            onOpenTerms={onOpenTerms}
           />
         )}
 
-        <LegalFooter onOpenPrivacy={onOpenPrivacy} />
+        <LegalFooter onOpenPrivacy={onOpenPrivacy} onOpenTerms={onOpenTerms} />
       </main>
 
       {/* #58 5-second Undo Toast */}
@@ -107,6 +170,7 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
                 await undoToast.onUndo();
                 dismissUndoToast();
               }}
+              aria-label="Undo delete"
               className="px-3 py-1 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs transition-colors"
             >
               Undo
@@ -114,6 +178,7 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
             <button
               type="button"
               onClick={dismissUndoToast}
+              aria-label="Dismiss undo notice"
               className="text-xs text-zinc-500 hover:text-zinc-300 px-1"
             >
               Dismiss
@@ -122,10 +187,18 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
         </div>
       )}
 
-      {/* Global Modals */}
+      {/* Global Modals & Overlays */}
       <OnboardingModal />
-      <WeeklyRecapModal />
+      <FirstRunTooltips />
+      {!isGuest && <WeeklyRecapModal />}
       <AuthModal />
+      <GuestLockSheet />
+      <GuestExpiredOverlay />
+      <MilestoneConfettiModal />
+      <KeyboardShortcutsModal
+        isOpen={isShortcutsOpen}
+        onClose={() => setIsShortcutsOpen(false)}
+      />
       {isAddFoodOpen && (
         <AddFoodModal
           isOpen={isAddFoodOpen}
@@ -139,10 +212,13 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
 
 export default function App() {
   const [pathname, setPathname] = useState(window.location.pathname);
-  const [activeView, setActiveView] = useState<'landing' | 'app' | 'privacy'>(() => {
+  const [activeView, setActiveView] = useState<'landing' | 'app' | 'privacy' | 'terms'>(() => {
     const params = new URLSearchParams(window.location.search);
     if (window.location.pathname === '/privacy' || params.get('view') === 'privacy') {
       return 'privacy';
+    }
+    if (window.location.pathname === '/terms' || params.get('view') === 'terms') {
+      return 'terms';
     }
     if (params.get('view') === 'app' || window.location.pathname === '/app') {
       return 'app';
@@ -159,6 +235,8 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       if (window.location.pathname === '/privacy' || params.get('view') === 'privacy') {
         setActiveView('privacy');
+      } else if (window.location.pathname === '/terms' || params.get('view') === 'terms') {
+        setActiveView('terms');
       } else if (params.get('view') === 'app' || window.location.pathname === '/app') {
         setActiveView('app');
       } else {
@@ -174,7 +252,7 @@ export default function App() {
     return <AdminSetupPage />;
   }
 
-  const handleOpenApp = (action?: 'guest' | 'login' | 'program', programSlug?: string) => {
+  const handleOpenApp = (action?: 'guest' | 'login' | 'program') => {
     if (action === 'login') {
       setAutoOpenAuth(true);
     } else {
@@ -201,10 +279,30 @@ export default function App() {
     window.history.pushState({}, '', '/privacy');
   };
 
+  const handleOpenTerms = () => {
+    setActiveView('terms');
+    window.history.pushState({}, '', '/terms');
+  };
+
   if (activeView === 'privacy') {
     return (
       <>
-        <PrivacyPolicyPage onBackToLanding={handleOpenDescription} />
+        <PrivacyPolicyPage
+          onBackToLanding={handleOpenDescription}
+          onOpenTerms={handleOpenTerms}
+        />
+        <DesktopScrollbar />
+      </>
+    );
+  }
+
+  if (activeView === 'terms') {
+    return (
+      <>
+        <TermsOfServicePage
+          onBackToLanding={handleOpenDescription}
+          onOpenPrivacy={handleOpenPrivacy}
+        />
         <DesktopScrollbar />
       </>
     );
@@ -216,6 +314,7 @@ export default function App() {
         <DescriptionPage
           onOpenApp={handleOpenApp}
           onOpenPrivacy={handleOpenPrivacy}
+          onOpenTerms={handleOpenTerms}
         />
         <DesktopScrollbar />
       </>
@@ -227,6 +326,7 @@ export default function App() {
       <MainAppContent
         onOpenDescription={handleOpenDescription}
         onOpenPrivacy={handleOpenPrivacy}
+        onOpenTerms={handleOpenTerms}
         initialTab={initialTab}
         autoOpenAuth={autoOpenAuth}
       />

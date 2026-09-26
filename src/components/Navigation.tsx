@@ -7,9 +7,11 @@ import {
   User,
   ChevronLeft,
   ChevronRight,
-  Calendar as CalendarIcon
+  Calendar as CalendarIcon,
+  Clock
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
+import { t } from '../utils/i18n.js';
 
 export type TabType = 'diary' | 'fitness' | 'plan' | 'reports' | 'me';
 
@@ -20,7 +22,26 @@ interface NavigationProps {
 }
 
 export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange, onOpenDescription }) => {
-  const { activeDate, setActiveDate, isGuest, userEmail, openAuthModal } = useApp();
+  const {
+    activeDate,
+    setActiveDate,
+    isGuest,
+    userEmail,
+    openAuthModal,
+    openGuestLock,
+    isOnline,
+    fastingStartedAt,
+    fastingRemainingSec,
+    fastingPreset,
+    language
+  } = useApp();
+
+  const formatFastingCountdown = (sec: number) => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  };
 
   const handlePrevDay = () => {
     const d = new Date(activeDate);
@@ -49,34 +70,47 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
   };
 
   const navItems = [
-    { id: 'diary' as TabType, label: 'Diary', icon: BookOpen },
-    { id: 'fitness' as TabType, label: 'Fitness', icon: Activity },
-    { id: 'plan' as TabType, label: 'Plan', icon: CalendarCheck },
-    { id: 'reports' as TabType, label: 'Reports', icon: BarChart3 },
-    { id: 'me' as TabType, label: 'Me', icon: User }
+    { id: 'diary' as TabType, label: t('diary', language), icon: BookOpen },
+    { id: 'fitness' as TabType, label: t('fitness', language), icon: Activity },
+    { id: 'plan' as TabType, label: t('plan', language), icon: CalendarCheck },
+    { id: 'reports' as TabType, label: t('reports', language), icon: BarChart3 },
+    { id: 'me' as TabType, label: t('me', language), icon: User }
   ];
+
+  const handleTabClick = (tab: TabType) => {
+    if (isGuest && (tab === 'fitness' || tab === 'plan' || tab === 'reports')) {
+      openGuestLock();
+      return;
+    }
+    onTabChange(tab);
+  };
 
   return (
     <>
       {/* Top Header */}
       <header className="sticky top-0 z-40 bg-zinc-950/90 backdrop-blur-md border-b border-zinc-850 px-4 py-3">
-        <div className="max-w-md mx-auto flex items-center justify-between">
+        <div className="max-w-md mx-auto flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <button
               onClick={onOpenDescription}
               title="View Caloriq description and overview"
+              aria-label="View Caloriq description and overview"
               className="font-bold text-base tracking-tight text-zinc-100 flex items-center gap-1.5 hover:text-teal-400 transition-colors cursor-pointer"
             >
               <span className="w-2 h-2 rounded-full bg-teal-400 inline-block"></span>
               <span>Caloriq</span>
             </button>
-            {onOpenDescription && (
-              <button
-                onClick={onOpenDescription}
-                className="hidden sm:inline-flex text-[11px] text-zinc-400 hover:text-teal-300 ml-1.5 px-2 py-0.5 rounded-md hover:bg-zinc-900 border border-zinc-800 transition-colors"
-              >
-                Overview
-              </button>
+            {!isOnline && !isGuest && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-950/60 border border-amber-800/60 text-[10px] font-mono text-amber-300">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                <span>{t('offlineWillSync', language)}</span>
+              </span>
+            )}
+            {fastingStartedAt && fastingRemainingSec > 0 && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-teal-950/60 border border-teal-700/60 text-[10px] font-mono text-teal-300">
+                <Clock className="w-3 h-3 text-teal-400" />
+                <span>{fastingPreset} · {formatFastingCountdown(fastingRemainingSec)}</span>
+              </span>
             )}
           </div>
 
@@ -84,7 +118,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
           <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl px-1.5 py-1">
             <button
               onClick={handlePrevDay}
-              className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition-colors"
+              className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition-colors"
               aria-label="Previous day"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
@@ -95,6 +129,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
               <span>{formatDateDisplay(activeDate)}</span>
               <input
                 type="date"
+                aria-label="Select date"
                 value={activeDate}
                 onChange={(e) => e.target.value && setActiveDate(e.target.value)}
                 className="absolute inset-0 opacity-0 cursor-pointer w-full"
@@ -103,7 +138,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
 
             <button
               onClick={handleNextDay}
-              className="p-1 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition-colors"
+              className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition-colors"
               aria-label="Next day"
             >
               <ChevronRight className="w-3.5 h-3.5" />
@@ -113,7 +148,8 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
           {/* Account status button */}
           <button
             onClick={openAuthModal}
-            className={`text-xs px-2.5 py-1 rounded-lg border transition-colors flex items-center gap-1.5 ${
+            aria-label={isGuest ? 'Sign in or create account' : 'Account details'}
+            className={`text-xs px-2.5 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 ${
               isGuest
                 ? 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
                 : 'bg-teal-950/40 border-teal-800/60 text-teal-300'
@@ -131,17 +167,21 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentTab === item.id;
+            const isLockedForGuest = isGuest && (item.id === 'fitness' || item.id === 'plan' || item.id === 'reports');
             return (
               <button
                 key={item.id}
-                onClick={() => onTabChange(item.id)}
-                className={`flex flex-col items-center gap-1 py-1 px-3 rounded-xl transition-all ${
+                onClick={() => handleTabClick(item.id)}
+                aria-label={item.label}
+                className={`min-h-[44px] min-w-[44px] flex flex-col items-center justify-center gap-1 py-1 px-3 rounded-xl transition-all ${
                   isActive
                     ? 'text-teal-400 font-semibold'
-                    : 'text-zinc-500 hover:text-zinc-300 font-normal'
+                    : isLockedForGuest
+                      ? 'text-zinc-600 hover:text-zinc-400 font-normal'
+                      : 'text-zinc-500 hover:text-zinc-300 font-normal'
                 }`}
               >
-                <Icon className={`w-5 h-5 transition-transform ${isActive ? 'scale-110 text-teal-400' : 'text-zinc-500'}`} />
+                <Icon className={`w-5 h-5 transition-transform ${isActive ? 'scale-110 text-teal-400' : isLockedForGuest ? 'text-zinc-600' : 'text-zinc-500'}`} />
                 <span className="text-[10px] tracking-tight">{item.label}</span>
               </button>
             );
