@@ -7,8 +7,7 @@ import {
   User,
   ChevronLeft,
   ChevronRight,
-  Calendar as CalendarIcon,
-  Wifi
+  Calendar as CalendarIcon
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 
@@ -21,7 +20,7 @@ interface NavigationProps {
 }
 
 export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange, onOpenDescription }) => {
-  const { activeDate, setActiveDate, isGuest, userEmail, openAuthModal, isSyncing } = useApp();
+  const { activeDate, setActiveDate, isGuest, userEmail, openAuthModal } = useApp();
 
   const handlePrevDay = () => {
     const d = new Date(activeDate);
@@ -71,10 +70,6 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
               <span className="w-2 h-2 rounded-full bg-teal-400 inline-block"></span>
               <span>Caloriq</span>
             </button>
-            <div className="flex items-center gap-1 text-[11px] text-zinc-500 pl-2 border-l border-zinc-850">
-              <Wifi className={`w-3 h-3 ${isSyncing ? 'text-teal-400 animate-pulse' : 'text-zinc-650'}`} />
-              <span>{isSyncing ? 'Syncing' : 'Live'}</span>
-            </div>
             {onOpenDescription && (
               <button
                 onClick={onOpenDescription}

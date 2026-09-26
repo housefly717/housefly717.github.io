@@ -14,6 +14,7 @@ import { WeeklyRecapModal } from './components/WeeklyRecapModal.js';
 import { LegalFooter } from './components/LegalFooter.js';
 import { AdminSetupPage } from './components/AdminSetupPage.js';
 import { DescriptionPage } from './components/DescriptionPage.js';
+import { DesktopScrollbar } from './components/DesktopScrollbar.js';
 
 interface MainAppContentProps {
   onOpenDescription: () => void;
@@ -184,7 +185,12 @@ export default function App() {
   };
 
   if (activeView === 'landing') {
-    return <DescriptionPage onOpenApp={handleOpenApp} />;
+    return (
+      <>
+        <DescriptionPage onOpenApp={handleOpenApp} />
+        <DesktopScrollbar />
+      </>
+    );
   }
 
   return (
@@ -194,6 +200,7 @@ export default function App() {
         initialTab={initialTab}
         autoOpenAuth={autoOpenAuth}
       />
+      <DesktopScrollbar />
     </AppProvider>
   );
 }

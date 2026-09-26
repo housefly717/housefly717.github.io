@@ -20,25 +20,8 @@ import {
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { triggerHaptic } from '../utils/haptics.js';
+import { decipherExerciseText } from '../utils/localAiEngine.js';
 import type { BodyMeasurement, ProgressPhoto } from '../types/index.js';
-
-interface ActivityOption {
-  name: string;
-  met: number;
-  intensity: 'Low' | 'Moderate' | 'High';
-}
-
-const ACTIVITIES: ActivityOption[] = [
-  { name: 'Slow jog', met: 7.0, intensity: 'Moderate' },
-  { name: 'Running 10 km/h', met: 9.8, intensity: 'High' },
-  { name: 'Running 12 km/h', met: 11.5, intensity: 'High' },
-  { name: 'Walking', met: 3.5, intensity: 'Low' },
-  { name: 'Cycling', met: 7.5, intensity: 'Moderate' },
-  { name: 'Swimming', met: 8.0, intensity: 'High' },
-  { name: 'HIIT', met: 8.5, intensity: 'High' },
-  { name: 'Yoga', met: 3.0, intensity: 'Low' },
-  { name: 'Weights', met: 5.0, intensity: 'Moderate' }
-];
 
 export const FitnessTab: React.FC = () => {
   const {
@@ -54,9 +37,8 @@ export const FitnessTab: React.FC = () => {
     triggerUndoableDelete
   } = useApp();
 
-  // Activity Log Form
-  const [selectedActivity, setSelectedActivity] = useState<string>(ACTIVITIES[0].name);
-  const [minutes, setMinutes] = useState<string>('30');
+  // Natural Language In-Code AI Exercise Logger
+  const [workoutDescription, setWorkoutDescription] = useState<string>('');
   const [liftWeightKg, setLiftWeightKg] = useState<string>('');
   const [liftReps, setLiftReps] = useState<string>('');
   const [distanceKm, setDistanceKm] = useState<string>('');
@@ -229,30 +211,31 @@ export const FitnessTab: React.FC = () => {
       .slice(-10);
   }, [allExercises]);
 
-  const currentActivity = ACTIVITIES.find(a => a.name === selectedActivity) || ACTIVITIES[0];
   const userWeightKg = profile.currentWeightKg || 70;
-  const estimatedBurn = Math.round(currentActivity.met * userWeightKg * (Number(minutes || 0) / 60));
+  const decipheredWorkout = useMemo(
+    () => decipherExerciseText(workoutDescription, userWeightKg),
+    [workoutDescription, userWeightKg]
+  );
 
   const handleLogExercise = async (e: React.FormEvent) => {
     e.preventDefault();
-    const duration = Number(minutes);
-    if (!duration || duration <= 0) return;
+    if (!workoutDescription.trim() || decipheredWorkout.totalCaloriesBurned <= 0) return;
 
     setIsSubmitting(true);
     try {
       await addExerciseItem({
         date: activeDate,
-        activityName: currentActivity.name,
-        met: currentActivity.met,
-        minutes: duration,
-        caloriesBurned: estimatedBurn,
-        intensity: currentActivity.intensity,
+        activityName: decipheredWorkout.summaryTitle,
+        met: decipheredWorkout.averageMet,
+        minutes: Math.max(1, Math.round(decipheredWorkout.totalMinutes)),
+        caloriesBurned: decipheredWorkout.totalCaloriesBurned,
+        intensity: decipheredWorkout.overallIntensity,
         weightKg: liftWeightKg ? Number(liftWeightKg) : undefined,
         reps: liftReps ? Number(liftReps) : undefined,
         distanceKm: distanceKm ? Number(distanceKm) : undefined,
         plankSeconds: plankSeconds ? Number(plankSeconds) : undefined
       });
-      setMinutes('30');
+      setWorkoutDescription('');
       setLiftWeightKg('');
       setLiftReps('');
       setDistanceKm('');
@@ -507,60 +490,86 @@ export const FitnessTab: React.FC = () => {
         </div>
       </div>
 
-      {/* Log Activity Form */}
+      {/* Log Exercise Box (In-Code AI Natural Language Decipherer) */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
-        <div className="flex items-center gap-2">
-          <Activity className="w-4 h-4 text-teal-400" />
-          <h3 className="text-sm font-semibold text-zinc-200">Log Physical Activity</h3>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Activity className="w-4 h-4 text-teal-400" />
+            <h3 className="text-sm font-semibold text-zinc-200">Log Exercise</h3>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setWorkoutDescription(
+                '2 min warm-up slow jog, 10 min steady-pace run, followed by 24 min brisk walking intervals'
+              )
+            }
+            className="text-[11px] text-teal-400 hover:text-teal-300 underline cursor-pointer"
+          >
+            Try example
+          </button>
         </div>
 
         <form onSubmit={handleLogExercise} className="space-y-3.5">
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-              Activity (MET Indexed)
+              Describe your workout in your own words
             </label>
-            <select
-              value={selectedActivity}
-              onChange={(e) => setSelectedActivity(e.target.value)}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-teal-500"
-            >
-              {ACTIVITIES.map((act) => (
-                <option key={act.name} value={act.name}>
-                  {act.name} (MET: {act.met} · {act.intensity})
-                </option>
-              ))}
-            </select>
+            <textarea
+              rows={3}
+              value={workoutDescription}
+              onChange={(e) => setWorkoutDescription(e.target.value)}
+              placeholder="e.g., 2 min warm-up slow jog, 10 min steady-pace run, followed by 24 min brisk walking intervals"
+              required
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 resize-none leading-relaxed"
+            />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                Duration (minutes)
-              </label>
-              <div className="relative">
-                <Clock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
-                <input
-                  type="number"
-                  min="1"
-                  max="720"
-                  value={minutes}
-                  onChange={(e) => setMinutes(e.target.value)}
-                  placeholder="30"
-                  required
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 focus:outline-none focus:border-teal-500 font-mono"
-                />
+          {/* Calculated Calories Burned Box Below */}
+          <div className="bg-zinc-950 border border-teal-500/30 rounded-xl p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 block">
+                  Calculated Calories Burned
+                </span>
+                <span className="text-xs text-zinc-300 font-medium">
+                  {workoutDescription.trim()
+                    ? decipheredWorkout.summaryTitle
+                    : 'Type your activity above to decipher'}
+                </span>
+              </div>
+              <div className="text-right">
+                <span className="text-2xl font-extrabold text-teal-400 font-mono">
+                  {decipheredWorkout.totalCaloriesBurned}
+                </span>
+                <span className="text-xs text-zinc-400 font-mono ml-1">kcal</span>
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                Calculated Burn
-              </label>
-              <div className="bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-teal-400 font-bold font-mono flex items-center justify-between">
-                <span>{estimatedBurn}</span>
-                <span className="text-xs text-zinc-500 font-normal">kcal</span>
+            {decipheredWorkout.segments.length > 0 && (
+              <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
+                {decipheredWorkout.segments.map((seg, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between text-[11px] bg-zinc-900/70 px-2.5 py-1.5 rounded-lg border border-zinc-800/70"
+                  >
+                    <div className="truncate pr-2">
+                      <span className="text-zinc-200 font-medium">{seg.activityName}</span>
+                      <span className="text-zinc-500 font-mono ml-1.5">
+                        ({seg.minutes} min · MET {seg.met} · {seg.intensity})
+                      </span>
+                    </div>
+                    <span className="font-mono font-semibold text-teal-400 shrink-0">
+                      +{seg.caloriesBurned} kcal
+                    </span>
+                  </div>
+                ))}
+                <div className="text-[10px] text-zinc-500 flex items-center gap-1 pt-0.5">
+                  <Info className="w-3 h-3 text-teal-400 shrink-0" />
+                  <span>{decipheredWorkout.explanation}</span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Optional PR & Progressive Overload inputs */}
@@ -609,20 +618,13 @@ export const FitnessTab: React.FC = () => {
             </div>
           </div>
 
-          <div className="text-[11px] text-zinc-400 flex items-center gap-1.5 bg-zinc-950/60 p-2.5 rounded-xl border border-zinc-800/60">
-            <Info className="w-3.5 h-3.5 text-teal-400 shrink-0" />
-            <span>
-              Calculated using {userWeightKg} kg body mass × {currentActivity.met} MET.
-            </span>
-          </div>
-
           <button
             type="submit"
-            disabled={isSubmitting || !minutes || Number(minutes) <= 0}
+            disabled={isSubmitting || !workoutDescription.trim() || decipheredWorkout.totalCaloriesBurned <= 0}
             className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
           >
             <Plus className="w-4 h-4" />
-            Log Activity
+            Save Exercise
           </button>
         </form>
       </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   X,
   Plus,
@@ -19,6 +19,7 @@ import {
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { BarcodeScannerModal } from './BarcodeScannerModal.js';
+import { decipherFoodText } from '../utils/localAiEngine.js';
 import type { MealType, SavedFood } from '../types/index.js';
 
 interface AddFoodModalProps {
@@ -27,7 +28,7 @@ interface AddFoodModalProps {
   defaultMeal: MealType;
 }
 
-type ModeTab = 'manual' | 'recipe' | 'packaged' | 'ai';
+type ModeTab = 'smart' | 'manual' | 'recipe' | 'packaged' | 'ai';
 
 interface IngredientRow {
   id: string;
@@ -48,7 +49,35 @@ interface IngredientRow {
 export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, defaultMeal }) => {
   const { activeDate, addFoodItem } = useApp();
   const [mealType, setMealType] = useState<MealType>(defaultMeal);
-  const [activeTab, setActiveTab] = useState<ModeTab>('manual');
+  const [activeTab, setActiveTab] = useState<ModeTab>('smart');
+
+  // Smart Food Decipherer State (In-Code AI)
+  const [smartFoodText, setSmartFoodText] = useState('');
+  const decipheredFood = useMemo(() => decipherFoodText(smartFoodText), [smartFoodText]);
+
+  const handleSaveSmartFood = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!smartFoodText.trim() || decipheredFood.items.length === 0) return;
+
+    await addFoodItem({
+      date: activeDate,
+      mealType,
+      name: decipheredFood.mealSummaryName,
+      calories: decipheredFood.totalCalories,
+      carbs: decipheredFood.totalCarbs,
+      fat: decipheredFood.totalFat,
+      protein: decipheredFood.totalProtein,
+      fiber: decipheredFood.totalFiber,
+      sugar: decipheredFood.totalSugar,
+      sodium: decipheredFood.totalSodiumMg,
+      serving: `${decipheredFood.items.reduce((s, i) => s + i.grams, 0)}g total`,
+      note: `Health Rating: ${decipheredFood.healthRating}/10`,
+      source: 'manual'
+    });
+
+    setSmartFoodText('');
+    onClose();
+  };
 
   // Manual Form State
   const [manualName, setManualName] = useState('');
@@ -468,6 +497,17 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
         {/* Mode Tabs */}
         <div className="px-4 pt-3 pb-2 flex items-center gap-1 border-b border-zinc-850">
           <button
+            onClick={() => setActiveTab('smart')}
+            className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-1 ${
+              activeTab === 'smart'
+                ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Sparkles className="w-3 h-3" />
+            Smart AI
+          </button>
+          <button
             onClick={() => setActiveTab('manual')}
             className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors ${
               activeTab === 'manual'
@@ -485,7 +525,6 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
           >
-            <Sparkles className="w-3 h-3" />
             Recipe
           </button>
           <button
@@ -498,17 +537,6 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
           >
             <ShoppingBag className="w-3 h-3" />
             Packaged
-          </button>
-          <button
-            onClick={() => setActiveTab('ai')}
-            className={`flex-1 py-1.5 text-xs font-medium rounded-lg transition-colors flex items-center justify-center gap-1 ${
-              activeTab === 'ai'
-                ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            <Camera className="w-3 h-3" />
-            AI &amp; Photo
           </button>
         </div>
 
@@ -561,6 +589,163 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                 )}
               </div>
             </div>
+          )}
+
+          {/* TAB 0: SMART FOOD DECIPHERER (IN-CODE AI) */}
+          {activeTab === 'smart' && (
+            <form onSubmit={handleSaveSmartFood} className="space-y-3.5">
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-medium text-zinc-300">
+                    Type what you ate in your own words
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setSmartFoodText('80g mangos, 10g yougurt, a pinch of salt')}
+                    className="text-[11px] text-teal-400 hover:text-teal-300 underline cursor-pointer"
+                  >
+                    Try example
+                  </button>
+                </div>
+                <textarea
+                  rows={3}
+                  value={smartFoodText}
+                  onChange={(e) => setSmartFoodText(e.target.value)}
+                  placeholder="e.g., 80g mangos, 10g yogurt, a pinch of salt"
+                  required
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 resize-none leading-relaxed"
+                />
+              </div>
+
+              {/* Deciphered Calories & Macros Box Below */}
+              <div className="bg-zinc-950 border border-teal-500/30 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider font-semibold text-zinc-400 block">
+                      Calculated Calories &amp; Macros
+                    </span>
+                    <span className="text-xs font-bold text-zinc-100">
+                      {smartFoodText.trim() ? decipheredFood.mealSummaryName : 'Type ingredients above to decipher'}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-2xl font-extrabold text-teal-400 font-mono">
+                      {decipheredFood.totalCalories}
+                    </span>
+                    <span className="text-xs text-zinc-400 font-mono ml-1">kcal</span>
+                  </div>
+                </div>
+
+                {/* Macros Grid */}
+                <div className="grid grid-cols-3 gap-2 text-center">
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2">
+                    <span className="text-[10px] font-semibold text-blue-400 block">Carbs</span>
+                    <span className="text-sm font-bold text-zinc-100 font-mono">{decipheredFood.totalCarbs}g</span>
+                  </div>
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2">
+                    <span className="text-[10px] font-semibold text-amber-400 block">Fat</span>
+                    <span className="text-sm font-bold text-zinc-100 font-mono">{decipheredFood.totalFat}g</span>
+                  </div>
+                  <div className="bg-zinc-900/90 border border-zinc-800 rounded-lg p-2">
+                    <span className="text-[10px] font-semibold text-red-400 block">Protein</span>
+                    <span className="text-sm font-bold text-zinc-100 font-mono">{decipheredFood.totalProtein}g</span>
+                  </div>
+                </div>
+
+                {/* Itemized Ingredient Breakdown */}
+                {decipheredFood.items.length > 0 && (
+                  <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
+                    {decipheredFood.items.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between text-[11px] bg-zinc-900/60 px-2.5 py-1.5 rounded-lg border border-zinc-800/60"
+                      >
+                        <div>
+                          <span className="text-zinc-200 font-medium">{item.name}</span>
+                          <span className="text-zinc-500 font-mono ml-1.5">({item.servingLabel})</span>
+                        </div>
+                        <div className="flex items-center gap-2 font-mono text-[10px]">
+                          <span className="text-teal-400 font-bold">{item.calories} kcal</span>
+                          <span className="text-blue-400">{item.carbs}c</span>
+                          <span className="text-amber-400">{item.fat}f</span>
+                          <span className="text-red-400">{item.protein}p</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Health Rating (1 to 10) + What to Add + What to Take Out */}
+                {decipheredFood.items.length > 0 && (
+                  <div className="pt-2.5 border-t border-zinc-800 space-y-2.5">
+                    <div className="bg-zinc-900/90 border border-zinc-800 rounded-xl p-2.5 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-zinc-200">
+                          Health Rating (1–10)
+                        </span>
+                        <span
+                          className={`text-sm font-extrabold font-mono px-2 py-0.5 rounded-md ${
+                            decipheredFood.healthRating >= 7.5
+                              ? 'bg-teal-500/20 text-teal-300 border border-teal-500/40'
+                              : decipheredFood.healthRating >= 5.5
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                              : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                          }`}
+                        >
+                          {decipheredFood.healthRating} / 10
+                        </span>
+                      </div>
+                      <div className="w-full h-2 bg-zinc-950 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${
+                            decipheredFood.healthRating >= 7.5
+                              ? 'bg-teal-400'
+                              : decipheredFood.healthRating >= 5.5
+                              ? 'bg-amber-400'
+                              : 'bg-rose-400'
+                          }`}
+                          style={{ width: `${Math.min(100, decipheredFood.healthRating * 10)}%` }}
+                        />
+                      </div>
+                      <span className="text-[11px] text-zinc-400 block">{decipheredFood.healthLabel}</span>
+                    </div>
+
+                    {/* What to Add */}
+                    <div className="bg-teal-950/25 border border-teal-800/40 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[11px] font-bold text-teal-300 uppercase tracking-wider block">
+                        + What to Add
+                      </span>
+                      <ul className="space-y-1 text-[11px] text-zinc-200 leading-relaxed">
+                        {decipheredFood.whatToAdd.map((tip, i) => (
+                          <li key={i}>• {tip}</li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* What to Take Out */}
+                    <div className="bg-amber-950/25 border border-amber-800/40 rounded-xl p-2.5 space-y-1">
+                      <span className="text-[11px] font-bold text-amber-300 uppercase tracking-wider block">
+                        − What to Take Out / Reduce
+                      </span>
+                      <ul className="space-y-1 text-[11px] text-zinc-200 leading-relaxed">
+                        {decipheredFood.whatToTakeOut.map((tip, i) => (
+                          <li key={i}>• {tip}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={!smartFoodText.trim() || decipheredFood.items.length === 0}
+                className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+              >
+                <Check className="w-4 h-4" />
+                Save Food
+              </button>
+            </form>
           )}
 
           {/* TAB 1: MANUAL */}

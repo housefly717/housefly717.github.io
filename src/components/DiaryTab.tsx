@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
+import { decipherExerciseText } from '../utils/localAiEngine.js';
 import type { MealType, FoodItem } from '../types/index.js';
 
 const JOURNAL_PROMPTS = [
@@ -51,6 +52,8 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     waterGlasses,
     updateWaterGlasses,
     exercises,
+    addExerciseItem,
+    profile,
     macroTarget,
     todayHabit,
     saveTodayHabit,
@@ -93,6 +96,38 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
   const [cravingFood, setCravingFood] = useState('');
   const [cravingIntensity, setCravingIntensity] = useState(3);
   const [cravingTrigger, setCravingTrigger] = useState('');
+
+  // Inline Log Exercise box state
+  const [showExerciseBox, setShowExerciseBox] = useState(false);
+  const [exerciseInput, setExerciseInput] = useState('');
+  const [isSavingExercise, setIsSavingExercise] = useState(false);
+
+  const decipheredExercise = useMemo(
+    () => decipherExerciseText(exerciseInput, profile?.currentWeightKg || 70),
+    [exerciseInput, profile?.currentWeightKg]
+  );
+
+  const handleSaveInlineExercise = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!exerciseInput.trim() || decipheredExercise.totalCaloriesBurned <= 0) return;
+    setIsSavingExercise(true);
+    try {
+      await addExerciseItem({
+        date: activeDate,
+        activityName: decipheredExercise.summaryTitle,
+        met: decipheredExercise.averageMet,
+        minutes: Math.max(1, Math.round(decipheredExercise.totalMinutes)),
+        caloriesBurned: decipheredExercise.totalCaloriesBurned,
+        intensity: decipheredExercise.overallIntensity
+      });
+      setExerciseInput('');
+      setShowExerciseBox(false);
+      setCopyStatus(`Saved exercise (+${decipheredExercise.totalCaloriesBurned} kcal burned)`);
+      setTimeout(() => setCopyStatus(null), 3000);
+    } finally {
+      setIsSavingExercise(false);
+    }
+  };
 
   const dailyPrompt = useMemo(() => {
     const daySeed = Number(activeDate.replace(/-/g, '')) || 0;
@@ -563,28 +598,115 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
       </div>
 
       {/* EXERCISE CARD */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400">
-            <Flame className="w-5 h-5" />
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400">
+              <Flame className="w-5 h-5" />
+            </div>
+            <div>
+              <span className="text-xs font-semibold text-zinc-200 block">Today&apos;s Exercise</span>
+              <span className="text-[11px] text-zinc-400">
+                {exercises.length === 0
+                  ? 'No activities logged'
+                  : `${exercises.length} logged · +${totalBurned} kcal burned`}
+              </span>
+            </div>
           </div>
-          <div>
-            <span className="text-xs font-semibold text-zinc-200 block">Today&apos;s Exercise</span>
-            <span className="text-[11px] text-zinc-400">
-              {exercises.length === 0
-                ? 'No activities logged'
-                : `${exercises.length} logged · +${totalBurned} kcal burned`}
-            </span>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setShowExerciseBox(!showExerciseBox)}
+              className="px-3 py-2 bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/30 rounded-xl flex items-center gap-1 text-xs font-semibold transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Log Exercise
+            </button>
           </div>
         </div>
 
-        <button
-          onClick={onNavigateToFitness}
-          className="p-2 bg-teal-500/15 hover:bg-teal-500/25 text-teal-300 border border-teal-500/30 rounded-xl flex items-center gap-1 text-xs font-semibold transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Log
-        </button>
+        {showExerciseBox && (
+          <form onSubmit={handleSaveInlineExercise} className="pt-3 border-t border-zinc-800/80 space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-zinc-300">
+                Describe what you did in your own words
+              </label>
+              <button
+                type="button"
+                onClick={() =>
+                  setExerciseInput(
+                    '2 min warm-up slow jog, 10 min steady-pace run, followed by 24 min brisk walking intervals'
+                  )
+                }
+                className="text-[11px] text-teal-400 hover:text-teal-300 underline cursor-pointer"
+              >
+                Try example
+              </button>
+            </div>
+
+            <textarea
+              rows={2}
+              value={exerciseInput}
+              onChange={(e) => setExerciseInput(e.target.value)}
+              placeholder="e.g., 2 min warm-up slow jog, 10 min steady-pace run, followed by 24 min brisk walking intervals"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 resize-none leading-relaxed"
+            />
+
+            {/* Calories Burned Box Below */}
+            <div className="bg-zinc-950 border border-teal-500/30 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-[10px] uppercase tracking-wider font-semibold text-zinc-400 block">
+                    Calories Burned
+                  </span>
+                  <span className="text-xs text-zinc-200 font-medium">
+                    {exerciseInput.trim()
+                      ? decipheredExercise.summaryTitle
+                      : 'Type your workout above to calculate'}
+                  </span>
+                </div>
+                <div className="text-right">
+                  <span className="text-xl font-extrabold text-teal-400 font-mono">
+                    {decipheredExercise.totalCaloriesBurned}
+                  </span>
+                  <span className="text-xs text-zinc-400 font-mono ml-1">kcal</span>
+                </div>
+              </div>
+
+              {decipheredExercise.segments.length > 0 && (
+                <div className="pt-2 border-t border-zinc-800/80 space-y-1">
+                  {decipheredExercise.segments.map((seg, i) => (
+                    <div key={i} className="flex items-center justify-between text-[11px] text-zinc-300">
+                      <span>
+                        {seg.activityName} <span className="text-zinc-500 font-mono">({seg.minutes} min)</span>
+                      </span>
+                      <span className="font-mono text-teal-400 font-semibold">+{seg.caloriesBurned} kcal</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="submit"
+                disabled={isSavingExercise || !exerciseInput.trim() || decipheredExercise.totalCaloriesBurned <= 0}
+                className="flex-1 py-2.5 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
+              >
+                <Check className="w-4 h-4" />
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={onNavigateToFitness}
+                className="px-3 py-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs font-medium transition-colors"
+              >
+                Full Fitness Tab
+              </button>
+            </div>
+          </form>
+        )}
       </div>
 
       {/* COPY YESTERDAY & #3 VOICE LOG BAR */}
