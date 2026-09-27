@@ -5,6 +5,10 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    base: '/housefly717.github.io/',
+    build: {
+      outDir: 'dist',
+    },
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
