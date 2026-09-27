@@ -227,6 +227,7 @@ export default function App() {
     }
     if (
       params.get('view') === 'app' ||
+      params.get('resetToken') ||
       window.location.pathname === '/app' ||
       window.location.pathname === '/dashboard'
     ) {
@@ -236,7 +237,10 @@ export default function App() {
   });
 
   const [initialTab, setInitialTab] = useState<TabType>('diary');
-  const [autoOpenAuth, setAutoOpenAuth] = useState(false);
+  const [autoOpenAuth, setAutoOpenAuth] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return Boolean(params.get('resetToken'));
+  });
 
   useEffect(() => {
     const handlePopState = () => {

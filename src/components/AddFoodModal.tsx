@@ -14,7 +14,8 @@ import {
   Mic,
   Camera,
   Utensils,
-  Ruler
+  Ruler,
+  AlertTriangle
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
@@ -50,6 +51,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   const {
     activeDate,
     addFoodItem,
+    macroTarget,
     isGuest,
     openGuestLock,
     guestAiUsed,
@@ -62,20 +64,46 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   // Smart Food Decipherer State (In-Code AI)
   const [smartFoodText, setSmartFoodText] = useState('');
   const [gramOverrides, setGramOverrides] = useState<Record<number, number>>({});
+  const [confirmedOver5kgIndices, setConfirmedOver5kgIndices] = useState<Record<number, number>>({});
+  const [confirmedOver5000Kcal, setConfirmedOver5000Kcal] = useState<boolean>(false);
 
   useEffect(() => {
     setGramOverrides({});
+    setConfirmedOver5kgIndices({});
+    setConfirmedOver5000Kcal(false);
   }, [smartFoodText]);
 
-  const baseDecipheredFood = useMemo(() => decipherFoodText(smartFoodText), [smartFoodText]);
-  const decipheredFood = useMemo(
-    () => recalculateDecipheredFoodWithGrams(baseDecipheredFood, gramOverrides),
-    [baseDecipheredFood, gramOverrides]
+  const baseDecipheredFood = useMemo(
+    () => decipherFoodText(smartFoodText, macroTarget.calories),
+    [smartFoodText, macroTarget.calories]
   );
+  const decipheredFood = useMemo(
+    () => recalculateDecipheredFoodWithGrams(baseDecipheredFood, gramOverrides, macroTarget.calories),
+    [baseDecipheredFood, gramOverrides, macroTarget.calories]
+  );
+
+  const hasUnconfirmedOver5kg = decipheredFood.items.some(
+    (item, idx) => item.grams > 5000 && confirmedOver5kgIndices[idx] !== item.grams
+  );
+  const hasConfirmedAnyOver5kg = decipheredFood.items.some(
+    (item, idx) => item.grams > 5000 && confirmedOver5kgIndices[idx] === item.grams
+  );
+  const hasUnconfirmedOver5000Kcal =
+    decipheredFood.isOver5000Kcal && !confirmedOver5000Kcal && !hasConfirmedAnyOver5kg;
+  const needsSanityConfirmation = hasUnconfirmedOver5kg || hasUnconfirmedOver5000Kcal;
+  const isUnusualQuantityConfirmed =
+    hasConfirmedAnyOver5kg || (decipheredFood.isOver5000Kcal && confirmedOver5000Kcal);
 
   const handleSaveSmartFood = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!smartFoodText.trim() || decipheredFood.items.length === 0 || decipheredFood.needsWeightConfirmation) return;
+    if (
+      !smartFoodText.trim() ||
+      decipheredFood.items.length === 0 ||
+      decipheredFood.needsWeightConfirmation ||
+      needsSanityConfirmation
+    ) {
+      return;
+    }
 
     if (isGuest) {
       const allowed = consumeGuestAiCall();
@@ -96,12 +124,17 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       sugar: decipheredFood.totalSugar,
       sodium: decipheredFood.totalSodiumMg,
       serving: `${Math.round(decipheredFood.items.reduce((s, i) => s + i.grams, 0) * 10) / 10}g total`,
-      note: `Health Rating: ${decipheredFood.healthRating}/10`,
+      note: isUnusualQuantityConfirmed
+        ? `Unusual quantity · Health Rating: ${decipheredFood.healthRating}/10`
+        : `Health Rating: ${decipheredFood.healthRating}/10`,
+      unusualQuantity: isUnusualQuantityConfirmed,
       source: 'manual'
     });
 
     setSmartFoodText('');
     setGramOverrides({});
+    setConfirmedOver5kgIndices({});
+    setConfirmedOver5000Kcal(false);
     onClose();
   };
 
@@ -744,6 +777,107 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                       </div>
                     )}
 
+                    {/* Per-item >5kg sanity check warnings */}
+                    {decipheredFood.items.map((item, idx) => {
+                      if (!item.isOver5kg || !item.over5kgWarning) return null;
+                      const isConfirmed = confirmedOver5kgIndices[idx] === item.grams;
+                      if (isConfirmed) {
+                        return (
+                          <div
+                            key={`flag-${idx}`}
+                            className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-500/40 flex items-center justify-between gap-2 text-xs"
+                          >
+                            <div className="flex items-center gap-1.5 text-rose-300 font-semibold">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                              <span>Unusual quantity</span>
+                              <span className="text-zinc-400 font-normal">
+                                ({item.kgAmount}kg of {item.name.toLowerCase()})
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setGramOverrides((prev) => ({
+                                  ...prev,
+                                  [idx]: item.suggestedGrams || 75
+                                }));
+                              }}
+                              className="text-[11px] text-teal-400 hover:text-teal-300 underline shrink-0"
+                            >
+                              Change to {item.suggestedGrams}g
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={`warn-${idx}`}
+                          className="p-3 rounded-xl bg-rose-950/50 border border-rose-500/50 space-y-2.5"
+                        >
+                          <div className="flex items-start gap-2 text-xs text-rose-200 font-medium">
+                            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                            <span>{item.over5kgWarning}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setConfirmedOver5kgIndices((prev) => ({
+                                  ...prev,
+                                  [idx]: item.grams
+                                }));
+                                setConfirmedOver5000Kcal(true);
+                              }}
+                              className="flex-1 py-1.5 px-3 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-xs font-semibold transition-colors"
+                            >
+                              Yes, {item.kgAmount}kg
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setGramOverrides((prev) => ({
+                                  ...prev,
+                                  [idx]: item.suggestedGrams || 75
+                                }));
+                              }}
+                              className="flex-1 py-1.5 px-3 rounded-lg bg-teal-500 hover:bg-teal-400 text-zinc-950 text-xs font-semibold transition-colors"
+                            >
+                              Change to {item.suggestedGrams}g
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {/* Total meal >5,000 kcal warning */}
+                    {decipheredFood.isOver5000Kcal && (
+                      <div className="p-3 rounded-xl bg-rose-950/50 border border-rose-500/50 space-y-2">
+                        <div className="flex items-start justify-between gap-2 text-xs text-rose-200 font-medium">
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                            <span>This meal is over 5,000 kcal. Is that right?</span>
+                          </div>
+                          {isUnusualQuantityConfirmed && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[10px] font-mono font-semibold text-rose-300 shrink-0">
+                              Unusual quantity
+                            </span>
+                          )}
+                        </div>
+                        {!decipheredFood.hasItemOver5kg && !confirmedOver5000Kcal && (
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setConfirmedOver5000Kcal(true)}
+                              className="flex-1 py-1.5 px-3 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-xs font-semibold transition-colors"
+                            >
+                              Yes, {decipheredFood.totalCalories} kcal
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     <div className="space-y-1.5">
                       {decipheredFood.items.map((item, idx) => {
                         const currentGrams = Object.prototype.hasOwnProperty.call(gramOverrides, idx)
@@ -829,17 +963,19 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                       <span className="text-[11px] text-zinc-400 block">{decipheredFood.healthLabel}</span>
                     </div>
 
-                    {/* What to Add */}
-                    <div className="bg-teal-950/25 border border-teal-800/40 rounded-xl p-2.5 space-y-1">
-                      <span className="text-[11px] font-bold text-teal-300 uppercase tracking-wider block">
-                        + What to Add
-                      </span>
-                      <ul className="space-y-1 text-[11px] text-zinc-200 leading-relaxed">
-                        {decipheredFood.whatToAdd.map((tip, i) => (
-                          <li key={i}>• {tip}</li>
-                        ))}
-                      </ul>
-                    </div>
+                    {/* What to Add (hidden when meal is far above normal size so quantity advice is shown first) */}
+                    {decipheredFood.whatToAdd.length > 0 && (
+                      <div className="bg-teal-950/25 border border-teal-800/40 rounded-xl p-2.5 space-y-1">
+                        <span className="text-[11px] font-bold text-teal-300 uppercase tracking-wider block">
+                          + What to Add
+                        </span>
+                        <ul className="space-y-1 text-[11px] text-zinc-200 leading-relaxed">
+                          {decipheredFood.whatToAdd.map((tip, i) => (
+                            <li key={i}>• {tip}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
 
                     {/* What to Take Out */}
                     <div className="bg-amber-950/25 border border-amber-800/40 rounded-xl p-2.5 space-y-1">
@@ -858,11 +994,20 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
 
               <button
                 type="submit"
-                disabled={!smartFoodText.trim() || decipheredFood.items.length === 0 || decipheredFood.needsWeightConfirmation}
+                disabled={
+                  !smartFoodText.trim() ||
+                  decipheredFood.items.length === 0 ||
+                  decipheredFood.needsWeightConfirmation ||
+                  needsSanityConfirmation
+                }
                 className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
               >
                 <Check className="w-4 h-4" />
-                {decipheredFood.needsWeightConfirmation ? 'Confirm Item Weights Above to Save' : 'Save Food'}
+                {decipheredFood.needsWeightConfirmation
+                  ? 'Confirm Item Weights Above to Save'
+                  : needsSanityConfirmation
+                  ? 'Confirm Unusual Quantity Above to Save'
+                  : 'Save Food'}
               </button>
             </form>
           )}

@@ -4,7 +4,9 @@ import path from 'path';
 import {
   createGuestUser,
   findUserById,
+  findUserByEmail,
   signupUser,
+  resetUserPassword,
   loginUser,
   registerSseClient,
   getProfile,
@@ -67,6 +69,13 @@ import {
   exportUserData,
   clearUserData
 } from './src/server/db.js';
+import {
+  createAndSendVerificationCode,
+  validateVerificationCode,
+  sendWelcomeEmail,
+  createAndSendPasswordResetEmail,
+  validateAndConsumePasswordResetToken
+} from './src/server/emailService.js';
 import { parseIngredientLine } from './src/server/foodData.js';
 import { searchUsdaFoods } from './src/server/usda.js';
 import { generateWeekPlanWithGemini } from './src/server/aiPlanner.js';
@@ -125,10 +134,10 @@ app.post('/api/auth/guest', (req, res) => {
   }
 });
 
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/send-verification-code', async (req, res) => {
   try {
-    const { email, password, guestId } = req.body;
-    const cleanEmail = typeof email === 'string' ? email.trim() : '';
+    const { email, password } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
@@ -138,7 +147,52 @@ app.post('/api/auth/signup', (req, res) => {
       return;
     }
 
+    const existingUser = findUserByEmail(cleanEmail);
+    if (existingUser && existingUser.passwordHash) {
+      res.status(400).json({ error: 'An account with this email already exists. Please sign in.' });
+      return;
+    }
+
+    const result = await createAndSendVerificationCode(cleanEmail);
+    res.json({
+      sent: result.sent,
+      resendCooldownSeconds: result.resendCooldownSeconds
+    });
+  } catch (err: any) {
+    const status = err.status || 400;
+    res.status(status).json({
+      error: err.message || "Couldn't send the email. Try again in a minute.",
+      retryAfterSeconds: err.retryAfterSeconds
+    });
+  }
+});
+
+app.post('/api/auth/verify-signup', async (req, res) => {
+  try {
+    const { email, password, code, guestId } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: 'Please enter a valid email address.' });
+      return;
+    }
+    if (!password || String(password).length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters.' });
+      return;
+    }
+    if (!code || String(code).trim().length === 0) {
+      res.status(400).json({ error: "That code isn't right. Check your email and try again." });
+      return;
+    }
+
+    validateVerificationCode(cleanEmail, String(code));
+
     const user = signupUser(cleanEmail, String(password), guestId);
+
+    // Send Welcome Email via Resend after successful signup
+    sendWelcomeEmail(cleanEmail).catch(() => {
+      // Do not block session creation if welcome email fails
+    });
+
     res.json({
       userId: user.id,
       email: user.email,
@@ -146,7 +200,106 @@ app.post('/api/auth/signup', (req, res) => {
       token: user.id
     });
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Failed to create account.' });
+    res.status(400).json({
+      error: err.message || "That code isn't right. Check your email and try again.",
+      reason: err.reason,
+      locked: Boolean(err.locked),
+      attemptsRemaining: err.attemptsRemaining
+    });
+  }
+});
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email, appOrigin } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: 'Please enter a valid email address.' });
+      return;
+    }
+
+    const user = findUserByEmail(cleanEmail);
+    if (!user) {
+      res.status(400).json({ error: 'No account found with that email.' });
+      return;
+    }
+
+    const origin =
+      typeof appOrigin === 'string' && appOrigin.startsWith('http')
+        ? appOrigin
+        : `${req.protocol}://${req.get('host')}`;
+    await createAndSendPasswordResetEmail(cleanEmail, origin);
+
+    res.json({ sent: true });
+  } catch (err: any) {
+    res.status(400).json({
+      error: err.message || "Couldn't send the email. Try again in a minute."
+    });
+  }
+});
+
+app.post('/api/auth/reset-password', (req, res) => {
+  try {
+    const { email, token, newPassword, guestId } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!cleanEmail || !token) {
+      res.status(400).json({ error: 'Invalid password reset request.' });
+      return;
+    }
+    if (!newPassword || String(newPassword).length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters.' });
+      return;
+    }
+
+    validateAndConsumePasswordResetToken(cleanEmail, String(token));
+    const user = resetUserPassword(cleanEmail, String(newPassword), guestId);
+
+    res.json({
+      userId: user.id,
+      email: user.email,
+      isGuest: false,
+      token: user.id
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not reset password.' });
+  }
+});
+
+app.post('/api/auth/signup', (req, res) => {
+  try {
+    const { email, password, code, guestId } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: 'Please enter a valid email address.' });
+      return;
+    }
+    if (!password || String(password).length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters.' });
+      return;
+    }
+    if (!code) {
+      res.status(400).json({ error: 'Verification code is required.' });
+      return;
+    }
+
+    validateVerificationCode(cleanEmail, String(code));
+
+    const user = signupUser(cleanEmail, String(password), guestId);
+    sendWelcomeEmail(cleanEmail).catch(() => {});
+
+    res.json({
+      userId: user.id,
+      email: user.email,
+      isGuest: false,
+      token: user.id
+    });
+  } catch (err: any) {
+    res.status(400).json({
+      error: err.message || 'Failed to create account.',
+      reason: err.reason,
+      locked: Boolean(err.locked),
+      attemptsRemaining: err.attemptsRemaining
+    });
   }
 });
 
@@ -242,6 +395,7 @@ app.post('/api/diary', authenticateUser, (req, res) => {
       vitaminD,
       serving,
       note,
+      unusualQuantity,
       loggedHour,
       costEstimate,
       source
@@ -267,6 +421,7 @@ app.post('/api/diary', authenticateUser, (req, res) => {
       vitaminD: vitaminD !== undefined ? Number(vitaminD) : undefined,
       serving: serving || '1 serving',
       note: note ? String(note).trim() : undefined,
+      unusualQuantity: Boolean(unusualQuantity),
       loggedHour: loggedHour !== undefined ? Number(loggedHour) : undefined,
       costEstimate: costEstimate !== undefined ? Number(costEstimate) : undefined,
       source: source || 'manual'

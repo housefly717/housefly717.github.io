@@ -16,7 +16,14 @@ interface AuthModalProps {
   onAuthComplete?: () => void;
 }
 
-type SignupFlowStage = 'credentials' | 'intro' | 'questions' | 'final';
+type SignupFlowStage =
+  | 'credentials'
+  | 'verify_code'
+  | 'forgot_password'
+  | 'reset_password'
+  | 'intro'
+  | 'questions'
+  | 'final';
 
 interface SignupDraft {
   flowStage: SignupFlowStage;
@@ -77,6 +84,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Email verification & password reset state
+  const [verificationCode, setVerificationCode] = useState('');
+  const [resendCooldown, setResendCooldown] = useState(0);
+  const [isCodeLocked, setIsCodeLocked] = useState(false);
+  const [resetToken, setResetToken] = useState('');
+  const [newResetPassword, setNewResetPassword] = useState('');
+  const [resetSentSuccess, setResetSentSuccess] = useState(false);
+
   // Multi-step signup state
   const [flowStage, setFlowStage] = useState<SignupFlowStage>('credentials');
   const [questionStep, setQuestionStep] = useState<number>(1);
@@ -84,17 +99,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const [savedMidFlowNotice, setSavedMidFlowNotice] = useState<string | null>(null);
   const [showClosePrompt, setShowClosePrompt] = useState(false);
 
+  // 30-second countdown timer for Resend button
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setInterval(() => {
+      setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [resendCooldown]);
+
   const draftStorageKey = useMemo(() => {
     const keyId = userId || email.trim().toLowerCase() || 'pending';
     return `caloriq_signup_draft_${keyId}`;
   }, [userId, email]);
 
-  // Load saved draft if user is signed in but hasn't finished all 8 required questions
+  // Load saved draft if user is signed in, or check URL for password reset link
   useEffect(() => {
     if (!isAuthModalOpen) {
       setShowClosePrompt(false);
       setSavedMidFlowNotice(null);
       return;
+    }
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const tokenParam = params.get('resetToken');
+      const emailParam = params.get('email');
+      if (tokenParam && emailParam) {
+        setEmail(emailParam);
+        setResetToken(tokenParam);
+        setFlowStage('reset_password');
+        return;
+      }
     }
 
     if (!isGuest && !hasCompleteProfileStats(profile)) {
@@ -104,7 +140,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
           const parsed = JSON.parse(raw) as Partial<SignupDraft>;
           const merged: SignupDraft = { ...EMPTY_DRAFT, ...parsed };
           setDraft(merged);
-          setFlowStage(merged.flowStage === 'credentials' ? 'intro' : merged.flowStage);
+          setFlowStage(
+            merged.flowStage === 'credentials' ||
+              merged.flowStage === 'verify_code' ||
+              merged.flowStage === 'forgot_password' ||
+              merged.flowStage === 'reset_password'
+              ? 'intro'
+              : merged.flowStage
+          );
           setQuestionStep(merged.questionStep >= 1 && merged.questionStep <= 8 ? merged.questionStep : 1);
           return;
         }
@@ -240,14 +283,61 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
     try {
       if (mode === 'signup') {
-        await api.signup(cleanEmail, password, rememberMe);
+        const res = await api.sendSignupVerificationCode(cleanEmail, password);
+        setVerificationCode('');
+        setIsCodeLocked(false);
+        setResendCooldown(res.resendCooldownSeconds || 30);
+        setFlowStage('verify_code');
+        return;
       } else {
         await api.login(cleanEmail, password, rememberMe);
       }
 
       await onAuthSuccess();
 
-      if (mode === 'signup' && referralCode.trim()) {
+      setEmail('');
+      setPassword('');
+      setReferralCode('');
+      setErrorMsg('');
+
+      closeAuthModal();
+      if (typeof window !== 'undefined') {
+        window.history.pushState({}, '', '/dashboard');
+      }
+      if (onAuthComplete) {
+        onAuthComplete();
+      }
+    } catch (err: any) {
+      setErrorMsg(
+        err.message ||
+          (mode === 'signup'
+            ? "Couldn't send the email. Try again in a minute."
+            : 'Invalid email or password.')
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerifySignupCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isCodeLocked) {
+      setErrorMsg('Too many attempts. This code is locked. Tap Resend for a new code.');
+      return;
+    }
+    const cleanCode = verificationCode.trim();
+    if (!cleanCode) {
+      setErrorMsg("That code isn't right. Check your email and try again.");
+      return;
+    }
+
+    setErrorMsg('');
+    setIsLoading(true);
+    try {
+      await api.verifySignupCode(email.trim(), password, cleanCode, rememberMe);
+      await onAuthSuccess();
+
+      if (referralCode.trim()) {
         const cleanRef = referralCode.trim().toUpperCase();
         const used = profile.usedReferrals || [];
         if (!used.includes(cleanRef)) {
@@ -260,27 +350,85 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
       setEmail('');
       setPassword('');
+      setVerificationCode('');
       setReferralCode('');
       setErrorMsg('');
 
-      if (mode === 'signup') {
-        // Move directly to the required Intro Screen right after email and password are created
-        const freshDraft: SignupDraft = { ...EMPTY_DRAFT, flowStage: 'intro', questionStep: 1 };
-        saveDraftState(freshDraft, 'intro', 1);
-        setFlowStage('intro');
-        setQuestionStep(1);
-        return;
+      const freshDraft: SignupDraft = { ...EMPTY_DRAFT, flowStage: 'intro', questionStep: 1 };
+      saveDraftState(freshDraft, 'intro', 1);
+      setFlowStage('intro');
+      setQuestionStep(1);
+    } catch (err: any) {
+      if (err.locked || err.reason === 'locked') {
+        setIsCodeLocked(true);
       }
+      setErrorMsg(err.message || "That code isn't right. Check your email and try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
-      closeAuthModal();
-      if (typeof window !== 'undefined') {
-        window.history.pushState({}, '', '/dashboard');
+  const handleResendVerificationCode = async () => {
+    if (resendCooldown > 0 || isLoading) return;
+    setErrorMsg('');
+    setIsLoading(true);
+    try {
+      const res = await api.sendSignupVerificationCode(email.trim(), password);
+      setVerificationCode('');
+      setIsCodeLocked(false);
+      setResendCooldown(res.resendCooldownSeconds || 30);
+    } catch (err: any) {
+      if (err.retryAfterSeconds) {
+        setResendCooldown(err.retryAfterSeconds);
       }
+      setErrorMsg(err.message || "Couldn't send the email. Try again in a minute.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSendPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanEmail = email.trim();
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setErrorMsg('Please enter a valid email address.');
+      return;
+    }
+    setErrorMsg('');
+    setResetSentSuccess(false);
+    setIsLoading(true);
+    try {
+      await api.requestPasswordReset(cleanEmail);
+      setResetSentSuccess(true);
+    } catch (err: any) {
+      setErrorMsg(err.message || "Couldn't send the email. Try again in a minute.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleConfirmPasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newResetPassword || newResetPassword.length < 6) {
+      setErrorMsg('Password must be at least 6 characters.');
+      return;
+    }
+    setErrorMsg('');
+    setIsLoading(true);
+    try {
+      await api.resetPassword(email.trim(), resetToken, newResetPassword, rememberMe);
+      await onAuthSuccess();
+      setNewResetPassword('');
+      setResetToken('');
+      if (typeof window !== 'undefined') {
+        window.history.replaceState({}, '', '/dashboard');
+      }
+      closeAuthModal();
       if (onAuthComplete) {
         onAuthComplete();
       }
     } catch (err: any) {
-      setErrorMsg(err.message || (mode === 'signup' ? 'Failed to create account.' : 'Invalid email or password.'));
+      setErrorMsg(err.message || 'Could not reset password.');
     } finally {
       setIsLoading(false);
     }
@@ -1110,8 +1258,225 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
           </div>
         )}
 
+        {/* ==================== EMAIL VERIFICATION CODE SCREEN ==================== */}
+        {!isInSignupQuestionnaire && flowStage === 'verify_code' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between pr-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMsg('');
+                  setFlowStage('credentials');
+                }}
+                className="text-zinc-400 hover:text-zinc-200 flex items-center gap-1 text-xs font-medium"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Back
+              </button>
+              <span className="font-mono text-xs text-teal-400 font-semibold">Verify Email</span>
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-zinc-100">
+                Enter your verification code
+              </h3>
+              <p className="text-xs text-zinc-400">
+                We sent a 6-digit code to <span className="text-zinc-200 font-medium">{email}</span>. This code expires in 10 minutes.
+              </p>
+            </div>
+
+            {errorMsg && (
+              <div className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+                {errorMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleVerifySignupCode} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  6-digit code
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={verificationCode}
+                  onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                  disabled={isCodeLocked || isLoading}
+                  autoFocus
+                  required
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-center text-lg font-mono tracking-[0.35em] text-zinc-100 placeholder:text-zinc-700 focus:outline-none focus:border-teal-500 disabled:opacity-50"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading || isCodeLocked || verificationCode.trim().length !== 6}
+                className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+              >
+                {isLoading ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Verifying...
+                  </>
+                ) : (
+                  <>
+                    Verify and continue
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </>
+                )}
+              </button>
+            </form>
+
+            <div className="text-center pt-1">
+              <button
+                type="button"
+                disabled={resendCooldown > 0 || isLoading}
+                onClick={handleResendVerificationCode}
+                className="text-xs font-medium text-teal-400 hover:text-teal-300 disabled:text-zinc-500 disabled:no-underline underline transition-colors"
+              >
+                {resendCooldown > 0 ? `Resend available in ${resendCooldown}s` : 'Resend'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ==================== FORGOT PASSWORD SCREEN ==================== */}
+        {!isInSignupQuestionnaire && flowStage === 'forgot_password' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between pr-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMsg('');
+                  setResetSentSuccess(false);
+                  setFlowStage('credentials');
+                }}
+                className="text-zinc-400 hover:text-zinc-200 flex items-center gap-1 text-xs font-medium"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Back to sign in
+              </button>
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-zinc-100">Reset your password</h3>
+              <p className="text-xs text-zinc-400">
+                Enter your account email and we&apos;ll send you a password reset link.
+              </p>
+            </div>
+
+            {errorMsg && (
+              <div className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+                {errorMsg}
+              </div>
+            )}
+
+            {resetSentSuccess ? (
+              <div className="p-3 bg-teal-950/40 border border-teal-500/40 rounded-xl text-xs text-teal-200 space-y-2">
+                <p>Password reset link sent to {email}. Check your inbox.</p>
+              </div>
+            ) : (
+              <form onSubmit={handleSendPasswordReset} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                    Email Address
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@example.com"
+                      required
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+                >
+                  {isLoading ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Sending reset link...
+                    </>
+                  ) : (
+                    <>
+                      Send reset link
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </>
+                  )}
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* ==================== RESET PASSWORD (FROM EMAIL LINK) SCREEN ==================== */}
+        {!isInSignupQuestionnaire && flowStage === 'reset_password' && (
+          <div className="space-y-4">
+            <div className="space-y-1">
+              <h3 className="text-base font-bold text-zinc-100">Choose a new password</h3>
+              <p className="text-xs text-zinc-400">
+                Setting a new password for <span className="text-zinc-200 font-medium">{email}</span>.
+              </p>
+            </div>
+
+            {errorMsg && (
+              <div className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+                {errorMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleConfirmPasswordReset} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  New Password
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+                  <input
+                    type="password"
+                    value={newResetPassword}
+                    onChange={(e) => setNewResetPassword(e.target.value)}
+                    placeholder="At least 6 characters"
+                    minLength={6}
+                    required
+                    autoFocus
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+              >
+                {isLoading ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Updating password...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    Save new password
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        )}
+
         {/* ==================== CREDENTIALS / ACCOUNT DETAILS SCREEN ==================== */}
-        {!isInSignupQuestionnaire && (
+        {!isInSignupQuestionnaire && flowStage === 'credentials' && (
           <>
             <div className="flex items-center gap-2 mb-4">
               <div className="w-8 h-8 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400">
@@ -1196,9 +1561,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                      Password
-                    </label>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-medium text-zinc-400">
+                        Password
+                      </label>
+                      {mode === 'login' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setErrorMsg('');
+                            setResetSentSuccess(false);
+                            setFlowStage('forgot_password');
+                          }}
+                          className="text-[11px] text-teal-400 hover:text-teal-300 underline"
+                        >
+                          Forgot password?
+                        </button>
+                      )}
+                    </div>
                     <div className="relative">
                       <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
                       <input

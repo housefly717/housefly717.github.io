@@ -1108,9 +1108,17 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                               }}
                               className="max-w-[68%] cursor-pointer"
                             >
-                              <span className="text-xs font-medium text-zinc-200 block truncate">
-                                {item.name}
-                              </span>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="text-xs font-medium text-zinc-200 block truncate">
+                                  {item.name}
+                                </span>
+                                {(item.unusualQuantity || item.note?.includes('Unusual quantity')) && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[10px] font-mono font-semibold text-rose-400">
+                                    <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
+                                    Unusual quantity
+                                  </span>
+                                )}
+                              </div>
                               <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
                                 <span>{item.serving || '1 portion'}</span>
                                 <span>·</span>

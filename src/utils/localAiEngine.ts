@@ -25,6 +25,10 @@ export interface DecipheredFoodItem {
   name: string;
   grams: number;
   needsWeightConfirmation?: boolean;
+  isOver5kg?: boolean;
+  kgAmount?: number;
+  suggestedGrams?: number;
+  over5kgWarning?: string;
   servingLabel: string;
   calories: number;
   protein: number;
@@ -47,6 +51,12 @@ export interface DecipheredFoodResult {
   mealSummaryName: string;
   items: DecipheredFoodItem[];
   needsWeightConfirmation: boolean;
+  hasItemOver5kg: boolean;
+  isOver5000Kcal: boolean;
+  over5000KcalWarning?: string;
+  isExtremeCalorieMeal: boolean;
+  usedFallbackReference: boolean;
+  referenceDailyGoal: number;
   totalCalories: number;
   totalProtein: number;
   totalCarbs: number;
@@ -1479,14 +1489,25 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     }
   }
 
+  const roundedGrams = Math.round(grams * 10) / 10;
+  const isOver5kg = roundedGrams > 5000;
+  const kgAmount = isOver5kg ? Math.round((roundedGrams / 1000) * 100) / 100 : undefined;
+  const suggestedGrams = isOver5kg ? kgAmount : undefined;
+  const over5kgWarning = isOver5kg
+    ? `${kgAmount}kg of ${displayName.toLowerCase()} seems very high. Did you mean ${suggestedGrams}g?`
+    : undefined;
   const factor = grams / 100;
 
   if (matched) {
     return {
       rawText: raw,
       name: displayName,
-      grams: Math.round(grams * 10) / 10,
+      grams: roundedGrams,
       needsWeightConfirmation,
+      isOver5kg,
+      kgAmount,
+      suggestedGrams,
+      over5kgWarning,
       servingLabel,
       calories: Math.round(matched.caloriesPer100g * factor),
       protein: Math.round(matched.proteinPer100g * factor * 10) / 10,
@@ -1510,8 +1531,12 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
   return {
     rawText: raw,
     name: displayName,
-    grams: Math.round(grams * 10) / 10,
+    grams: roundedGrams,
     needsWeightConfirmation,
+    isOver5kg,
+    kgAmount,
+    suggestedGrams,
+    over5kgWarning,
     servingLabel,
     calories: Math.round(135 * factor),
     protein: Math.round(6 * factor * 10) / 10,
@@ -1531,12 +1556,24 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
   };
 }
 
-export function buildDecipheredFoodSummary(items: DecipheredFoodItem[]): DecipheredFoodResult {
+export function buildDecipheredFoodSummary(
+  items: DecipheredFoodItem[],
+  dailyCalorieGoal?: number
+): DecipheredFoodResult {
+  const hasKnownGoal = typeof dailyCalorieGoal === 'number' && dailyCalorieGoal > 0;
+  const referenceDailyGoal = hasKnownGoal ? dailyCalorieGoal : 2000;
+  const usedFallbackReference = !hasKnownGoal;
+
   if (items.length === 0) {
     return {
       mealSummaryName: 'Custom Meal',
       items: [],
       needsWeightConfirmation: false,
+      hasItemOver5kg: false,
+      isOver5000Kcal: false,
+      isExtremeCalorieMeal: false,
+      usedFallbackReference,
+      referenceDailyGoal,
       totalCalories: 0,
       totalProtein: 0,
       totalCarbs: 0,
@@ -1559,6 +1596,16 @@ export function buildDecipheredFoodSummary(items: DecipheredFoodItem[]): Deciphe
   const totalSugar = Math.round(items.reduce((s, i) => s + i.sugar, 0) * 10) / 10;
   const totalSodiumMg = items.reduce((s, i) => s + i.sodiumMg, 0);
   const needsWeightConfirmation = items.some(i => i.grams <= 0 || i.needsWeightConfirmation);
+
+  const hasItemOver5kg = items.some(i => i.grams > 5000);
+  const hasItemOver2000Kcal = items.some(i => i.calories > 2000);
+  const exceeds2xDailyGoal = totalCalories > 2 * referenceDailyGoal;
+  const isOver5000Kcal = totalCalories > 5000;
+  const over5000KcalWarning = isOver5000Kcal
+    ? 'This meal is over 5,000 kcal. Is that right?'
+    : undefined;
+  const isExtremeCalorieMeal =
+    hasItemOver5kg || hasItemOver2000Kcal || exceeds2xDailyGoal || isOver5000Kcal;
 
   const mainNames = items.filter(i => i.category !== 'seasoning' || items.length === 1).map(i => i.name);
   const mealSummaryName =
@@ -1588,86 +1635,127 @@ export function buildDecipheredFoodSummary(items: DecipheredFoodItem[]): Deciphe
   if (totalSugar > 25 && !hasProduce) score -= 1.5;
   if (totalFat > 30 && totalProtein < 15) score -= 0.8;
 
-  const healthRating = Math.max(1, Math.min(10, Math.round(score * 10) / 10));
+  score = Math.max(1, Math.min(10, score));
 
-  const healthLabel =
-    healthRating >= 8.5
-      ? 'Excellent — Nutrient-Dense & Balanced'
-      : healthRating >= 7.0
-      ? 'Good — Whole-Food Foundation'
-      : healthRating >= 5.5
-      ? 'Moderate — Could Use Macro Balance'
-      : 'Low — High in Sodium, Sugar, or Processed Fats';
+  // Apply total & per-item calorie rules:
+  // - If any single item exceeds 2,000 kcal, the rating drops by 3 points.
+  if (hasItemOver2000Kcal) {
+    score -= 3;
+  }
+  // - If total calories exceed 2× the user's daily goal, the rating is capped at 2 out of 10. Hard cap.
+  if (exceeds2xDailyGoal) {
+    score = Math.min(score, 2);
+  }
+  // - If the total exceeds 5,000 kcal, the rating is 1 out of 10. No exceptions.
+  if (isOver5000Kcal) {
+    score = 1;
+  }
+
+  const healthRating = isOver5000Kcal
+    ? 1
+    : Math.max(1, Math.min(10, Math.round(score * 10) / 10));
 
   const whatToAdd: string[] = [];
   const whatToTakeOut: string[] = [];
+  let healthLabel: string;
 
-  if (totalProtein < 12) {
-    if (yogurtItem && yogurtItem.grams < 80) {
+  if (isExtremeCalorieMeal) {
+    const quantityAdvice = usedFallbackReference
+      ? 'This is far above a normal meal. Check the quantities. Based on a 2,000 kcal reference.'
+      : 'This is far above a normal meal. Check the quantities.';
+    healthLabel = quantityAdvice;
+    whatToTakeOut.push(quantityAdvice);
+
+    for (const item of items) {
+      if (item.grams > 5000 && item.over5kgWarning) {
+        whatToTakeOut.push(item.over5kgWarning);
+      } else if (item.calories > 2000) {
+        whatToTakeOut.push(
+          `${item.name} (${item.grams}g — ${item.calories} kcal) exceeds 2,000 kcal for a single item. Check the quantity.`
+        );
+      }
+    }
+  } else {
+    const baseLabel =
+      healthRating >= 8.5
+        ? 'Excellent — Nutrient-Dense & Balanced'
+        : healthRating >= 7.0
+        ? 'Good — Whole-Food Foundation'
+        : healthRating >= 5.5
+        ? 'Moderate — Could Use Macro Balance'
+        : 'Low — High in Sodium, Sugar, or Processed Fats';
+
+    healthLabel = usedFallbackReference
+      ? `${baseLabel} (Based on a 2,000 kcal reference.)`
+      : baseLabel;
+
+    if (totalProtein < 12) {
+      if (yogurtItem && yogurtItem.grams < 80) {
+        whatToAdd.push(
+          `Increase ${yogurtItem.name} from ${yogurtItem.grams}g to 120–150g Greek yogurt (+12g protein) for better satiety and blood sugar balance.`
+        );
+      } else {
+        whatToAdd.push(
+          'Add a lean protein source (e.g. 120g Greek yogurt, 2 eggs, cottage cheese, or 100g chicken/tofu) to reach at least 15–25g protein.'
+        );
+      }
+    }
+
+    if (totalFat < 3) {
       whatToAdd.push(
-        `Increase ${yogurtItem.name} from ${yogurtItem.grams}g to 120–150g Greek yogurt (+12g protein) for better satiety and blood sugar balance.`
-      );
-    } else {
-      whatToAdd.push(
-        'Add a lean protein source (e.g. 120g Greek yogurt, 2 eggs, cottage cheese, or 100g chicken/tofu) to reach at least 15–25g protein.'
+        'Add 10–15g of healthy fats & fiber (such as chia seeds, flaxseeds, or crushed almonds/walnuts) to slow carbohydrate digestion and help absorb fat-soluble vitamins.'
       );
     }
-  }
 
-  if (totalFat < 3) {
-    whatToAdd.push(
-      'Add 10–15g of healthy fats & fiber (such as chia seeds, flaxseeds, or crushed almonds/walnuts) to slow carbohydrate digestion and help absorb fat-soluble vitamins.'
-    );
-  }
-
-  if (!hasProduce) {
-    whatToAdd.push(
-      'Add 80–100g of fresh fruit (berries, mango) or leafy greens/vegetables (spinach, broccoli) for fiber, potassium, and antioxidants.'
-    );
-  } else if (totalFiber < 3) {
-    whatToAdd.push(
-      'Add 1 tbsp of chia seeds, oats, or extra berries/greens to boost dietary fiber above 4g.'
-    );
-  }
-
-  if (whatToAdd.length === 0) {
-    whatToAdd.push('A glass of water or a sprinkle of seeds/herbs — your macro and micronutrient profile is already well balanced.');
-  }
-
-  const saltItem = items.find(i => /salt|soy sauce/i.test(i.name));
-  if (saltItem) {
-    whatToTakeOut.push(
-      `Take out or halve the ${saltItem.rawText} (~${saltItem.sodiumMg}mg sodium) — try cinnamon, lime zest, or fresh mint instead for zero-sodium flavor.`
-    );
-  } else if (totalSodiumMg > 600) {
-    whatToTakeOut.push(
-      `Reduce high-sodium items (${totalSodiumMg}mg total sodium) to minimize water retention and support blood pressure.`
-    );
-  }
-
-  const processedItems = items.filter(i => i.category === 'processed' || i.category === 'beverage');
-  if (processedItems.length > 0) {
-    whatToTakeOut.push(
-      `Take out or reduce ${processedItems.map(p => p.name).join(' & ')} to cut refined sugars and empty calories.`
-    );
-  }
-
-  const heavyFatItem = items.find(i => i.fat > 18);
-  if (heavyFatItem) {
-    whatToTakeOut.push(
-      `Trim the portion of ${heavyFatItem.name} by ~30% to save ~${Math.round(heavyFatItem.calories * 0.3)} kcal while keeping flavor.`
-    );
-  }
-
-  if (whatToTakeOut.length === 0) {
-    if (totalSugar > 10 && totalProtein < 8) {
-      whatToTakeOut.push(
-        'Nothing unhealthy to remove (all whole ingredients), or slightly trim the fruit portion by 20g if pairing without extra protein to keep sugar spikes low.'
+    if (!hasProduce) {
+      whatToAdd.push(
+        'Add 80–100g of fresh fruit (berries, mango) or leafy greens/vegetables (spinach, broccoli) for fiber, potassium, and antioxidants.'
       );
-    } else {
-      whatToTakeOut.push(
-        'Nothing needs to be taken out — these are clean, whole-food ingredients with no excess refined sugars or trans fats.'
+    } else if (totalFiber < 3) {
+      whatToAdd.push(
+        'Add 1 tbsp of chia seeds, oats, or extra berries/greens to boost dietary fiber above 4g.'
       );
+    }
+
+    if (whatToAdd.length === 0) {
+      whatToAdd.push('A glass of water or a sprinkle of seeds/herbs — your macro and micronutrient profile is already well balanced.');
+    }
+
+    const saltItem = items.find(i => /salt|soy sauce/i.test(i.name));
+    if (saltItem) {
+      whatToTakeOut.push(
+        `Take out or halve the ${saltItem.rawText} (~${saltItem.sodiumMg}mg sodium) — try cinnamon, lime zest, or fresh mint instead for zero-sodium flavor.`
+      );
+    } else if (totalSodiumMg > 600) {
+      whatToTakeOut.push(
+        `Reduce high-sodium items (${totalSodiumMg}mg total sodium) to minimize water retention and support blood pressure.`
+      );
+    }
+
+    const processedItems = items.filter(i => i.category === 'processed' || i.category === 'beverage');
+    if (processedItems.length > 0) {
+      whatToTakeOut.push(
+        `Take out or reduce ${processedItems.map(p => p.name).join(' & ')} to cut refined sugars and empty calories.`
+      );
+    }
+
+    const heavyFatItem = items.find(i => i.fat > 18);
+    if (heavyFatItem) {
+      whatToTakeOut.push(
+        `Trim the portion of ${heavyFatItem.name} by ~30% to save ~${Math.round(heavyFatItem.calories * 0.3)} kcal while keeping flavor.`
+      );
+    }
+
+    if (whatToTakeOut.length === 0) {
+      if (totalSugar > 10 && totalProtein < 8) {
+        whatToTakeOut.push(
+          'Nothing unhealthy to remove (all whole ingredients), or slightly trim the fruit portion by 20g if pairing without extra protein to keep sugar spikes low.'
+        );
+      } else {
+        whatToTakeOut.push(
+          'Nothing needs to be taken out — these are clean, whole-food ingredients with no excess refined sugars or trans fats.'
+        );
+      }
     }
   }
 
@@ -1675,6 +1763,12 @@ export function buildDecipheredFoodSummary(items: DecipheredFoodItem[]): Deciphe
     mealSummaryName,
     items,
     needsWeightConfirmation,
+    hasItemOver5kg,
+    isOver5000Kcal,
+    over5000KcalWarning,
+    isExtremeCalorieMeal,
+    usedFallbackReference,
+    referenceDailyGoal,
     totalCalories,
     totalProtein,
     totalCarbs,
@@ -1691,17 +1785,29 @@ export function buildDecipheredFoodSummary(items: DecipheredFoodItem[]): Deciphe
 
 export function recalculateDecipheredFoodWithGrams(
   baseResult: DecipheredFoodResult,
-  gramOverrides: Record<number, number>
+  gramOverrides: Record<number, number>,
+  dailyCalorieGoal?: number
 ): DecipheredFoodResult {
   const updatedItems = baseResult.items.map((item, idx) => {
     const hasOverride = Object.prototype.hasOwnProperty.call(gramOverrides, idx);
     const grams = hasOverride ? Math.max(0, Number(gramOverrides[idx]) || 0) : item.grams;
+    const roundedGrams = Math.round(grams * 10) / 10;
+    const isOver5kg = roundedGrams > 5000;
+    const kgAmount = isOver5kg ? Math.round((roundedGrams / 1000) * 100) / 100 : undefined;
+    const suggestedGrams = isOver5kg ? kgAmount : undefined;
+    const over5kgWarning = isOver5kg
+      ? `${kgAmount}kg of ${item.name.toLowerCase()} seems very high. Did you mean ${suggestedGrams}g?`
+      : undefined;
     const factor = grams / 100;
     return {
       ...item,
-      grams: Math.round(grams * 10) / 10,
+      grams: roundedGrams,
       needsWeightConfirmation: grams <= 0,
-      servingLabel: hasOverride ? `${Math.round(grams * 10) / 10}g` : item.servingLabel,
+      isOver5kg,
+      kgAmount,
+      suggestedGrams,
+      over5kgWarning,
+      servingLabel: hasOverride ? `${roundedGrams}g` : item.servingLabel,
       calories: Math.round(item.caloriesPer100g * factor),
       protein: Math.round(item.proteinPer100g * factor * 10) / 10,
       carbs: Math.round(item.carbsPer100g * factor * 10) / 10,
@@ -1711,10 +1817,10 @@ export function recalculateDecipheredFoodWithGrams(
       sodiumMg: Math.round(item.sodiumMgPer100g * factor)
     };
   });
-  return buildDecipheredFoodSummary(updatedItems);
+  return buildDecipheredFoodSummary(updatedItems, dailyCalorieGoal);
 }
 
-export function decipherFoodText(rawInput: string): DecipheredFoodResult {
+export function decipherFoodText(rawInput: string, dailyCalorieGoal?: number): DecipheredFoodResult {
   const parts = rawInput
     .split(/(?:[,;\n+]+|\b(?:and|with|plus|topped with|on|alongside)\b)/i)
     .map(s => s.trim())
@@ -1726,5 +1832,5 @@ export function decipherFoodText(rawInput: string): DecipheredFoodResult {
     if (parsed) items.push(parsed);
   }
 
-  return buildDecipheredFoodSummary(items);
+  return buildDecipheredFoodSummary(items, dailyCalorieGoal);
 }

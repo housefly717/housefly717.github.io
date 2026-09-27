@@ -489,6 +489,7 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
       ...micros,
       serving: body.serving || '1 serving',
       note: body.note ? String(body.note).trim() : undefined,
+      unusualQuantity: Boolean(body.unusualQuantity),
       loggedHour: defaultHour,
       costEstimate: body.costEstimate !== undefined ? Number(body.costEstimate) : undefined,
       source: body.source || 'manual',

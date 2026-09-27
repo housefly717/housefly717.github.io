@@ -59,7 +59,7 @@ function getEmptyClientProfile(name: string = '', username: string = ''): UserPr
     currentWeightKg: 0,
     goalWeightKg: 0,
     dailyActivity: '',
-    goalSpeed: 'lose_normal',
+    goalSpeed: '',
     unitSystem: 'metric',
     pinnedWhy: '',
     themeMode: 'dark',
@@ -294,7 +294,7 @@ class ApiService {
     } catch {
       // ignore
     }
-    const baseName = email ? email.split('@')[0] : 'Guest User';
+    const baseName = email ? '' : 'Guest User';
     const baseUser = email ? email.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase() : `caloriq_${userId.slice(0, 6)}`;
     return getEmptyClientProfile(baseName, baseUser);
   }
@@ -364,6 +364,138 @@ class ApiService {
         return { userId: localGuestId, isGuest: true, profile, stats: defaultStats };
       }
     }
+  }
+
+  async sendSignupVerificationCode(
+    email: string,
+    password: string
+  ): Promise<{ sent: boolean; resendCooldownSeconds: number }> {
+    const cleanEmail = email.trim().toLowerCase();
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/send-verification-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password })
+      });
+    } catch {
+      throw new Error("Couldn't send the email. Try again in a minute.");
+    }
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const err: any = new Error(errBody.error || "Couldn't send the email. Try again in a minute.");
+      err.retryAfterSeconds = errBody.retryAfterSeconds;
+      throw err;
+    }
+
+    return await res.json();
+  }
+
+  async verifySignupCode(
+    email: string,
+    password: string,
+    code: string,
+    rememberMe: boolean = true
+  ): Promise<{ userId: string; email: string; token: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    const guestId = this.getGuestId();
+    const pwHash = hashClientPassword(password);
+
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/verify-signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password, code: code.trim(), guestId })
+      });
+    } catch {
+      throw new Error("Can't reach the server right now. Please try again.");
+    }
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const err: any = new Error(errBody.error || "That code isn't right. Check your email and try again.");
+      err.reason = errBody.reason;
+      err.locked = Boolean(errBody.locked);
+      err.attemptsRemaining = errBody.attemptsRemaining;
+      throw err;
+    }
+
+    const data = await res.json();
+    const users = getClientUsers();
+    users[cleanEmail] = {
+      userId: data.userId,
+      email: cleanEmail,
+      passwordHash: pwHash,
+      createdAt: Date.now()
+    };
+    saveClientUsers(users);
+    localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    this.setToken(data.token, false, rememberMe);
+    return data;
+  }
+
+  async requestPasswordReset(email: string): Promise<{ sent: boolean }> {
+    const cleanEmail = email.trim().toLowerCase();
+    const appOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, appOrigin })
+      });
+    } catch {
+      throw new Error("Couldn't send the email. Try again in a minute.");
+    }
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || "Couldn't send the email. Try again in a minute.");
+    }
+
+    return await res.json();
+  }
+
+  async resetPassword(
+    email: string,
+    token: string,
+    newPassword: string,
+    rememberMe: boolean = true
+  ): Promise<{ userId: string; email: string; token: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    const guestId = this.getGuestId();
+    const pwHash = hashClientPassword(newPassword);
+
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, token: token.trim(), newPassword, guestId })
+      });
+    } catch {
+      throw new Error("Can't reach the server right now. Please try again.");
+    }
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || 'Could not reset password.');
+    }
+
+    const data = await res.json();
+    const users = getClientUsers();
+    users[cleanEmail] = {
+      userId: data.userId,
+      email: cleanEmail,
+      passwordHash: pwHash,
+      createdAt: Date.now()
+    };
+    saveClientUsers(users);
+    localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    this.setToken(data.token, false, rememberMe);
+    return data;
   }
 
   async signup(

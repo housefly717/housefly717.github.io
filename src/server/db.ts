@@ -342,6 +342,26 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
   return user;
 }
 
+export function resetUserPassword(email: string, newPassword: string, guestIdToMigrate?: string): UserRow {
+  const norm = email.toLowerCase().trim();
+  const pwHash = hashPassword(newPassword);
+  let user = findUserByEmail(norm);
+
+  if (!user) {
+    throw new Error('No account found with that email.');
+  }
+
+  user.passwordHash = pwHash;
+  user.lastLoginAt = Date.now();
+
+  if (guestIdToMigrate && guestIdToMigrate !== user.id && db.users[guestIdToMigrate]) {
+    migrateGuestData(guestIdToMigrate, user.id);
+  }
+
+  saveDb();
+  return user;
+}
+
 export function loginUser(email: string, password: string, guestIdToMigrate?: string): UserRow {
   const norm = email.toLowerCase().trim();
   const pwHash = hashPassword(password);
