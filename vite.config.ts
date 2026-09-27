@@ -1,7 +1,11 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import fs from 'fs';
 import path from 'path';
+import {fileURLToPath} from 'url';
 import {defineConfig} from 'vite';
+
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig(() => {
   return {
@@ -9,10 +13,30 @@ export default defineConfig(() => {
     build: {
       outDir: 'dist',
     },
-    plugins: [react(), tailwindcss()],
+    plugins: [
+      react(),
+      tailwindcss(),
+      {
+        name: 'github-pages-root-and-subpath-compat',
+        closeBundle() {
+          const outDir = path.resolve(rootDir, 'dist');
+          const nestedDir = path.join(outDir, 'housefly717.github.io');
+          if (!fs.existsSync(outDir)) return;
+          const entries = fs.readdirSync(outDir);
+          fs.mkdirSync(nestedDir, {recursive: true});
+          for (const entry of entries) {
+            if (entry === 'housefly717.github.io') continue;
+            fs.cpSync(path.join(outDir, entry), path.join(nestedDir, entry), {
+              recursive: true,
+            });
+          }
+          fs.writeFileSync(path.join(outDir, '.nojekyll'), '');
+        },
+      },
+    ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': rootDir,
       },
     },
     server: {
