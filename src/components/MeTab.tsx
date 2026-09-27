@@ -89,10 +89,49 @@ export const MeTab: React.FC<MeTabProps> = ({
     resetGuestSession,
     allDiaryItems,
     exercises,
-    waterGlasses,
-    language,
-    setLanguage
+    allExercises,
+    waterGlasses
   } = useApp();
+
+  const getBadgeProgress = (badgeId: string): { current: number; target: number; unit: string } => {
+    const streak = stats.foodStreak || 0;
+    const xpVal = stats.xp || 0;
+    const weighCount = weights.length;
+    const mealCount = allDiaryItems.length;
+    const workoutCount = (allExercises || exercises || []).length;
+    switch (badgeId) {
+      case 'First log':
+        return { current: Math.min(1, mealCount), target: 1, unit: 'meal' };
+      case '3-day streak':
+        return { current: Math.min(3, streak), target: 3, unit: 'days' };
+      case '7-day streak':
+        return { current: Math.min(7, streak), target: 7, unit: 'days' };
+      case '30-day streak':
+        return { current: Math.min(30, streak), target: 30, unit: 'days' };
+      case '100-day streak':
+        return { current: Math.min(100, streak), target: 100, unit: 'days' };
+      case 'First workout':
+        return { current: Math.min(1, workoutCount), target: 1, unit: 'workout' };
+      case 'Hydrated':
+        return { current: Math.min(1, waterGlasses > 0 ? 1 : 0), target: 1, unit: 'glass' };
+      case 'First weigh-in':
+        return { current: Math.min(1, weighCount), target: 1, unit: 'weigh-in' };
+      case 'Weighed 7 times':
+        return { current: Math.min(7, weighCount), target: 7, unit: 'weigh-ins' };
+      case 'Weighed 30 times':
+        return { current: Math.min(30, weighCount), target: 30, unit: 'weigh-ins' };
+      case '50 XP':
+        return { current: Math.min(50, xpVal), target: 50, unit: 'XP' };
+      case '200 XP':
+        return { current: Math.min(200, xpVal), target: 200, unit: 'XP' };
+      case '1000 XP':
+        return { current: Math.min(1000, xpVal), target: 1000, unit: 'XP' };
+      case '5000 XP':
+        return { current: Math.min(5000, xpVal), target: 5000, unit: 'XP' };
+      default:
+        return { current: 0, target: 1, unit: '' };
+    }
+  };
 
   // Account deletion 2-step state & notice
   const [deleteStep, setDeleteStep] = useState<0 | 1>(0);
@@ -334,21 +373,6 @@ export const MeTab: React.FC<MeTabProps> = ({
     setReferralMsg('Referral applied. You and your friend both earned +500 XP.');
   };
 
-  const handleDownloadStandaloneHtml = () => {
-    const clone = document.documentElement.cloneNode(true) as HTMLElement;
-    const rootEl = clone.querySelector('#root');
-    if (rootEl) rootEl.innerHTML = '';
-    clone.querySelectorAll('script[src*="@vite"]').forEach(el => el.remove());
-    const htmlContent = '<!doctype html>\n' + clone.outerHTML;
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'index.html';
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const handleConfirmClear = async () => {
     await api.clearAllData();
     setShowClearConfirm(false);
@@ -555,13 +579,13 @@ export const MeTab: React.FC<MeTabProps> = ({
 
       {/* Profile & Target Header Card */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="w-12 h-12 rounded-2xl bg-teal-500/10 border border-teal-500/20 text-teal-400 flex items-center justify-center font-bold text-lg font-mono">
-              {formData.name.slice(0, 1).toUpperCase()}
+              {(formData.name || 'U').slice(0, 1).toUpperCase()}
             </div>
             <div>
-              <h3 className="text-base font-bold text-zinc-100">{formData.name}</h3>
+              <h3 className="text-base font-bold text-zinc-100">{formData.name || 'Set up your profile'}</h3>
               <span className="text-xs text-zinc-500 font-mono">
                 Level {stats.level} · {stats.xp} XP · {stats.foodStreak || 0}d streak
               </span>
@@ -569,31 +593,39 @@ export const MeTab: React.FC<MeTabProps> = ({
           </div>
 
           <div className="text-right">
-            <span className="text-xl font-extrabold text-teal-400 font-mono block">
-              {currentTargetKcal}
-            </span>
-            <span className="text-[10px] text-zinc-500 uppercase">kcal / day</span>
+            {currentTargetKcal > 0 ? (
+              <>
+                <span className="text-xl font-extrabold text-teal-400 font-mono block">
+                  {currentTargetKcal}
+                </span>
+                <span className="text-[10px] text-zinc-500 uppercase">kcal / day</span>
+              </>
+            ) : (
+              <span className="text-xs font-medium text-zinc-400 block max-w-[160px]">
+                Enter your stats to see your calorie target.
+              </span>
+            )}
           </div>
         </div>
 
         {/* Calculated Macros Confirmation */}
-        <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-800 flex items-center justify-between text-xs font-mono">
+        <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-800 grid grid-cols-3 gap-2 text-center text-xs font-mono">
           <div>
             <span className="text-zinc-500 block text-[10px]">Carbs (40%)</span>
-            <span className="font-bold text-blue-400">{currentMacros.carbsGrams}g</span>
+            <span className="font-bold text-blue-400">
+              {currentTargetKcal > 0 ? `${currentMacros.carbsGrams}g` : '—'}
+            </span>
           </div>
           <div>
             <span className="text-zinc-500 block text-[10px]">Fat (30%)</span>
-            <span className="font-bold text-amber-400">{currentMacros.fatGrams}g</span>
+            <span className="font-bold text-amber-400">
+              {currentTargetKcal > 0 ? `${currentMacros.fatGrams}g` : '—'}
+            </span>
           </div>
           <div>
             <span className="text-zinc-500 block text-[10px]">Protein (30%)</span>
-            <span className="font-bold text-red-400">{currentMacros.proteinGrams}g</span>
-          </div>
-          <div className="text-right border-l border-zinc-800 pl-3">
-            <span className="text-zinc-500 block text-[10px]">Verification</span>
-            <span className="text-teal-400 font-bold">
-              {currentMacros.carbsGrams * 4 + currentMacros.fatGrams * 9 + currentMacros.proteinGrams * 4} kcal
+            <span className="font-bold text-red-400">
+              {currentTargetKcal > 0 ? `${currentMacros.proteinGrams}g` : '—'}
             </span>
           </div>
         </div>
@@ -670,31 +702,6 @@ export const MeTab: React.FC<MeTabProps> = ({
               <Clock className="w-3 h-3" />
               Auto
             </button>
-          </div>
-        </div>
-
-        {/* Language Selector (EN / ES / FR / DE) */}
-        <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Globe className="w-3.5 h-3.5 text-teal-400" />
-            <span className="text-xs font-medium text-zinc-300">Language</span>
-          </div>
-          <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800">
-            {(['en', 'es', 'fr', 'de'] as SupportedLanguage[]).map((langCode) => (
-              <button
-                key={langCode}
-                type="button"
-                onClick={() => setLanguage(langCode)}
-                aria-label={`Set language to ${langCode.toUpperCase()}`}
-                className={`px-2 py-1 rounded-md text-[10px] font-mono uppercase transition-colors ${
-                  language === langCode
-                    ? 'bg-teal-500 text-zinc-950 font-bold'
-                    : 'text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {langCode}
-              </button>
-            ))}
           </div>
         </div>
       </div>
@@ -836,20 +843,23 @@ export const MeTab: React.FC<MeTabProps> = ({
             <label className="block text-xs font-medium text-zinc-400 mb-1">Name</label>
             <input
               type="text"
-              value={formData.name}
+              value={formData.name || ''}
               onChange={(e) => setFormData(p => ({ ...p, name: e.target.value }))}
+              placeholder="Your name"
               required
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
             />
           </div>
 
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Gender</label>
             <select
-              value={formData.gender}
+              value={formData.gender || ''}
               onChange={(e) => setFormData(p => ({ ...p, gender: e.target.value as any }))}
+              required
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
             >
+              <option value="">Select gender</option>
               <option value="female">Female (floor 1200 kcal)</option>
               <option value="male">Male (floor 1500 kcal)</option>
             </select>
@@ -861,10 +871,11 @@ export const MeTab: React.FC<MeTabProps> = ({
               type="number"
               min="14"
               max="110"
-              value={formData.age}
-              onChange={(e) => setFormData(p => ({ ...p, age: Number(e.target.value) }))}
+              value={formData.age > 0 ? formData.age : ''}
+              onChange={(e) => setFormData(p => ({ ...p, age: e.target.value ? Number(e.target.value) : 0 }))}
+              placeholder="e.g. 28"
               required
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 font-mono"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
           </div>
 
@@ -874,10 +885,11 @@ export const MeTab: React.FC<MeTabProps> = ({
               type="number"
               min="100"
               max="250"
-              value={formData.heightCm}
-              onChange={(e) => setFormData(p => ({ ...p, heightCm: Number(e.target.value) }))}
+              value={formData.heightCm > 0 ? formData.heightCm : ''}
+              onChange={(e) => setFormData(p => ({ ...p, heightCm: e.target.value ? Number(e.target.value) : 0 }))}
+              placeholder="e.g. 165"
               required
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 font-mono"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
           </div>
 
@@ -888,14 +900,25 @@ export const MeTab: React.FC<MeTabProps> = ({
             <input
               type="number"
               step="0.1"
-              value={formData.unitSystem === 'metric' ? formData.currentWeightKg : Math.round(formData.currentWeightKg * 2.20462 * 10) / 10}
+              value={
+                formData.currentWeightKg > 0
+                  ? formData.unitSystem === 'metric'
+                    ? formData.currentWeightKg
+                    : Math.round(formData.currentWeightKg * 2.20462 * 10) / 10
+                  : ''
+              }
               onChange={(e) => {
+                if (!e.target.value) {
+                  setFormData(p => ({ ...p, currentWeightKg: 0 }));
+                  return;
+                }
                 const val = parseFloat(e.target.value) || 0;
                 const inKg = formData.unitSystem === 'metric' ? val : val / 2.20462;
                 setFormData(p => ({ ...p, currentWeightKg: Math.round(inKg * 10) / 10 }));
               }}
+              placeholder="e.g. 70"
               required
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 font-mono"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
           </div>
 
@@ -906,14 +929,24 @@ export const MeTab: React.FC<MeTabProps> = ({
             <input
               type="number"
               step="0.1"
-              value={formData.unitSystem === 'metric' ? formData.goalWeightKg : Math.round(formData.goalWeightKg * 2.20462 * 10) / 10}
+              value={
+                formData.goalWeightKg > 0
+                  ? formData.unitSystem === 'metric'
+                    ? formData.goalWeightKg
+                    : Math.round(formData.goalWeightKg * 2.20462 * 10) / 10
+                  : ''
+              }
               onChange={(e) => {
+                if (!e.target.value) {
+                  setFormData(p => ({ ...p, goalWeightKg: 0 }));
+                  return;
+                }
                 const val = parseFloat(e.target.value) || 0;
                 const inKg = formData.unitSystem === 'metric' ? val : val / 2.20462;
                 setFormData(p => ({ ...p, goalWeightKg: Math.round(inKg * 10) / 10 }));
               }}
-              required
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 font-mono"
+              placeholder=""
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
           </div>
 
@@ -926,17 +959,19 @@ export const MeTab: React.FC<MeTabProps> = ({
               value={formData.bodyFatPercent || ''}
               onChange={(e) => setFormData(p => ({ ...p, bodyFatPercent: e.target.value ? Number(e.target.value) : undefined }))}
               placeholder="e.g. 18 (uses Katch-McArdle)"
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 font-mono"
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
           </div>
 
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1">Fitness Level</label>
             <select
-              value={formData.fitnessLevel}
+              value={formData.fitnessLevel || ''}
               onChange={(e) => setFormData(p => ({ ...p, fitnessLevel: e.target.value as any }))}
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500 capitalize"
+              required
+              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
             >
+              <option value="">Select fitness level</option>
               <option value="beginner">Beginner</option>
               <option value="intermediate">Intermediate</option>
               <option value="advanced">Advanced</option>
@@ -947,10 +982,12 @@ export const MeTab: React.FC<MeTabProps> = ({
         <div>
           <label className="block text-xs font-medium text-zinc-400 mb-1">Daily Activity Level</label>
           <select
-            value={formData.dailyActivity}
+            value={formData.dailyActivity || ''}
             onChange={(e) => setFormData(p => ({ ...p, dailyActivity: e.target.value as any }))}
+            required
             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
           >
+            <option value="">Select your activity level</option>
             <option value="sedentary">Sedentary (1.2×) · Desk job, minimal walking</option>
             <option value="light">Lightly Active (1.375×) · 1-3 workouts / week</option>
             <option value="moderate">Moderately Active (1.55×) · 3-5 workouts / week</option>
@@ -962,7 +999,7 @@ export const MeTab: React.FC<MeTabProps> = ({
         <div>
           <label className="block text-xs font-medium text-zinc-400 mb-1">Goal Speed</label>
           <select
-            value={formData.goalSpeed}
+            value={formData.goalSpeed || 'lose_normal'}
             onChange={(e) => setFormData(p => ({ ...p, goalSpeed: e.target.value as any }))}
             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
           >
@@ -991,11 +1028,11 @@ export const MeTab: React.FC<MeTabProps> = ({
             <h4 className="text-sm font-semibold text-zinc-200">Weight Progression</h4>
           </div>
           <span className="text-xs text-zinc-400 font-mono">
-            {formatWeight(formData.currentWeightKg, formData.unitSystem)}
+            {formData.currentWeightKg > 0 ? formatWeight(formData.currentWeightKg, formData.unitSystem) : '—'}
           </span>
         </div>
 
-        {sortedWeights.length > 0 && (
+        {sortedWeights.length >= 2 ? (
           <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-850">
             <div className="h-28 w-full relative">
               <svg className="w-full h-full" viewBox="0 0 300 100" preserveAspectRatio="none">
@@ -1003,19 +1040,17 @@ export const MeTab: React.FC<MeTabProps> = ({
                 <line x1="0" y1="55" x2="300" y2="55" stroke="#27272a" strokeDasharray="3 3" />
                 <line x1="0" y1="90" x2="300" y2="90" stroke="#27272a" strokeDasharray="3 3" />
 
-                {sortedWeights.length > 1 && (
-                  <polyline
-                    fill="none"
-                    stroke="#14b8a6"
-                    strokeWidth="2.5"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    points={points}
-                  />
-                )}
+                <polyline
+                  fill="none"
+                  stroke="#14b8a6"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  points={points}
+                />
 
                 {sortedWeights.map((w, idx) => {
-                  const x = sortedWeights.length === 1 ? 150 : (idx / (sortedWeights.length - 1)) * 260 + 20;
+                  const x = (idx / (sortedWeights.length - 1)) * 260 + 20;
                   const y = 90 - ((w.weightKg - minWeight) / weightRange) * 70;
                   return (
                     <circle
@@ -1034,6 +1069,10 @@ export const MeTab: React.FC<MeTabProps> = ({
               <span>{sortedWeights[sortedWeights.length - 1].date}</span>
             </div>
           </div>
+        ) : (
+          <p className="text-xs text-zinc-500 text-center py-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+            Log at least 2 weigh-ins to see the trend.
+          </p>
         )}
 
         <form onSubmit={handleAddWeight} className="flex gap-2">
@@ -1099,96 +1138,73 @@ export const MeTab: React.FC<MeTabProps> = ({
 
         <div className="grid grid-cols-2 gap-2">
           {BADGE_DEFINITIONS.map((badge) => {
-            const isUnlocked = stats.badges.includes(badge.id);
+            const prog = getBadgeProgress(badge.id);
+            const isUnlocked = stats.badges.includes(badge.id) || prog.current >= prog.target;
+            const pct = Math.min(100, Math.round((prog.current / prog.target) * 100));
             return (
               <div
                 key={badge.id}
-                className={`p-3 rounded-xl border transition-all ${
+                className={`p-3 rounded-xl border transition-all flex flex-col justify-between gap-2 ${
                   isUnlocked
                     ? 'bg-zinc-950 border-teal-500/30'
-                    : 'bg-zinc-950/40 border-zinc-850 opacity-40'
+                    : 'bg-zinc-950/60 border-zinc-800/80'
                 }`}
               >
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className={`w-2 h-2 rounded-full ${isUnlocked ? 'bg-teal-400' : 'bg-zinc-700'}`} />
-                  <span className={`text-xs font-semibold ${isUnlocked ? 'text-zinc-100' : 'text-zinc-500'}`}>
-                    {badge.title}
-                  </span>
+                <div>
+                  <div className="flex items-center justify-between gap-1.5 mb-1">
+                    <div className="flex items-center gap-1.5 truncate">
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${isUnlocked ? 'bg-teal-400' : 'bg-zinc-600'}`} />
+                      <span className={`text-xs font-semibold truncate ${isUnlocked ? 'text-zinc-100' : 'text-zinc-400'}`}>
+                        {badge.title}
+                      </span>
+                    </div>
+                    <span
+                      className={`text-[9px] font-mono px-1.5 py-0.5 rounded shrink-0 ${
+                        isUnlocked
+                          ? 'bg-teal-500/15 text-teal-300 border border-teal-500/30'
+                          : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
+                      }`}
+                    >
+                      {isUnlocked ? 'Unlocked' : 'Locked'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-zinc-500 leading-tight">
+                    {badge.desc}
+                  </p>
                 </div>
-                <p className="text-[10px] text-zinc-500 leading-tight">
-                  {badge.desc}
-                </p>
+
+                <div className="space-y-1 pt-1">
+                  <div className="flex items-center justify-between text-[9px] font-mono text-zinc-400">
+                    <span>Progress</span>
+                    <span>
+                      {prog.current} / {prog.target} {prog.unit}
+                    </span>
+                  </div>
+                  <div className="w-full h-1 bg-zinc-900 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${isUnlocked ? 'bg-teal-400' : 'bg-zinc-600'}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* #57 CUSTOM REMINDERS (Breakfast, Lunch, Dinner, Water nudges) */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3.5">
+      {/* #57 CUSTOM REMINDERS */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Bell className="w-4 h-4 text-teal-400" />
             <h4 className="text-sm font-semibold text-zinc-200">Custom Daily Reminders</h4>
           </div>
-          <button
-            type="button"
-            onClick={async () => {
-              if ('Notification' in window && Notification.permission === 'default') {
-                await Notification.requestPermission().catch(() => {});
-              }
-              await updateUserProfile({
-                mealReminderEnabled: true,
-                waterReminderEnabled: true,
-                reminderTimes: reminders
-              });
-              setSaveStatus('Custom reminder times saved!');
-              setTimeout(() => setSaveStatus(null), 2500);
-            }}
-            className="px-3 py-1 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-lg text-xs"
-          >
-            Save Times
-          </button>
+          <span className="text-xs font-mono text-zinc-500">Coming soon.</span>
         </div>
-
-        <div className="grid grid-cols-2 gap-2.5 text-xs">
-          <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex items-center justify-between">
-            <span className="text-zinc-400">Breakfast</span>
-            <input
-              type="time"
-              value={reminders.breakfast}
-              onChange={(e) => setReminders(p => ({ ...p, breakfast: e.target.value }))}
-              className="bg-transparent text-zinc-100 font-mono text-xs focus:outline-none"
-            />
-          </div>
-          <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex items-center justify-between">
-            <span className="text-zinc-400">Lunch</span>
-            <input
-              type="time"
-              value={reminders.lunch}
-              onChange={(e) => setReminders(p => ({ ...p, lunch: e.target.value }))}
-              className="bg-transparent text-zinc-100 font-mono text-xs focus:outline-none"
-            />
-          </div>
-          <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex items-center justify-between">
-            <span className="text-zinc-400">Dinner</span>
-            <input
-              type="time"
-              value={reminders.dinner}
-              onChange={(e) => setReminders(p => ({ ...p, dinner: e.target.value }))}
-              className="bg-transparent text-zinc-100 font-mono text-xs focus:outline-none"
-            />
-          </div>
-          <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex items-center justify-between">
-            <span className="text-zinc-400">Water Nudge</span>
-            <input
-              type="time"
-              value={reminders.water}
-              onChange={(e) => setReminders(p => ({ ...p, water: e.target.value }))}
-              className="bg-transparent text-zinc-100 font-mono text-xs focus:outline-none"
-            />
-          </div>
-        </div>
+        <p className="text-xs text-zinc-500">
+          Coming soon.
+        </p>
       </div>
 
       {/* #54 HOME SCREEN WIDGET & PWA INSTRUCTIONS */}
@@ -1305,7 +1321,7 @@ export const MeTab: React.FC<MeTabProps> = ({
               className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-teal-500/30 rounded-xl text-xs font-medium text-teal-300 flex items-center justify-center gap-2 transition-colors"
             >
               <Sparkles className="w-4 h-4 text-teal-400" />
-              View Caloriq website & description page
+              About Caloriq
             </button>
           )}
 
@@ -1341,20 +1357,11 @@ export const MeTab: React.FC<MeTabProps> = ({
 
           <button
             onClick={handleExportData}
-            aria-label="Export all data as JSON"
+            aria-label="Export data as JSON"
             className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
           >
             <Download className="w-4 h-4 text-teal-400" />
-            Export all data as JSON (caloriq-export-YYYY-MM-DD.json)
-          </button>
-
-          <button
-            onClick={handleDownloadStandaloneHtml}
-            aria-label="Download standalone index.html"
-            className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-teal-500/30 rounded-xl text-xs font-medium text-teal-300 flex items-center justify-center gap-2 transition-colors"
-          >
-            <Download className="w-4 h-4 text-teal-400" />
-            Download standalone index.html
+            Export data as JSON
           </button>
 
           {/* #4 Two-Step Account Deletion */}

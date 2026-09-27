@@ -15,7 +15,9 @@ import {
   Clock,
   Activity,
   Copy,
-  Share2
+  Share2,
+  RefreshCw,
+  MessageSquare
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
@@ -24,12 +26,14 @@ import type { MealTemplate, SavedFood, FoodItem, MealType } from '../types/index
 
 export const ReportsTab: React.FC = () => {
   const {
+    userId,
     activeDate,
     setActiveDate,
     macroTarget,
     profile,
     weights,
     allHabits,
+    cravings,
     diaryItems,
     addFoodItem
   } = useApp();
@@ -40,9 +44,13 @@ export const ReportsTab: React.FC = () => {
   const [templateName, setTemplateName] = useState('');
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [savedSearch, setSavedSearch] = useState('');
+  const [reflectionSearch, setReflectionSearch] = useState('');
   const [notification, setNotification] = useState<string | null>(null);
   // #26 & #27 View mode: 7d | 30d | 12m
   const [chartRange, setChartRange] = useState<'7d' | '30d' | '12m'>('7d');
+  const [weeklyBullets, setWeeklyBullets] = useState<string[]>([]);
+  const [weeklyStatusText, setWeeklyStatusText] = useState<string>('Not enough data yet.');
+  const [isLoadingWeekly, setIsLoadingWeekly] = useState(false);
 
   useEffect(() => {
     loadReportsData();
@@ -212,31 +220,198 @@ export const ReportsTab: React.FC = () => {
     return maxW - minW <= 0.35;
   }, [sortedWeights]);
 
-  // #38 Sleep vs Next-Day Hunger/Intake correlation
-  const sleepCorrelation = useMemo(() => {
-    let shortSleepKcal = 0;
-    let shortSleepCount = 0;
-    let goodSleepKcal = 0;
-    let goodSleepCount = 0;
-
+  // #38 Sleep vs Next-Day Hunger/Intake correlation (14+ days required)
+  const sleepCalorieCorrelation = useMemo(() => {
+    const validDays: Array<{ sleepHours: number; calories: number }> = [];
     for (const h of allHabits) {
-      if (!h.sleepHours) continue;
+      if (!h.sleepHours || h.sleepHours <= 0) continue;
       const dayItems = allEntries.filter(e => e.date === h.date);
       const dayKcal = dayItems.reduce((s, i) => s + i.calories, 0);
       if (dayKcal <= 0) continue;
-      if (h.sleepHours < 7) {
-        shortSleepKcal += dayKcal;
-        shortSleepCount++;
-      } else {
-        goodSleepKcal += dayKcal;
-        goodSleepCount++;
+      validDays.push({ sleepHours: h.sleepHours, calories: dayKcal });
+    }
+    if (validDays.length < 14) return null;
+    const under7 = validDays.filter(d => d.sleepHours < 7);
+    const atLeast7 = validDays.filter(d => d.sleepHours >= 7);
+    if (under7.length < 2 || atLeast7.length < 2) return null;
+    const under7Avg = under7.reduce((s, d) => s + d.calories, 0) / under7.length;
+    const atLeast7Avg = atLeast7.reduce((s, d) => s + d.calories, 0) / atLeast7.length;
+    const diff = Math.round(under7Avg - atLeast7Avg);
+    if (diff < 50) return null;
+    return { diff };
+  }, [allHabits, allEntries]);
+
+  // Mood and Food Correlation (14+ days required, > 0.5 difference on 1-5 scale)
+  const moodProteinCorrelation = useMemo(() => {
+    const validDays: Array<{ mood: number; hitProtein: boolean }> = [];
+    for (const h of allHabits) {
+      if (!h.mood || h.mood < 1 || h.mood > 5) continue;
+      const dayItems = allEntries.filter(e => e.date === h.date);
+      const dayKcal = dayItems.reduce((s, i) => s + i.calories, 0);
+      if (dayKcal <= 0) continue;
+      const dayProt = dayItems.reduce((s, i) => s + (i.protein || 0), 0);
+      const hitProtein = macroTarget.protein > 0 && dayProt >= macroTarget.protein;
+      validDays.push({ mood: h.mood, hitProtein });
+    }
+    if (validDays.length < 14) return null;
+    const hitDays = validDays.filter(d => d.hitProtein);
+    const missDays = validDays.filter(d => !d.hitProtein);
+    if (hitDays.length === 0 || missDays.length === 0) return null;
+    const hitAvg = hitDays.reduce((s, d) => s + d.mood, 0) / hitDays.length;
+    const missAvg = missDays.reduce((s, d) => s + d.mood, 0) / missDays.length;
+    if (Math.abs(hitAvg - missAvg) <= 0.5) return null;
+    return {
+      hitAvg: Math.round(hitAvg * 10) / 10,
+      missAvg: Math.round(missAvg * 10) / 10
+    };
+  }, [allHabits, allEntries, macroTarget.protein]);
+
+  // Distinct days with meals logged
+  const totalDistinctMealDays = useMemo(() => {
+    return new Set(allEntries.filter(e => e.calories > 0).map(e => e.date)).size;
+  }, [allEntries]);
+
+  // Past reflections sorted newest first
+  const reflectionsList = useMemo(() => {
+    return allHabits
+      .filter(h => h.journalAnswer && h.journalAnswer.trim().length > 0)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [allHabits]);
+
+  const filteredReflections = useMemo(() => {
+    const q = reflectionSearch.trim().toLowerCase();
+    if (!q) return reflectionsList;
+    return reflectionsList.filter(
+      r =>
+        (r.journalAnswer || '').toLowerCase().includes(q) ||
+        (r.journalQuestion || '').toLowerCase().includes(q) ||
+        r.date.includes(q)
+    );
+  }, [reflectionsList, reflectionSearch]);
+
+  // Weekly AI Insights caching & generation
+  const getCurrentWeekKey = () => {
+    const now = new Date();
+    const sunday = new Date(now);
+    sunday.setDate(now.getDate() - now.getDay());
+    return sunday.toISOString().split('T')[0];
+  };
+
+  const fetchWeeklyInsights = async (forceRefresh = false) => {
+    const cacheKey = `caloriq_weekly_insights_${userId || 'guest'}`;
+    const weekKey = getCurrentWeekKey();
+
+    if (!forceRefresh) {
+      try {
+        const raw = localStorage.getItem(cacheKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.weekKey === weekKey) {
+            setWeeklyBullets(Array.isArray(parsed.bullets) ? parsed.bullets : []);
+            setWeeklyStatusText(parsed.statusText || 'No clear pattern this week.');
+            return;
+          }
+        }
+      } catch {
+        // ignore cache parse error
       }
     }
-    return {
-      shortSleepAvg: shortSleepCount > 0 ? Math.round(shortSleepKcal / shortSleepCount) : null,
-      goodSleepAvg: goodSleepCount > 0 ? Math.round(goodSleepKcal / goodSleepCount) : null
-    };
-  }, [allHabits, allEntries]);
+
+    // Build 7-day input
+    const daysPayload = past7Days.map(d => {
+      const habit = allHabits.find(h => h.date === d.dateStr);
+      const dayItems = allEntries.filter(e => e.date === d.dateStr);
+      return {
+        date: d.dateStr,
+        calories: d.calories,
+        calorieTarget: macroTarget.calories,
+        protein: d.protein,
+        proteinTarget: macroTarget.protein,
+        mood: habit?.mood,
+        energy: habit?.energy,
+        sleepHours: habit?.sleepHours,
+        sleepQuality: habit?.sleepQuality,
+        foods: dayItems.map(i => i.name)
+      };
+    });
+
+    const activeDataDays = daysPayload.filter(
+      d => d.calories > 0 || d.mood !== undefined || d.energy !== undefined || d.sleepHours !== undefined
+    );
+
+    if (activeDataDays.length < 3 && totalDistinctMealDays < 7) {
+      setWeeklyBullets([]);
+      setWeeklyStatusText('Not enough data yet.');
+      return;
+    }
+
+    const sevenDaysAgoStr = past7Days[0]?.dateStr || '';
+    const recentCravings = (cravings || [])
+      .filter(c => c.date >= sevenDaysAgoStr)
+      .map(c => ({
+        date: c.date,
+        time: c.createdAt ? new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+        food: c.food,
+        trigger: c.trigger,
+        intensity: c.intensity
+      }));
+
+    const recentWeights = sortedWeights
+      .filter(w => w.date >= sevenDaysAgoStr)
+      .map(w => ({ date: w.date, weightKg: w.weightKg }));
+
+    setIsLoadingWeekly(true);
+    try {
+      const res = await api.getWeeklyInsights({
+        days: daysPayload,
+        cravings: recentCravings,
+        weights: recentWeights
+      });
+      const bullets = Array.isArray(res.bullets) ? res.bullets : [];
+      const statusText = res.statusText || (bullets.length === 0 ? 'No clear pattern this week.' : '');
+      setWeeklyBullets(bullets);
+      setWeeklyStatusText(statusText);
+      localStorage.setItem(
+        cacheKey,
+        JSON.stringify({
+          weekKey,
+          bullets,
+          statusText,
+          updatedAt: new Date().toISOString()
+        })
+      );
+    } catch {
+      setWeeklyBullets([]);
+      setWeeklyStatusText('No clear pattern this week.');
+    } finally {
+      setIsLoadingWeekly(false);
+    }
+  };
+
+  useEffect(() => {
+    const isSundayEvening = new Date().getDay() === 0 && new Date().getHours() >= 18;
+    if (totalDistinctMealDays >= 7 || isSundayEvening) {
+      fetchWeeklyInsights(false);
+    } else {
+      // Check if we already have a cached insight, otherwise show Not enough data yet.
+      const cacheKey = `caloriq_weekly_insights_${userId || 'guest'}`;
+      try {
+        const raw = localStorage.getItem(cacheKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && parsed.weekKey === getCurrentWeekKey() && parsed.bullets?.length > 0) {
+            setWeeklyBullets(parsed.bullets);
+            setWeeklyStatusText(parsed.statusText || '');
+            return;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      setWeeklyBullets([]);
+      setWeeklyStatusText('Not enough data yet.');
+    }
+  }, [totalDistinctMealDays, allHabits.length]);
 
   // Meal Templates actions
   const handleSaveCurrentAsTemplate = async (e: React.FormEvent) => {
@@ -376,6 +551,62 @@ export const ReportsTab: React.FC = () => {
         </div>
       </div>
 
+      {/* THIS WEEK — REAL AI WEEKLY INSIGHTS */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-zinc-200">This week</h3>
+            <span className="text-[11px] text-zinc-500">
+              Patterns from your last 7 days of logs
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => fetchWeeklyInsights(true)}
+            disabled={isLoadingWeekly}
+            aria-label="Refresh weekly insights"
+            title="Refresh weekly insights"
+            className="p-2 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-teal-400 disabled:opacity-50 transition-colors"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingWeekly ? 'animate-spin text-teal-400' : ''}`} />
+          </button>
+        </div>
+
+        {isLoadingWeekly ? (
+          <p className="text-xs text-zinc-500 py-2">Analyzing your last 7 days...</p>
+        ) : weeklyBullets.length > 0 ? (
+          <ul className="space-y-2 text-xs text-zinc-200 list-disc pl-4">
+            {weeklyBullets.map((bullet, i) => (
+              <li key={i} className="leading-relaxed">
+                {bullet}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-zinc-500 py-2">
+            {weeklyStatusText || 'Not enough data yet.'}
+          </p>
+        )}
+      </div>
+
+      {/* 14+ DAY MOOD & PROTEIN CORRELATION (only shown when meaningful >0.5 diff) */}
+      {moodProteinCorrelation && (
+        <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl">
+          <p className="text-xs font-medium text-zinc-200 leading-relaxed">
+            Your mood averages {moodProteinCorrelation.hitAvg} on days you hit protein, {moodProteinCorrelation.missAvg} on days you don&apos;t.
+          </p>
+        </div>
+      )}
+
+      {/* 14+ DAY SLEEP & CALORIE CORRELATION (only shown when real & consistent) */}
+      {sleepCalorieCorrelation && (
+        <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl">
+          <p className="text-xs font-medium text-zinc-200 leading-relaxed">
+            On nights you slept under 7 hours, you ate an average of {sleepCalorieCorrelation.diff} kcal more.
+          </p>
+        </div>
+      )}
+
       {/* #26 & #27 CALORIE CHART WITH 7-DAY / 30-DAY MONTHLY / 12-MONTH YEARLY TOGGLE */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
         <div className="flex items-center justify-between">
@@ -410,7 +641,11 @@ export const ReportsTab: React.FC = () => {
           </div>
         </div>
 
-        {chartRange === '12m' ? (
+        {totalDistinctMealDays < 7 ? (
+          <p className="text-xs text-zinc-500 text-center py-6 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+            Log meals for 7 days to see your chart.
+          </p>
+        ) : chartRange === '12m' ? (
           <div className="h-44 flex items-end justify-between gap-1.5 pt-6 px-1 border-b border-zinc-800 relative">
             {past12Months.map((m) => {
               const heightPct = Math.min(100, Math.max(8, (m.avgKcal / maxBarCal) * 100));
@@ -549,8 +784,8 @@ export const ReportsTab: React.FC = () => {
             })()}
           </div>
         ) : (
-          <p className="text-xs text-zinc-500 text-center py-2">
-            Log at least 2 weigh-ins in the Me tab to view raw daily weights vs 7-day rolling average.
+          <p className="text-xs text-zinc-500 text-center py-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+            Log at least 2 weigh-ins to see the trend.
           </p>
         )}
 
@@ -625,7 +860,11 @@ export const ReportsTab: React.FC = () => {
         </div>
 
         {/* #32 Micronutrient warnings */}
-        {lowMicros.length > 0 && (
+        {activeDayItems.length === 0 ? (
+          <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-500 text-center">
+            Log food to see micronutrient tracking.
+          </div>
+        ) : lowMicros.length > 0 ? (
           <div className="p-3 bg-amber-950/30 border border-amber-800/50 rounded-xl space-y-1">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -635,14 +874,14 @@ export const ReportsTab: React.FC = () => {
               Low intake flagged today for: {lowMicros.join(' · ')}. Consider leafy greens, dairy/fortified tofu, or fatty fish.
             </p>
           </div>
-        )}
+        ) : null}
       </div>
 
-      {/* #33 TIME-OF-DAY EATING HEATMAP & #34 WEEKEND VS WEEKDAY COMPARISON & #38 SLEEP CORRELATION */}
+      {/* #33 TIME-OF-DAY EATING HEATMAP & #34 WEEKEND VS WEEKDAY COMPARISON */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
         <div className="flex items-center gap-2">
           <Clock className="w-4 h-4 text-teal-400" />
-          <h4 className="text-sm font-semibold text-zinc-200">Timing, Weekends &amp; Sleep Insights</h4>
+          <h4 className="text-sm font-semibold text-zinc-200">Timing &amp; Weekend Insights</h4>
         </div>
 
         {/* #34 Weekend vs Weekday */}
@@ -691,21 +930,59 @@ export const ReportsTab: React.FC = () => {
             ))}
           </div>
         </div>
+      </div>
 
-        {/* #38 Sleep vs Next-Day Hunger/Intake */}
-        <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between text-xs">
+      {/* REFLECTIONS SECTION WITH SEARCH */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3.5">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Moon className="w-4 h-4 text-teal-400 shrink-0" />
-            <div>
-              <span className="text-zinc-200 font-medium block">Sleep vs Next-Day Intake</span>
-              <span className="text-[10px] text-zinc-500">
-                {sleepCorrelation.shortSleepAvg || sleepCorrelation.goodSleepAvg
-                  ? `<7h sleep: ${sleepCorrelation.shortSleepAvg ?? '—'} kcal · 7h+ sleep: ${sleepCorrelation.goodSleepAvg ?? '—'} kcal`
-                  : 'Log sleep hours on the Diary tab to correlate with daily hunger'}
-              </span>
-            </div>
+            <MessageSquare className="w-4 h-4 text-teal-400" />
+            <h4 className="text-sm font-semibold text-zinc-200">Reflections</h4>
           </div>
+          <span className="text-[11px] font-mono text-zinc-500">
+            {reflectionsList.length} saved
+          </span>
         </div>
+
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-2.5" />
+          <input
+            type="text"
+            value={reflectionSearch}
+            onChange={(e) => setReflectionSearch(e.target.value)}
+            placeholder="Search reflections (e.g. tired, hungry)..."
+            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+          />
+        </div>
+
+        {reflectionsList.length === 0 ? (
+          <p className="text-xs text-zinc-500 text-center py-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+            Save a Daily Reflection on the Diary tab to see your entries here.
+          </p>
+        ) : filteredReflections.length === 0 ? (
+          <p className="text-xs text-zinc-500 text-center py-3">
+            No reflections matching &ldquo;{reflectionSearch}&rdquo;.
+          </p>
+        ) : (
+          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+            {filteredReflections.map((r) => (
+              <div
+                key={r.date}
+                className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-1"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono text-teal-400">{r.date}</span>
+                  {r.journalQuestion && (
+                    <span className="text-[10px] text-zinc-500 truncate max-w-[200px]">
+                      {r.journalQuestion}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-zinc-200 leading-relaxed">{r.journalAnswer}</p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* WEEKLY AVERAGES & SHARE PROGRESS CARD */}
@@ -827,7 +1104,7 @@ export const ReportsTab: React.FC = () => {
 
         {templates.length === 0 ? (
           <p className="text-xs text-zinc-500 text-center py-3 border border-dashed border-zinc-800 rounded-xl">
-            No templates saved yet. Save today&apos;s meals to reuse on future dates.
+            Save today&apos;s meals as a template to reuse later.
           </p>
         ) : (
           <div className="space-y-2">
@@ -887,7 +1164,11 @@ export const ReportsTab: React.FC = () => {
         </div>
 
         <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
-          {filteredSavedFoods.length === 0 ? (
+          {savedFoods.length === 0 ? (
+            <p className="text-xs text-zinc-500 py-3 text-center">
+              Foods you log will appear here for one-tap re-adding.
+            </p>
+          ) : filteredSavedFoods.length === 0 ? (
             <p className="text-xs text-zinc-500 py-3 text-center">No saved foods found.</p>
           ) : (
             filteredSavedFoods.map((food) => (

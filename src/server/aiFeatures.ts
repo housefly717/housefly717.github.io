@@ -20,7 +20,7 @@ export async function parseVoiceMealWithGemini(transcript: string) {
   try {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: `Parse this spoken meal description into structured food items with estimated calories and macronutrients: "${transcript}"`,
       config: {
         systemInstruction: 'You are a nutrition parser. Break spoken meal descriptions into individual food items with accurate calories, protein, carbs, fat, and serving size. Never include emojis.',
@@ -51,7 +51,6 @@ export async function parseVoiceMealWithGemini(transcript: string) {
     });
     return JSON.parse(response.text || '{}');
   } catch (err) {
-    // Clean fallback parser if offline or key unavailable
     const cleaned = transcript.trim() || 'Two eggs and sourdough toast';
     return {
       mealSummaryName: cleaned.charAt(0).toUpperCase() + cleaned.slice(1),
@@ -69,7 +68,7 @@ export async function analyzePlatePhotoWithGemini(base64Image: string, mimeType:
     const ai = getAiClient();
     const rawData = base64Image.replace(/^data:image\/\w+;base64,/, '');
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: {
         parts: [
           { inlineData: { data: rawData, mimeType } },
@@ -132,7 +131,7 @@ export async function analyzeFridgePhotoWithGemini(
     const ai = getAiClient();
     const rawData = base64Image.replace(/^data:image\/\w+;base64,/, '');
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: {
         parts: [
           { inlineData: { data: rawData, mimeType } },
@@ -208,7 +207,7 @@ export async function scanReceiptWithGemini(base64Image: string, mimeType: strin
     const ai = getAiClient();
     const rawData = base64Image.replace(/^data:image\/\w+;base64,/, '');
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: {
         parts: [
           { inlineData: { data: rawData, mimeType } },
@@ -256,7 +255,7 @@ export async function estimateRestaurantDishWithGemini(restaurant: string, dish:
   try {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: `Estimate realistic nutrition for a typical restaurant portion of "${dish}" at "${restaurant}". Provide calories, protein, carbs, fat, serving description, and one lighter modification tip. No emojis.`,
       config: {
         responseMimeType: 'application/json',
@@ -298,7 +297,7 @@ export async function suggestFixMyDayWithGemini(
     const ai = getAiClient();
     const foodListStr = loggedFoods.map(f => `- ${f.name} (${f.mealType}, ${f.calories} kcal, ${f.protein}g P)`).join('\n');
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: `The user is currently ${overByKcal} kcal over their daily calorie budget. Here are today's logged foods:\n${foodListStr}\nSuggest up to 3 specific, practical swaps or portion adjustments for today or tomorrow to bring their intake back on target while preserving protein. No emojis.`,
       config: {
         responseMimeType: 'application/json',
@@ -369,7 +368,7 @@ export async function suggestPantryMealsWithGemini(
   try {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: `Pantry items available: ${pantryItems.join(', ') || 'Eggs, oats, Greek yogurt, chicken breast, rice, spinach'}. Remaining daily macros: ${remainingMacros.calories} kcal, ${remainingMacros.protein}g protein, ${remainingMacros.carbs}g carbs, ${remainingMacros.fat}g fat. Suggest 3 meals the user can make right now. No emojis.`,
       config: {
         responseMimeType: 'application/json',
@@ -453,7 +452,7 @@ export async function estimatePortionWithGemini(params: {
     });
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-3-flash-preview',
       contents: { parts },
       config: {
         responseMimeType: 'application/json',
@@ -482,6 +481,273 @@ export async function estimatePortionWithGemini(params: {
       protein: 41,
       carbs: 2,
       fat: 9
+    };
+  }
+}
+
+// Craving pattern analyzer (requires 5+ real logged cravings)
+export async function generateCravingPatternWithGemini(
+  cravings: Array<{ date: string; time: string; wantedFood: string; intensity: number; trigger?: string }>
+): Promise<{ pattern: string }> {
+  if (!cravings || cravings.length < 5) {
+    return { pattern: 'Log a craving to see patterns over time.' };
+  }
+
+  const computeFallbackPattern = () => {
+    let afternoonCount = 0;
+    let eveningCount = 0;
+    let weekdayCount = 0;
+    const triggerCounts = new Map<string, number>();
+
+    for (const c of cravings) {
+      const d = new Date(c.date + 'T00:00:00');
+      const day = d.getDay();
+      if (day >= 1 && day <= 5) weekdayCount++;
+
+      const rawTime = (c.time || '').toLowerCase();
+      let hr = parseInt(rawTime.split(':')[0], 10);
+      if (rawTime.includes('pm') && hr < 12) hr += 12;
+      if (rawTime.includes('am') && hr === 12) hr = 0;
+      if (!isNaN(hr)) {
+        if (hr >= 13 && hr < 17) afternoonCount++;
+        if (hr >= 18 || hr < 2) eveningCount++;
+      }
+      if (c.trigger) {
+        const t = c.trigger.trim().toLowerCase();
+        if (t) triggerCounts.set(t, (triggerCounts.get(t) || 0) + 1);
+      }
+    }
+
+    let topTrigger = '';
+    let topTriggerCount = 0;
+    for (const [t, cnt] of triggerCounts.entries()) {
+      if (cnt > topTriggerCount) {
+        topTriggerCount = cnt;
+        topTrigger = t;
+      }
+    }
+
+    const dayType = weekdayCount >= Math.ceil(cravings.length * 0.6) ? 'on weekdays' : 'across the week';
+    if (eveningCount >= Math.ceil(cravings.length * 0.5)) {
+      return `You log most cravings in the evening ${dayType}.`;
+    }
+    if (afternoonCount >= Math.ceil(cravings.length * 0.5)) {
+      return `You log most cravings between 1pm and 5pm ${dayType}.`;
+    }
+    if (topTrigger && topTriggerCount >= 2) {
+      return `${topTriggerCount} of ${cravings.length} logged cravings were linked to ${topTrigger}.`;
+    }
+    return `You have logged ${cravings.length} cravings ${dayType}.`;
+  };
+
+  try {
+    const ai = getAiClient();
+    const listText = cravings
+      .slice(0, 30)
+      .map((c) => {
+        const d = new Date(c.date + 'T00:00:00');
+        const weekday = d.toLocaleDateString('en-US', { weekday: 'long' });
+        return `- ${c.date} (${weekday}) at ${c.time}: "${c.wantedFood}", strength ${c.intensity}/5${c.trigger ? `, trigger: ${c.trigger}` : ''}`;
+      })
+      .join('\n');
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Analyze these ${cravings.length} real craving logs from the user and return ONE concise sentence (under 15 words) describing a real pattern strictly present in the logs (such as time of day, weekday vs weekend, or trigger). Never invent a pattern. No emojis.\n\nCravings:\n${listText}`,
+      config: {
+        systemInstruction:
+          'You analyze real user craving logs. Output JSON with a single "pattern" string under 15 words based strictly on the provided data. Never invent patterns, never give medical advice, and never use emojis.',
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            pattern: { type: Type.STRING }
+          },
+          required: ['pattern']
+        }
+      }
+    });
+    const parsed = JSON.parse(response.text || '{}');
+    if (parsed.pattern && typeof parsed.pattern === 'string' && parsed.pattern.trim()) {
+      return { pattern: parsed.pattern.trim() };
+    }
+    return { pattern: computeFallbackPattern() };
+  } catch {
+    return { pattern: computeFallbackPattern() };
+  }
+}
+
+export interface WeeklyInsightInput {
+  caloriesTarget: number;
+  proteinTarget: number;
+  dailyLogs: Array<{
+    date: string;
+    caloriesEaten: number;
+    proteinEaten: number;
+    foodsLogged: string[];
+    mood?: number;
+    energy?: number;
+    sleepHours?: number;
+    sleepQuality?: number;
+  }>;
+  cravings: Array<{
+    date: string;
+    time: string;
+    wantedFood: string;
+    intensity: number;
+    trigger?: string;
+  }>;
+  weights: Array<{
+    date: string;
+    weightKg: number;
+  }>;
+}
+
+function truncateTo15Words(line: string): string {
+  const cleaned = line.replace(/^[-•*]\s*/, '').trim();
+  const words = cleaned.split(/\s+/);
+  if (words.length <= 15) return cleaned;
+  return words.slice(0, 15).join(' ') + '.';
+}
+
+// Weekly Insights — Real AI, Real Data
+export async function generateWeeklyInsightsWithGemini(
+  input: WeeklyInsightInput
+): Promise<{ hasEnoughData: boolean; message?: string; bullets: string[] }> {
+  const daysWithFood = (input.dailyLogs || []).filter((d) => d.caloriesEaten > 0);
+  const daysWithHabits = (input.dailyLogs || []).filter(
+    (d) => d.mood !== undefined || d.energy !== undefined || d.sleepHours !== undefined || d.sleepQuality !== undefined
+  );
+  const cravings = input.cravings || [];
+  const weights = input.weights || [];
+
+  // Only generate an insight if there is real data
+  if (daysWithFood.length === 0 && daysWithHabits.length === 0 && cravings.length === 0 && weights.length < 2) {
+    return {
+      hasEnoughData: false,
+      message: 'Not enough data yet.',
+      bullets: []
+    };
+  }
+
+  const buildRealDataBulletsFallback = (): string[] => {
+    const bullets: string[] = [];
+
+    if (daysWithFood.length > 0) {
+      const proteinHitDays = daysWithFood.filter((d) => d.proteinEaten >= input.proteinTarget * 0.9).length;
+      const within100Days = daysWithFood.filter(
+        (d) => Math.abs(d.caloriesEaten - input.caloriesTarget) <= 100
+      ).length;
+
+      if (proteinHitDays > 0) {
+        bullets.push(`Your protein hit target on ${proteinHitDays} of ${daysWithFood.length} logged days.`);
+      } else {
+        const avgProt = Math.round(
+          daysWithFood.reduce((s, d) => s + d.proteinEaten, 0) / daysWithFood.length
+        );
+        bullets.push(`You averaged ${avgProt}g protein vs your ${input.proteinTarget}g target.`);
+      }
+
+      const shortSleepDays = daysWithFood.filter((d) => d.sleepHours !== undefined && d.sleepHours < 7);
+      const goodSleepDays = daysWithFood.filter((d) => d.sleepHours !== undefined && d.sleepHours >= 7);
+      if (shortSleepDays.length > 0 && goodSleepDays.length > 0) {
+        const shortAvg = Math.round(
+          shortSleepDays.reduce((s, d) => s + d.caloriesEaten, 0) / shortSleepDays.length
+        );
+        const goodAvg = Math.round(
+          goodSleepDays.reduce((s, d) => s + d.caloriesEaten, 0) / goodSleepDays.length
+        );
+        const diff = shortAvg - goodAvg;
+        if (Math.abs(diff) >= 50) {
+          bullets.push(
+            diff > 0
+              ? `You ate ${diff} more calories on days you slept under 7 hours.`
+              : `You ate ${Math.abs(diff)} fewer calories on days with 7+ hours sleep.`
+          );
+        }
+      } else if (within100Days > 0) {
+        bullets.push(`You stayed within 100 kcal of target on ${within100Days} days.`);
+      }
+    }
+
+    if (weights.length >= 2) {
+      const sortedW = [...weights].sort((a, b) => a.date.localeCompare(b.date));
+      const delta = Math.round((sortedW[sortedW.length - 1].weightKg - sortedW[0].weightKg) * 10) / 10;
+      if (delta < 0) {
+        bullets.push(`Weight dropped ${Math.abs(delta)} kg across ${sortedW.length} weigh-ins this week.`);
+      } else if (delta > 0) {
+        bullets.push(`Weight increased ${delta} kg across ${sortedW.length} weigh-ins this week.`);
+      } else {
+        bullets.push(`Weight held steady at ${sortedW[sortedW.length - 1].weightKg} kg this week.`);
+      }
+    }
+
+    if (cravings.length > 0 && bullets.length < 3) {
+      bullets.push(`You logged ${cravings.length} craving${cravings.length === 1 ? '' : 's'} this week.`);
+    }
+
+    while (bullets.length < 3) {
+      bullets.push('No clear pattern this week.');
+    }
+
+    return bullets.slice(0, 3).map(truncateTo15Words);
+  };
+
+  try {
+    const ai = getAiClient();
+    const promptPayload = JSON.stringify(input, null, 2);
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: `Analyze this user's last 7 days of Caloriq data and return exactly THREE short bullet points, each tied to a real pattern in the data.\n\nData:\n${promptPayload}`,
+      config: {
+        systemInstruction: `You generate weekly nutrition and habit insights from real user logs.
+Rules:
+1. Output JSON with "bullets": an array of exactly 3 strings.
+2. Each bullet must be tied to a real pattern in the provided data. Never invent a pattern. Never guess.
+3. If there is no clear pattern for a bullet, output "No clear pattern this week."
+4. Keep each bullet under 15 words.
+5. Never mention medical advice, diagnosis, or treatment.
+6. Never use emojis.
+Examples of the tone:
+- "You ate 320 more calories on days you slept under 6 hours."
+- "Your protein hit target on 5 of 7 days — best week so far."
+- "You logged 4 cravings this week, 3 in the evening."
+- "Weight dropped 0.4 kg. You stayed within 100 kcal of target on 6 days."`,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            bullets: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING }
+            }
+          },
+          required: ['bullets']
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    if (Array.isArray(parsed.bullets) && parsed.bullets.length > 0) {
+      const cleaned = parsed.bullets
+        .map((b: any) => truncateTo15Words(String(b || '').trim()))
+        .filter(Boolean);
+      while (cleaned.length < 3) {
+        cleaned.push('No clear pattern this week.');
+      }
+      return {
+        hasEnoughData: true,
+        bullets: cleaned.slice(0, 3)
+      };
+    }
+    return {
+      hasEnoughData: true,
+      bullets: buildRealDataBulletsFallback()
+    };
+  } catch {
+    return {
+      hasEnoughData: true,
+      bullets: buildRealDataBulletsFallback()
     };
   }
 }

@@ -4,10 +4,8 @@ import path from 'path';
 import {
   createGuestUser,
   findUserById,
-  getOtpRecord,
-  saveOtp,
-  verifyOtp,
-  loginOrRegisterVerifiedUser,
+  signupUser,
+  loginUser,
   registerSseClient,
   getProfile,
   updateProfile,
@@ -80,9 +78,10 @@ import {
   estimateRestaurantDishWithGemini,
   suggestFixMyDayWithGemini,
   suggestPantryMealsWithGemini,
-  estimatePortionWithGemini
+  estimatePortionWithGemini,
+  generateCravingPatternWithGemini,
+  generateWeeklyInsightsWithGemini
 } from './src/server/aiFeatures.js';
-import { sendVerificationEmail } from './src/server/emailService.js';
 
 dotenv.config();
 
@@ -126,69 +125,49 @@ app.post('/api/auth/guest', (req, res) => {
   }
 });
 
-app.post('/api/auth/otp/send', async (req, res) => {
+app.post('/api/auth/signup', (req, res) => {
   try {
-    const { email, isResend } = req.body;
+    const { email, password, guestId } = req.body;
     const cleanEmail = typeof email === 'string' ? email.trim() : '';
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      res.status(400).json({ error: 'Please enter a valid email address' });
+      res.status(400).json({ error: 'Please enter a valid email address.' });
+      return;
+    }
+    if (!password || String(password).length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters.' });
       return;
     }
 
-    const existing = getOtpRecord(cleanEmail);
-    if (isResend && existing && Date.now() - existing.createdAt < 30 * 1000) {
-      const waitSec = Math.ceil((30 * 1000 - (Date.now() - existing.createdAt)) / 1000);
-      res.status(429).json({
-        error: `Please wait ${waitSec}s before requesting a new code.`,
-        retryAfterSeconds: waitSec
-      });
-      return;
-    }
-
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    saveOtp(cleanEmail, code);
-
-    await sendVerificationEmail(cleanEmail, code);
-
-    res.json({
-      success: true,
-      message: `We sent a 6-digit verification code to ${cleanEmail}`,
-      resendCooldownSeconds: 30
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to send verification code' });
-  }
-});
-
-app.post('/api/auth/otp/verify', (req, res) => {
-  try {
-    const { email, code, guestId } = req.body;
-    if (!email || !code) {
-      res.status(400).json({ error: 'Email and verification code are required' });
-      return;
-    }
-
-    const verification = verifyOtp(email, String(code));
-    if (!verification.valid) {
-      res.status(400).json({
-        error: verification.message || "That code isn't right. Check your email and try again.",
-        reason: verification.reason,
-        attemptsRemaining: verification.attemptsRemaining
-      });
-      return;
-    }
-
-    const user = loginOrRegisterVerifiedUser(email, guestId);
-
+    const user = signupUser(cleanEmail, String(password), guestId);
     res.json({
       userId: user.id,
       email: user.email,
       isGuest: false,
-      token: user.id,
-      message: guestId ? 'Account created and guest data transferred successfully!' : 'Signed in successfully!'
+      token: user.id
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Failed to verify OTP' });
+    res.status(400).json({ error: err.message || 'Failed to create account.' });
+  }
+});
+
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { email, password, guestId } = req.body;
+    const cleanEmail = typeof email === 'string' ? email.trim() : '';
+    if (!cleanEmail || !password) {
+      res.status(400).json({ error: 'Email and password are required.' });
+      return;
+    }
+
+    const user = loginUser(cleanEmail, String(password), guestId);
+    res.json({
+      userId: user.id,
+      email: user.email,
+      isGuest: false,
+      token: user.id
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Invalid email or password.' });
   }
 });
 
@@ -653,6 +632,26 @@ app.post('/api/ai/what-can-i-make', authenticateUser, async (req, res) => {
 app.post('/api/ai/portion-estimator', authenticateUser, async (req, res) => {
   try {
     const result = await estimatePortionWithGemini(req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ai/craving-pattern', authenticateUser, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const cravings = Array.isArray(req.body?.cravings) ? req.body.cravings : getCravings(userId);
+    const result = await generateCravingPatternWithGemini(cravings);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ai/weekly-insights', authenticateUser, async (req, res) => {
+  try {
+    const result = await generateWeeklyInsightsWithGemini(req.body);
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -103,14 +103,14 @@ interface AppContextType {
 }
 
 const defaultProfile: UserProfile = {
-  name: 'Athlete',
-  age: 28,
-  gender: 'female',
-  heightCm: 168,
-  fitnessLevel: 'intermediate',
-  currentWeightKg: 65,
-  goalWeightKg: 60,
-  dailyActivity: 'moderate',
+  name: '',
+  age: 0,
+  gender: '',
+  heightCm: 0,
+  fitnessLevel: '',
+  currentWeightKg: 0,
+  goalWeightKg: 0,
+  dailyActivity: '',
   goalSpeed: 'lose_normal',
   unitSystem: 'metric',
   themeMode: 'dark',

@@ -106,12 +106,6 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
                 <span>{t('offlineWillSync', language)}</span>
               </span>
             )}
-            {fastingStartedAt && fastingRemainingSec > 0 && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-teal-950/60 border border-teal-700/60 text-[10px] font-mono text-teal-300">
-                <Clock className="w-3 h-3 text-teal-400" />
-                <span>{fastingPreset} · {formatFastingCountdown(fastingRemainingSec)}</span>
-              </span>
-            )}
           </div>
 
           {/* Date Selector */}

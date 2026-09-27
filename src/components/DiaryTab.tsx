@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Plus,
   Trash2,
@@ -23,12 +23,9 @@ import {
   ChefHat,
   Wand2,
   RefreshCw,
-  Clock,
-  Compass,
-  Play,
-  Square
+  Compass
 } from 'lucide-react';
-import { useApp, FastingPreset } from '../context/AppContext.js';
+import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { decipherExerciseText } from '../utils/localAiEngine.js';
 import { formatWeight } from '../utils/nutritionMath.js';
@@ -86,14 +83,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     openAddFood,
     isGuest,
     openGuestLock,
-    weights,
-    fastingPreset,
-    setFastingPreset,
-    fastingStartedAt,
-    fastingRemainingSec,
-    completedFasts,
-    startFasting,
-    stopFasting
+    weights
   } = useApp();
 
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
@@ -115,12 +105,44 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState<string>('');
   // #40 One-question daily journal draft
-  const [journalDraft, setJournalDraft] = useState<string>('');
+  const [journalDraft, setJournalDraft] = useState<string>(todayHabit?.journalAnswer || '');
   const [journalSavedMsg, setJournalSavedMsg] = useState(false);
-  // #39 Craving log inputs
+
+  useEffect(() => {
+    setJournalDraft(todayHabit?.journalAnswer || '');
+  }, [activeDate, todayHabit?.journalAnswer]);
+
+  // #39 Craving log inputs & AI pattern
   const [cravingFood, setCravingFood] = useState('');
   const [cravingIntensity, setCravingIntensity] = useState(3);
   const [cravingTrigger, setCravingTrigger] = useState('');
+  const [aiCravingPattern, setAiCravingPattern] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (cravings.length < 5) {
+      setAiCravingPattern(null);
+      return;
+    }
+    const cacheKey = `caloriq_craving_pattern_${cravings.length}_${cravings[0]?.id || ''}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      setAiCravingPattern(cached);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getCravingPattern(cravings)
+      .then((res) => {
+        if (!cancelled && res?.pattern) {
+          setAiCravingPattern(res.pattern);
+          localStorage.setItem(cacheKey, res.pattern);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [cravings]);
 
   // Inline Log Exercise box state
   const [showExerciseBox, setShowExerciseBox] = useState(false);
@@ -206,39 +228,25 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
   }, [activeDate, allDiaryItems, weights, macroTarget.calories]);
 
   const cravingPatternText = useMemo(() => {
-    if (cravings.length === 0) return 'Most cravings at 3pm on workdays.';
-    const counts = new Map<string, number>();
-    for (const c of cravings) {
-      const hr = c.time?.split(':')[0] || '15';
-      counts.set(hr, (counts.get(hr) || 0) + 1);
+    if (cravings.length === 0) {
+      return 'Log a craving to see patterns over time.';
     }
-    let topHr = '15';
-    let max = 0;
-    for (const [hr, cnt] of counts.entries()) {
-      if (cnt > max) {
-        max = cnt;
-        topHr = hr;
-      }
+    if (cravings.length < 5) {
+      return 'Log a craving to see patterns.';
     }
-    const hrNum = parseInt(topHr, 10);
-    const label = isNaN(hrNum)
-      ? '3pm'
-      : hrNum === 0
-        ? '12am'
-        : hrNum < 12
-          ? `${hrNum}am`
-          : hrNum === 12
-            ? '12pm'
-            : `${hrNum - 12}pm`;
-    return `Most cravings at ${label} on workdays.`;
-  }, [cravings]);
+    if (aiCravingPattern) {
+      return aiCravingPattern;
+    }
+    return `Analyzing ${cravings.length} logged cravings...`;
+  }, [cravings, aiCravingPattern]);
 
   // Compute daily numbers
+  const hasStats = macroTarget.calories > 0;
   const totalEaten = diaryItems.reduce((sum, item) => sum + (item.calories || 0), 0);
   const totalBurned = exercises.reduce((sum, ex) => sum + (ex.caloriesBurned || 0), 0);
-  const dailyTarget = macroTarget.calories + totalBurned;
-  const remaining = dailyTarget - totalEaten;
-  const isOverBudget = remaining < 0;
+  const dailyTarget = hasStats ? macroTarget.calories + totalBurned : 0;
+  const remaining = hasStats ? dailyTarget - totalEaten : 0;
+  const isOverBudget = hasStats && remaining < 0;
 
   // Macros eaten
   const carbsEaten = Math.round(diaryItems.reduce((sum, i) => sum + (i.carbs || 0), 0) * 10) / 10;
@@ -246,12 +254,12 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
   const proteinEaten = Math.round(diaryItems.reduce((sum, i) => sum + (i.protein || 0), 0) * 10) / 10;
 
   // Macro progress percentages
-  const carbsPercent = Math.min(100, Math.round((carbsEaten / (macroTarget.carbsGrams || 1)) * 100));
-  const fatPercent = Math.min(100, Math.round((fatEaten / (macroTarget.fatGrams || 1)) * 100));
-  const proteinPercent = Math.min(100, Math.round((proteinEaten / (macroTarget.proteinGrams || 1)) * 100));
+  const carbsPercent = hasStats ? Math.min(100, Math.round((carbsEaten / (macroTarget.carbsGrams || 1)) * 100)) : 0;
+  const fatPercent = hasStats ? Math.min(100, Math.round((fatEaten / (macroTarget.fatGrams || 1)) * 100)) : 0;
+  const proteinPercent = hasStats ? Math.min(100, Math.round((proteinEaten / (macroTarget.proteinGrams || 1)) * 100)) : 0;
 
   // Ring calculation
-  const ringProgress = Math.min(100, Math.max(0, Math.round((totalEaten / (dailyTarget || 1)) * 100)));
+  const ringProgress = hasStats ? Math.min(100, Math.max(0, Math.round((totalEaten / (dailyTarget || 1)) * 100))) : 0;
   const circumference = 2 * Math.PI * 45;
   const strokeDashoffset = circumference - (ringProgress / 100) * circumference;
 
@@ -461,8 +469,6 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     { type: 'snack', title: 'Snacks', ratio: 0.10 }
   ];
 
-  const todayFasts = completedFasts[activeDate] || [];
-
   return (
     <div className="space-y-5 pb-8 max-w-md mx-auto">
       {/* #32 "Why" pin at the top of the Diary every day */}
@@ -573,16 +579,16 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               />
             </svg>
 
-            <div className="absolute flex flex-col items-center justify-center text-center">
+            <div className="absolute flex flex-col items-center justify-center text-center px-3">
               <span
                 className={`text-3xl font-extrabold tracking-tight font-mono ${
                   isOverBudget ? 'text-rose-400' : 'text-zinc-100'
                 }`}
               >
-                {Math.abs(remaining)}
+                {hasStats ? Math.abs(remaining) : '—'}
               </span>
               <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-400">
-                {isOverBudget ? 'kcal over' : 'kcal remaining'}
+                {hasStats ? (isOverBudget ? 'kcal over' : 'kcal remaining') : 'Set up your profile'}
               </span>
             </div>
           </div>
@@ -598,12 +604,12 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             </div>
             <div>
               <span className="text-[10px] text-zinc-500 block uppercase tracking-wider">Target</span>
-              <span className="text-sm font-bold text-zinc-200 font-mono">{dailyTarget}</span>
+              <span className="text-sm font-bold text-zinc-200 font-mono">{hasStats ? dailyTarget : '—'}</span>
             </div>
             <div>
               <span className="text-[10px] text-zinc-500 block uppercase tracking-wider">Left</span>
               <span className={`text-sm font-bold font-mono ${isOverBudget ? 'text-rose-400' : 'text-teal-400'}`}>
-                {remaining}
+                {hasStats ? remaining : '—'}
               </span>
             </div>
           </div>
@@ -615,7 +621,9 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               <TrendingUp className="w-3.5 h-3.5 text-teal-400 shrink-0" />
             )}
             <span>
-              Target ({macroTarget.calories} + {totalBurned}) − Eaten ({totalEaten}) = {remaining} kcal
+              {hasStats
+                ? `Target (${macroTarget.calories} + ${totalBurned}) − Eaten (${totalEaten}) = ${remaining} kcal`
+                : 'Enter your stats to see your calorie target.'}
             </span>
           </div>
 
@@ -665,12 +673,17 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
 
       {/* THREE MACRO METERS: Carbs (blue), Fat (amber), Protein (red) */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
-        <div className="text-xs font-semibold text-zinc-300">Daily Macronutrients</div>
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold text-zinc-300">Daily Macronutrients</div>
+          {!hasStats && (
+            <span className="text-[11px] font-mono text-zinc-500">Set up your profile</span>
+          )}
+        </div>
         <div className="grid grid-cols-3 gap-3">
           <div className="bg-zinc-950/70 border border-zinc-800 rounded-xl p-2.5">
             <div className="flex items-center justify-between text-[11px] mb-1">
               <span className="font-semibold text-blue-400">Carbs</span>
-              <span className="text-zinc-500 font-mono text-[10px]">{carbsPercent}%</span>
+              <span className="text-zinc-500 font-mono text-[10px]">{hasStats ? `${carbsPercent}%` : '—'}</span>
             </div>
             <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden mb-1.5">
               <div
@@ -679,15 +692,21 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               />
             </div>
             <div className="text-[10px] font-mono text-zinc-400">
-              <span className="font-bold text-zinc-200">{carbsEaten}</span>
-              <span> / {macroTarget.carbsGrams}g</span>
+              {hasStats ? (
+                <>
+                  <span className="font-bold text-zinc-200">{carbsEaten}</span>
+                  <span> / {macroTarget.carbsGrams}g</span>
+                </>
+              ) : (
+                <span>—</span>
+              )}
             </div>
           </div>
 
           <div className="bg-zinc-950/70 border border-zinc-800 rounded-xl p-2.5">
             <div className="flex items-center justify-between text-[11px] mb-1">
               <span className="font-semibold text-amber-400">Fat</span>
-              <span className="text-zinc-500 font-mono text-[10px]">{fatPercent}%</span>
+              <span className="text-zinc-500 font-mono text-[10px]">{hasStats ? `${fatPercent}%` : '—'}</span>
             </div>
             <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden mb-1.5">
               <div
@@ -696,15 +715,21 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               />
             </div>
             <div className="text-[10px] font-mono text-zinc-400">
-              <span className="font-bold text-zinc-200">{fatEaten}</span>
-              <span> / {macroTarget.fatGrams}g</span>
+              {hasStats ? (
+                <>
+                  <span className="font-bold text-zinc-200">{fatEaten}</span>
+                  <span> / {macroTarget.fatGrams}g</span>
+                </>
+              ) : (
+                <span>—</span>
+              )}
             </div>
           </div>
 
           <div className="bg-zinc-950/70 border border-zinc-800 rounded-xl p-2.5">
             <div className="flex items-center justify-between text-[11px] mb-1">
               <span className="font-semibold text-red-400">Protein</span>
-              <span className="text-zinc-500 font-mono text-[10px]">{proteinPercent}%</span>
+              <span className="text-zinc-500 font-mono text-[10px]">{hasStats ? `${proteinPercent}%` : '—'}</span>
             </div>
             <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden mb-1.5">
               <div
@@ -713,8 +738,14 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               />
             </div>
             <div className="text-[10px] font-mono text-zinc-400">
-              <span className="font-bold text-zinc-200">{proteinEaten}</span>
-              <span> / {macroTarget.proteinGrams}g</span>
+              {hasStats ? (
+                <>
+                  <span className="font-bold text-zinc-200">{proteinEaten}</span>
+                  <span> / {macroTarget.proteinGrams}g</span>
+                </>
+              ) : (
+                <span>—</span>
+              )}
             </div>
           </div>
         </div>
@@ -781,91 +812,6 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             );
           })}
         </div>
-      </div>
-
-      {/* #13 INTERMITTENT FASTING TIMER CARD */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-teal-400" />
-            <span className="text-xs font-semibold text-zinc-200">Fasting Timer</span>
-          </div>
-          <div className="flex items-center gap-1">
-            {(['16:8', '18:6', '20:4', '5:2'] as FastingPreset[]).map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => setFastingPreset(preset)}
-                aria-label={`Fasting preset ${preset}`}
-                className={`px-2 py-1 rounded-lg text-[10px] font-mono font-semibold transition-colors ${
-                  fastingPreset === preset
-                    ? 'bg-teal-500 text-zinc-950'
-                    : 'bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                {preset}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded-xl p-3">
-          <div>
-            <span className="text-[10px] text-zinc-500 uppercase block font-mono">
-              {fastingStartedAt ? `Active ${fastingPreset} Fast` : `Selected Protocol: ${fastingPreset}`}
-            </span>
-            <span className="text-sm font-bold text-zinc-100 font-mono">
-              {fastingStartedAt
-                ? `${Math.floor(fastingRemainingSec / 3600)}h ${Math.floor((fastingRemainingSec % 3600) / 60)}m ${fastingRemainingSec % 60}s remaining`
-                : 'Ready to start fast'}
-            </span>
-          </div>
-          {fastingStartedAt ? (
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => stopFasting(true)}
-                aria-label="Complete fast and log badge"
-                className="px-3 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs flex items-center gap-1"
-              >
-                <Check className="w-3.5 h-3.5" />
-                Finish
-              </button>
-              <button
-                type="button"
-                onClick={() => stopFasting(false)}
-                aria-label="Stop fast"
-                className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs"
-              >
-                <Square className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => startFasting(fastingPreset)}
-              aria-label="Start fasting timer"
-              className="px-3 py-2 bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-teal-300 font-semibold rounded-xl text-xs flex items-center gap-1.5"
-            >
-              <Play className="w-3.5 h-3.5" />
-              Start Fast
-            </button>
-          )}
-        </div>
-
-        {todayFasts.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 pt-1">
-            {todayFasts.map((badge, i) => (
-              <span
-                key={i}
-                className="px-2.5 py-1 rounded-lg bg-teal-950/60 border border-teal-700/50 text-[11px] font-mono text-teal-300 flex items-center gap-1.5"
-              >
-                <Check className="w-3 h-3 text-teal-400" />
-                {badge}
-              </span>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* EXERCISE CARD */}
@@ -1020,11 +966,11 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
         {mealsList.map((meal) => {
           const items = diaryItems.filter((i) => i.mealType === meal.type);
           const mealKcal = items.reduce((sum, i) => sum + (i.calories || 0), 0);
-          const mealTargetKcal = Math.round(dailyTarget * meal.ratio);
-          const mealTargetProt = Math.round(macroTarget.proteinGrams * meal.ratio);
-          const mealTargetCarbs = Math.round(macroTarget.carbsGrams * meal.ratio);
-          const mealTargetFat = Math.round(macroTarget.fatGrams * meal.ratio);
-          const isMealOver = mealKcal > mealTargetKcal;
+          const mealTargetKcal = hasStats ? Math.round(dailyTarget * meal.ratio) : 0;
+          const mealTargetProt = hasStats ? Math.round(macroTarget.proteinGrams * meal.ratio) : 0;
+          const mealTargetCarbs = hasStats ? Math.round(macroTarget.carbsGrams * meal.ratio) : 0;
+          const mealTargetFat = hasStats ? Math.round(macroTarget.fatGrams * meal.ratio) : 0;
+          const isMealOver = hasStats && mealKcal > mealTargetKcal;
           const topThree = topFoodsByMeal[meal.type] || [];
           const hasUsual = (usualComboByMeal[meal.type] || []).length > 0;
 
@@ -1060,7 +1006,9 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                       </button>
                     </div>
                     <span className="text-[11px] font-mono text-zinc-400">
-                      {mealKcal} / {mealTargetKcal} kcal · Target {mealTargetCarbs}c {mealTargetFat}f {mealTargetProt}p
+                      {hasStats
+                        ? `${mealKcal} / ${mealTargetKcal} kcal · Target ${mealTargetCarbs}c ${mealTargetFat}f ${mealTargetProt}p`
+                        : '— · Set up your profile'}
                     </span>
                   </div>
                 </div>
@@ -1611,14 +1559,14 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             <span className="text-xs font-semibold text-zinc-200">Daily Reflection</span>
           </div>
           {journalSavedMsg && (
-            <span className="text-[11px] text-teal-400 font-medium">Saved</span>
+            <span className="text-[11px] text-teal-400 font-medium">Saved.</span>
           )}
         </div>
         <p className="text-xs text-teal-300/90 font-medium">{dailyPrompt}</p>
         <div className="flex gap-2">
           <input
             type="text"
-            value={journalDraft || todayHabit?.journalAnswer || ''}
+            value={journalDraft}
             onChange={(e) => setJournalDraft(e.target.value)}
             placeholder="Write a brief reflection..."
             className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
@@ -1628,10 +1576,10 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             onClick={async () => {
               await saveTodayHabit({
                 journalPrompt: dailyPrompt,
-                journalAnswer: journalDraft || todayHabit?.journalAnswer || ''
+                journalAnswer: journalDraft.trim()
               });
               setJournalSavedMsg(true);
-              setTimeout(() => setJournalSavedMsg(false), 2000);
+              setTimeout(() => setJournalSavedMsg(false), 3000);
             }}
             className="px-3 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs shrink-0"
           >
@@ -1642,12 +1590,12 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
 
       {/* #29 CRAVING LOG */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <Zap className="w-4 h-4 text-amber-400" />
             <span className="text-xs font-semibold text-zinc-200">Log a craving</span>
           </div>
-          <span className="text-[10px] text-teal-400 font-mono">
+          <span className="text-[10px] text-teal-400 font-mono text-right">
             {cravingPatternText}
           </span>
         </div>

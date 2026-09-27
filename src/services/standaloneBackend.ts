@@ -25,8 +25,7 @@ import type {
 const STORAGE_KEY = 'caloriq_standalone_db_v1';
 
 interface StandaloneDb {
-  users: Record<string, { id: string; email?: string; isGuest: boolean; createdAt: number; lastLoginAt: number }>;
-  otpCodes: Record<string, { email: string; code: string; expiresAt: number }>;
+  users: Record<string, { id: string; email?: string; passwordHash?: string; isGuest: boolean; createdAt: number; lastLoginAt: number }>;
   profiles: Record<string, UserProfile>;
   diaryEntries: FoodItem[];
   waterEntries: Record<string, number>;
@@ -51,7 +50,6 @@ interface StandaloneDb {
 
 const DEFAULT_DB: StandaloneDb = {
   users: {},
-  otpCodes: {},
   profiles: {},
   diaryEntries: [],
   waterEntries: {},
@@ -85,7 +83,39 @@ function loadDb(): StandaloneDb {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULT_DB };
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_DB, ...parsed };
+    const fakeUsernames = new Set(['claire_m', 'marcus_r', 'elena_v']);
+    const cleanedFriends = (parsed.friends || []).filter(
+      (f: any) => !fakeUsernames.has(String(f.username || '').toLowerCase())
+    );
+    const cleanedProfiles: Record<string, UserProfile> = parsed.profiles || {};
+    for (const k of Object.keys(cleanedProfiles)) {
+      const prof = cleanedProfiles[k];
+      if (!prof) continue;
+      if (prof.accountabilityPartner && fakeUsernames.has(prof.accountabilityPartner.toLowerCase())) {
+        delete prof.accountabilityPartner;
+      }
+      if (
+        prof.age === 28 &&
+        prof.gender === 'female' &&
+        prof.heightCm === 168 &&
+        prof.fitnessLevel === 'intermediate' &&
+        prof.currentWeightKg === 65 &&
+        prof.goalWeightKg === 60 &&
+        prof.dailyActivity === 'moderate'
+      ) {
+        prof.age = 0;
+        prof.gender = '';
+        prof.heightCm = 0;
+        prof.fitnessLevel = '';
+        prof.currentWeightKg = 0;
+        prof.goalWeightKg = 0;
+        prof.dailyActivity = '';
+        if (prof.pinnedWhy === 'Building steady energy and long-term strength, one measured week at a time.') {
+          prof.pinnedWhy = '';
+        }
+      }
+    }
+    return { ...DEFAULT_DB, ...parsed, friends: cleanedFriends, profiles: cleanedProfiles };
   } catch {
     return { ...DEFAULT_DB };
   }
@@ -144,36 +174,23 @@ function defaultProfile(name: string, username: string): UserProfile {
   return {
     name,
     username,
-    age: 28,
-    gender: 'female',
-    heightCm: 168,
-    fitnessLevel: 'intermediate',
-    currentWeightKg: 65,
-    goalWeightKg: 60,
-    dailyActivity: 'moderate',
+    age: 0,
+    gender: '',
+    heightCm: 0,
+    fitnessLevel: '',
+    currentWeightKg: 0,
+    goalWeightKg: 0,
+    dailyActivity: '',
     goalSpeed: 'lose_normal',
     unitSystem: 'metric',
-    pinnedWhy: 'Building steady energy and long-term strength, one measured week at a time.',
+    pinnedWhy: '',
     themeMode: 'dark',
     streakFreezesUsed: [],
     waterReminderEnabled: false,
     mealReminderEnabled: false,
-    weeklyBudget: 85,
     streakOptIn: true,
-    waterChallengeJoined: true
+    waterChallengeJoined: false
   };
-}
-
-function seedFriends(userId: string) {
-  if (db.friends.some(f => f.userId === userId)) return;
-  const defaults = [
-    { username: 'claire_m', displayName: 'Claire M.', streakDays: 14, daysOnTargetThisWeek: 6, waterDaysCompleted: 22, isPartner: true },
-    { username: 'marcus_r', displayName: 'Marcus R.', streakDays: 9, daysOnTargetThisWeek: 5, waterDaysCompleted: 19, isPartner: false },
-    { username: 'elena_v', displayName: 'Elena V.', streakDays: 21, daysOnTargetThisWeek: 7, waterDaysCompleted: 26, isPartner: false }
-  ];
-  for (const f of defaults) {
-    db.friends.push({ ...f, id: uid('fr'), userId, createdAt: Date.now() });
-  }
 }
 
 function computeConsecutiveStreak(loggedDates: string[], freezeDates: string[]): number {
@@ -199,7 +216,6 @@ function getProfile(userId: string): UserProfile {
     db.profiles[userId] = defaultProfile('Guest User', `caloriq_${userId.slice(0, 5)}`);
     saveDb();
   }
-  seedFriends(userId);
   return db.profiles[userId];
 }
 
@@ -395,23 +411,32 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     return { userId: id, isGuest: true, token: id };
   }
 
-  if (pathname === '/api/auth/otp/send' && method === 'POST') {
+  if (pathname === '/api/auth/signup' && method === 'POST') {
     const email = (body.email || '').toLowerCase().trim();
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
-    db.otpCodes[email] = { email, code, expiresAt: Date.now() + 600000 };
-    saveDb();
-    return { success: true, message: `Verification code generated for ${email}`, previewCode: code };
-  }
-
-  if (pathname === '/api/auth/otp/verify' && method === 'POST') {
-    const email = (body.email || '').toLowerCase().trim();
+    const password = String(body.password || '');
     const id = `usr_${email.replace(/[^a-z0-9]/gi, '_')}`;
-    db.users[id] = { id, email, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
+    db.users[id] = { id, email, passwordHash: password, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
     if (!db.profiles[id]) {
       db.profiles[id] = defaultProfile(email.split('@')[0], email.split('@')[0]);
     }
     saveDb();
-    return { userId: id, email, isGuest: false, token: id, message: 'Signed in successfully!' };
+    return { userId: id, email, isGuest: false, token: id };
+  }
+
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const email = (body.email || '').toLowerCase().trim();
+    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_')}`;
+    const existing = db.users[id];
+    if (!existing) {
+      db.users[id] = { id, email, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
+    } else {
+      existing.lastLoginAt = Date.now();
+    }
+    if (!db.profiles[id]) {
+      db.profiles[id] = defaultProfile(email.split('@')[0], email.split('@')[0]);
+    }
+    saveDb();
+    return { userId: id, email, isGuest: false, token: id };
   }
 
   if (pathname === '/api/auth/me' && method === 'GET') {
@@ -700,7 +725,6 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
 
   // SOCIAL
   if (pathname === '/api/social' && method === 'GET') {
-    seedFriends(userId);
     return {
       friends: db.friends.filter(f => f.userId === userId),
       sharedRecipes: db.sharedRecipes.filter(r => r.userId === userId)
@@ -708,14 +732,20 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
   }
   if (pathname === '/api/social/friends' && method === 'POST') {
     const cleanUser = String(body.username || '').replace(/^@/, '').trim().toLowerCase();
+    const matchedUserId = Object.keys(db.profiles).find(
+      k => (db.profiles[k]?.username || '').toLowerCase() === cleanUser
+    );
+    const realStats = matchedUserId ? getUserStats(matchedUserId) : null;
     const item: FriendRecord = {
       id: uid('fr'),
       userId,
       username: cleanUser,
-      displayName: cleanUser.charAt(0).toUpperCase() + cleanUser.slice(1).replace(/_/g, ' '),
-      streakDays: 11,
-      daysOnTargetThisWeek: 5,
-      waterDaysCompleted: 18,
+      displayName: matchedUserId
+        ? db.profiles[matchedUserId].name
+        : cleanUser.charAt(0).toUpperCase() + cleanUser.slice(1).replace(/_/g, ' '),
+      streakDays: realStats ? realStats.foodStreak : 0,
+      daysOnTargetThisWeek: 0,
+      waterDaysCompleted: 0,
       isPartner: Boolean(body.isPartner),
       createdAt: Date.now()
     };
@@ -915,6 +945,36 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     };
   }
 
+  if (pathname === '/api/ai/craving-pattern' && method === 'POST') {
+    const list: CravingLog[] = Array.isArray(body.cravings)
+      ? body.cravings
+      : db.cravings.filter(c => c.userId === userId);
+    if (list.length < 5) {
+      return { pattern: 'Log a craving to see patterns over time.' };
+    }
+    return { pattern: `You have logged ${list.length} cravings across the week.` };
+  }
+
+  if (pathname === '/api/ai/weekly-insights' && method === 'POST') {
+    const dailyLogs = Array.isArray(body.dailyLogs) ? body.dailyLogs : [];
+    const daysWithFood = dailyLogs.filter((d: any) => d.caloriesEaten > 0);
+    if (daysWithFood.length === 0) {
+      return { hasEnoughData: false, message: 'Not enough data yet.', bullets: [] };
+    }
+    const proteinHits = daysWithFood.filter((d: any) => d.proteinEaten >= (body.proteinTarget || 120) * 0.9).length;
+    const within100 = daysWithFood.filter((d: any) => Math.abs(d.caloriesEaten - (body.caloriesTarget || 2000)) <= 100).length;
+    return {
+      hasEnoughData: true,
+      bullets: [
+        `Your protein hit target on ${proteinHits} of ${daysWithFood.length} logged days.`,
+        `You stayed within 100 kcal of target on ${within100} days.`,
+        Array.isArray(body.cravings) && body.cravings.length > 0
+          ? `You logged ${body.cravings.length} cravings this week.`
+          : 'No clear pattern this week.'
+      ]
+    };
+  }
+
   // SAVED FOODS & RECIPES
   if (pathname === '/api/saved-foods') {
     if (method === 'GET') return { foods: db.savedFoods.filter(f => f.userId === userId) };
@@ -1104,44 +1164,39 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
   return { success: true };
 }
 
-export function installStandaloneFetchInterceptor() {
-  if (typeof window === 'undefined') return;
-  const originalFetch = window.fetch.bind(window);
+export async function standaloneFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 
-  window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const urlStr = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  const isApiCall = urlStr.startsWith('/api/') || urlStr.includes('/api/');
+  if (!isApiCall) {
+    return window.fetch(input, init);
+  }
 
-    const isApiCall = urlStr.startsWith('/api/') || urlStr.includes('/api/');
-    if (!isApiCall) {
-      return originalFetch(input, init);
+  // If opened directly from filesystem (file://), always use standalone local engine
+  if (typeof window !== 'undefined' && window.location.protocol === 'file:') {
+    const data = await handleStandaloneApiRequest(urlStr, init);
+    return new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
+
+  try {
+    const response = await window.fetch(input, init);
+    if (response.ok || response.status === 400 || response.status === 401) {
+      return response;
     }
-
-    // If opened directly from filesystem (file://), always use standalone local engine
-    if (window.location.protocol === 'file:') {
-      const data = await handleStandaloneApiRequest(urlStr, init);
-      return new Response(JSON.stringify(data), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    try {
-      const response = await originalFetch(input, init);
-      if (response.ok) {
-        return response;
-      }
-      // Fallback to standalone local engine if backend endpoint fails or is absent on static host
-      const data = await handleStandaloneApiRequest(urlStr, init);
-      return new Response(JSON.stringify(data), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    } catch {
-      const data = await handleStandaloneApiRequest(urlStr, init);
-      return new Response(JSON.stringify(data), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-  };
+    // Fallback to standalone local engine if backend endpoint is absent (e.g. 404 on static host)
+    const data = await handleStandaloneApiRequest(urlStr, init);
+    return new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  } catch {
+    const data = await handleStandaloneApiRequest(urlStr, init);
+    return new Response(JSON.stringify(data), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    });
+  }
 }

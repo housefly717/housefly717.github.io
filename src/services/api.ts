@@ -19,10 +19,70 @@ import type {
   FriendRecord,
   SharedRecipeRecord
 } from '../types/index.js';
+import { standaloneFetch } from './standaloneBackend.js';
 
 const TOKEN_KEY = 'caloriq_session_token';
 const GUEST_KEY = 'caloriq_guest_id';
 const OFFLINE_QUEUE_KEY = 'caloriq_offline_queue';
+const CLIENT_USERS_KEY = 'caloriq_client_users';
+const USER_EMAIL_KEY = 'caloriq_user_email';
+
+interface ClientUserRecord {
+  userId: string;
+  email: string;
+  passwordHash: string;
+  createdAt: number;
+}
+
+function hashClientPassword(password: string): string {
+  let h1 = 0xdeadbeef ^ password.length;
+  let h2 = 0x41c6ce57 ^ password.length;
+  const salted = `caloriq_client_${password}`;
+  for (let i = 0; i < salted.length; i++) {
+    const ch = salted.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+
+function getEmptyClientProfile(name: string = '', username: string = ''): UserProfile {
+  return {
+    name,
+    username,
+    age: 0,
+    gender: '',
+    heightCm: 0,
+    fitnessLevel: '',
+    currentWeightKg: 0,
+    goalWeightKg: 0,
+    dailyActivity: '',
+    goalSpeed: 'lose_normal',
+    unitSystem: 'metric',
+    pinnedWhy: '',
+    themeMode: 'dark',
+    streakFreezesUsed: [],
+    waterReminderEnabled: false,
+    mealReminderEnabled: false,
+    streakOptIn: true,
+    waterChallengeJoined: false
+  };
+}
+
+function getClientUsers(): Record<string, ClientUserRecord> {
+  try {
+    const raw = localStorage.getItem(CLIENT_USERS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveClientUsers(users: Record<string, ClientUserRecord>) {
+  localStorage.setItem(CLIENT_USERS_KEY, JSON.stringify(users));
+}
 
 interface QueuedRequest {
   id: string;
@@ -38,7 +98,7 @@ class ApiService {
   private syncListeners: Array<() => void> = [];
 
   constructor() {
-    this.token = localStorage.getItem(TOKEN_KEY);
+    this.token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
         this.flushOfflineQueue();
@@ -50,9 +110,15 @@ class ApiService {
     return this.token;
   }
 
-  setToken(token: string, isGuest: boolean) {
+  setToken(token: string, isGuest: boolean, rememberMe: boolean = true) {
     this.token = token;
-    localStorage.setItem(TOKEN_KEY, token);
+    if (isGuest || rememberMe) {
+      localStorage.setItem(TOKEN_KEY, token);
+      sessionStorage.removeItem(TOKEN_KEY);
+    } else {
+      sessionStorage.setItem(TOKEN_KEY, token);
+      localStorage.removeItem(TOKEN_KEY);
+    }
     if (isGuest) {
       localStorage.setItem(GUEST_KEY, token);
     } else {
@@ -68,6 +134,7 @@ class ApiService {
   clearToken() {
     this.token = null;
     localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(GUEST_KEY);
     if (this.sse) {
       this.sse.close();
@@ -175,7 +242,7 @@ class ApiService {
 
     let res: Response;
     try {
-      res = await fetch(endpoint, {
+      res = await standaloneFetch(endpoint, {
         ...options,
         headers
       });
@@ -218,45 +285,213 @@ class ApiService {
   }
 
   // Auth
+  private getLocalProfile(userId: string, email?: string): UserProfile {
+    try {
+      const raw = localStorage.getItem(`caloriq_local_profile_${userId}`);
+      if (raw) {
+        return JSON.parse(raw);
+      }
+    } catch {
+      // ignore
+    }
+    const baseName = email ? email.split('@')[0] : 'Guest User';
+    const baseUser = email ? email.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase() : `caloriq_${userId.slice(0, 6)}`;
+    return getEmptyClientProfile(baseName, baseUser);
+  }
+
+  private saveLocalProfile(userId: string, profile: UserProfile) {
+    try {
+      localStorage.setItem(`caloriq_local_profile_${userId}`, JSON.stringify(profile));
+    } catch {
+      // ignore
+    }
+  }
+
   async initSession(): Promise<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }> {
+    const defaultStats: UserStats = { xp: 0, level: 1, badges: [], foodStreak: 0, workoutStreak: 0 };
+
     if (!this.token) {
-      const guestRes = await this.request<{ userId: string; isGuest: boolean; token: string }>('/api/auth/guest', {
-        method: 'POST'
-      }, true);
-      this.setToken(guestRes.token, true);
+      try {
+        const guestRes = await this.request<{ userId: string; isGuest: boolean; token: string }>('/api/auth/guest', {
+          method: 'POST'
+        }, true);
+        this.setToken(guestRes.token, true);
+      } catch {
+        const localGuestId = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        this.setToken(localGuestId, true);
+        const profile = this.getLocalProfile(localGuestId);
+        return { userId: localGuestId, isGuest: true, profile, stats: defaultStats };
+      }
     }
 
     try {
       const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
+      if (me.profile) {
+        this.saveLocalProfile(me.userId, me.profile);
+      }
+      if (me.email) {
+        localStorage.setItem(USER_EMAIL_KEY, me.email);
+      }
       this.initSse();
       return me;
     } catch (e) {
+      // Check if this is a client-side static host user session
+      const savedEmail = localStorage.getItem(USER_EMAIL_KEY) || undefined;
+      if (this.token && this.token.startsWith('usr_client_')) {
+        const profile = this.getLocalProfile(this.token, savedEmail);
+        return {
+          userId: this.token,
+          email: savedEmail,
+          isGuest: false,
+          profile,
+          stats: defaultStats
+        };
+      }
+
       this.clearToken();
-      const guestRes = await this.request<{ userId: string; isGuest: boolean; token: string }>('/api/auth/guest', {
-        method: 'POST'
-      }, true);
-      this.setToken(guestRes.token, true);
-      const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
-      this.initSse();
-      return me;
+      try {
+        const guestRes = await this.request<{ userId: string; isGuest: boolean; token: string }>('/api/auth/guest', {
+          method: 'POST'
+        }, true);
+        this.setToken(guestRes.token, true);
+        const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
+        this.initSse();
+        return me;
+      } catch {
+        const localGuestId = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        this.setToken(localGuestId, true);
+        const profile = this.getLocalProfile(localGuestId);
+        return { userId: localGuestId, isGuest: true, profile, stats: defaultStats };
+      }
     }
   }
 
-  async sendOtp(email: string, isResend: boolean = false): Promise<{ success: boolean; message: string; resendCooldownSeconds?: number }> {
-    return this.request('/api/auth/otp/send', {
-      method: 'POST',
-      body: JSON.stringify({ email, isResend })
-    }, true);
+  async signup(
+    email: string,
+    password: string,
+    rememberMe: boolean = true
+  ): Promise<{ userId: string; email: string; token: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    const guestId = this.getGuestId();
+    const pwHash = hashClientPassword(password);
+
+    try {
+      const res = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password, guestId })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const users = getClientUsers();
+        users[cleanEmail] = {
+          userId: data.userId,
+          email: cleanEmail,
+          passwordHash: pwHash,
+          createdAt: Date.now()
+        };
+        saveClientUsers(users);
+        localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+        this.setToken(data.token, false, rememberMe);
+        return data;
+      }
+
+      // If backend returned a 400 validation error, surface it
+      if (res.status === 400) {
+        const err = await res.json().catch(() => ({ error: 'Failed to create account.' }));
+        throw new Error(err.error || 'Failed to create account.');
+      }
+    } catch (err: any) {
+      if (err.message && (err.message.includes('already exists') || err.message.includes('valid email') || err.message.includes('Password must'))) {
+        throw err;
+      }
+      // Static host fallback: create account entirely in browser
+    }
+
+    const users = getClientUsers();
+    if (users[cleanEmail] && users[cleanEmail].passwordHash !== pwHash) {
+      throw new Error('An account with this email already exists. Please sign in.');
+    }
+
+    const userId = users[cleanEmail]?.userId || `usr_client_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    users[cleanEmail] = {
+      userId,
+      email: cleanEmail,
+      passwordHash: pwHash,
+      createdAt: Date.now()
+    };
+    saveClientUsers(users);
+    localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    const emptyProf = getEmptyClientProfile(cleanEmail.split('@')[0], cleanEmail.split('@')[0].replace(/[^a-z0-9_]/gi, '_'));
+    this.saveLocalProfile(userId, emptyProf);
+    this.setToken(userId, false, rememberMe);
+
+    return {
+      userId,
+      email: cleanEmail,
+      token: userId
+    };
   }
 
-  async verifyOtp(email: string, code: string): Promise<{ userId: string; email: string; token: string; message: string }> {
+  async login(
+    email: string,
+    password: string,
+    rememberMe: boolean = true
+  ): Promise<{ userId: string; email: string; token: string }> {
+    const cleanEmail = email.trim().toLowerCase();
     const guestId = this.getGuestId();
-    const res = await this.request<{ userId: string; email: string; token: string; message: string }>('/api/auth/otp/verify', {
-      method: 'POST',
-      body: JSON.stringify({ email, code, guestId })
-    }, true);
-    this.setToken(res.token, false);
-    return res;
+    const pwHash = hashClientPassword(password);
+
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password, guestId })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const users = getClientUsers();
+        users[cleanEmail] = {
+          userId: data.userId,
+          email: cleanEmail,
+          passwordHash: pwHash,
+          createdAt: Date.now()
+        };
+        saveClientUsers(users);
+        localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+        this.setToken(data.token, false, rememberMe);
+        return data;
+      }
+
+      if (res.status === 400 || res.status === 401) {
+        const err = await res.json().catch(() => ({ error: 'Invalid email or password.' }));
+        throw new Error(err.error || 'Invalid email or password.');
+      }
+    } catch (err: any) {
+      if (err.message && (err.message.includes('No account found') || err.message.includes('Incorrect password') || err.message.includes('Invalid email'))) {
+        throw err;
+      }
+      // Static host fallback: verify in browser
+    }
+
+    const users = getClientUsers();
+    const existing = users[cleanEmail];
+    if (!existing) {
+      throw new Error('No account found with that email. Please sign up first.');
+    }
+    if (existing.passwordHash !== pwHash) {
+      throw new Error('Incorrect password. Please try again.');
+    }
+
+    localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    this.setToken(existing.userId, false, rememberMe);
+    return {
+      userId: existing.userId,
+      email: cleanEmail,
+      token: existing.userId
+    };
   }
 
   // Diary
@@ -547,6 +782,20 @@ class ApiService {
     });
   }
 
+  async getCravingPattern(cravings: CravingLog[]): Promise<{ pattern: string }> {
+    return this.request('/api/ai/craving-pattern', {
+      method: 'POST',
+      body: JSON.stringify({ cravings })
+    });
+  }
+
+  async getWeeklyInsights(payload: any): Promise<{ hasEnoughData: boolean; message?: string; bullets: string[] }> {
+    return this.request('/api/ai/weekly-insights', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  }
+
   // Saved Foods & Recipes
   async getSavedFoods(): Promise<{ foods: SavedFood[] }> {
     return this.request('/api/saved-foods');
@@ -649,10 +898,22 @@ class ApiService {
   }
 
   async updateProfile(updates: Partial<UserProfile>): Promise<UserProfile> {
-    return this.request('/api/profile', {
-      method: 'PUT',
-      body: JSON.stringify(updates)
-    });
+    if (this.token) {
+      const curr = this.getLocalProfile(this.token);
+      this.saveLocalProfile(this.token, { ...curr, ...updates });
+    }
+    try {
+      const updated = await this.request<UserProfile>('/api/profile', {
+        method: 'PUT',
+        body: JSON.stringify(updates)
+      });
+      if (this.token && updated) {
+        this.saveLocalProfile(this.token, updated);
+      }
+      return updated;
+    } catch {
+      return this.getLocalProfile(this.token || 'guest');
+    }
   }
 
   async getStats(): Promise<UserStats> {

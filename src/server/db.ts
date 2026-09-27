@@ -26,18 +26,10 @@ import type {
 export interface UserRow {
   id: string;
   email?: string;
+  passwordHash?: string;
   isGuest: boolean;
   createdAt: number;
   lastLoginAt: number;
-}
-
-export interface OtpCodeRow {
-  email: string;
-  code: string;
-  expiresAt: number;
-  attempts: number;
-  locked: boolean;
-  createdAt: number;
 }
 
 export interface SettingsRow {
@@ -47,7 +39,6 @@ export interface SettingsRow {
 
 export interface DatabaseSchema {
   users: Record<string, UserRow>;
-  otpCodes: Record<string, OtpCodeRow>;
   profiles: Record<string, UserProfile>;
   diaryEntries: FoodItem[];
   waterEntries: Record<string, number>; // key: `${userId}:${date}` -> glasses
@@ -75,7 +66,6 @@ const DB_FILE = path.join(DATA_DIR, 'caloriq-db.json');
 
 const INITIAL_DB: DatabaseSchema = {
   users: {},
-  otpCodes: {},
   profiles: {},
   diaryEntries: [],
   waterEntries: {},
@@ -100,6 +90,18 @@ const INITIAL_DB: DatabaseSchema = {
 
 let db: DatabaseSchema = { ...INITIAL_DB };
 
+function isLegacyDefaultProfile(prof: UserProfile): boolean {
+  return (
+    prof.age === 28 &&
+    prof.gender === 'female' &&
+    prof.heightCm === 168 &&
+    prof.fitnessLevel === 'intermediate' &&
+    prof.currentWeightKg === 65 &&
+    prof.goalWeightKg === 60 &&
+    prof.dailyActivity === 'moderate'
+  );
+}
+
 function initDb() {
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -108,18 +110,44 @@ function initDb() {
     if (fs.existsSync(DB_FILE)) {
       const data = fs.readFileSync(DB_FILE, 'utf-8');
       const parsed = JSON.parse(data);
+      const fakeUsernames = new Set(['claire_m', 'marcus_r', 'elena_v']);
+      const cleanedFriends = (parsed.friends || []).filter(
+        (f: any) => !fakeUsernames.has(String(f.username || '').toLowerCase())
+      );
+      const cleanedProfiles: Record<string, UserProfile> = parsed.profiles || {};
+      for (const uid of Object.keys(cleanedProfiles)) {
+        const prof = cleanedProfiles[uid];
+        if (!prof) continue;
+        if (prof.accountabilityPartner && fakeUsernames.has(prof.accountabilityPartner.toLowerCase())) {
+          delete prof.accountabilityPartner;
+        }
+        if (isLegacyDefaultProfile(prof)) {
+          prof.age = 0;
+          prof.gender = '';
+          prof.heightCm = 0;
+          prof.fitnessLevel = '';
+          prof.currentWeightKg = 0;
+          prof.goalWeightKg = 0;
+          prof.dailyActivity = '';
+          if (prof.pinnedWhy === 'Building steady energy and long-term strength, one measured week at a time.') {
+            prof.pinnedWhy = '';
+          }
+        }
+      }
       db = {
         ...INITIAL_DB,
         ...parsed,
+        profiles: cleanedProfiles,
         measurements: parsed.measurements || [],
         progressPhotos: parsed.progressPhotos || [],
         dailyHabits: parsed.dailyHabits || {},
         cravings: parsed.cravings || [],
         nonScaleVictories: parsed.nonScaleVictories || [],
         pantryItems: parsed.pantryItems || [],
-        friends: parsed.friends || [],
+        friends: cleanedFriends,
         sharedRecipes: parsed.sharedRecipes || []
       };
+      saveDb();
     } else {
       saveDb();
     }
@@ -228,6 +256,33 @@ function enrichMicronutrients(entry: Partial<FoodItem>): {
 }
 
 // ------------------- AUTH & USERS -------------------
+function createEmptyProfile(name: string, username: string): UserProfile {
+  return {
+    name,
+    username,
+    age: 0,
+    gender: '',
+    heightCm: 0,
+    fitnessLevel: '',
+    currentWeightKg: 0,
+    goalWeightKg: 0,
+    dailyActivity: '',
+    goalSpeed: 'lose_normal',
+    unitSystem: 'metric',
+    pinnedWhy: '',
+    themeMode: 'dark',
+    streakFreezesUsed: [],
+    waterReminderEnabled: false,
+    mealReminderEnabled: false,
+    streakOptIn: true,
+    waterChallengeJoined: false
+  };
+}
+
+function hashPassword(password: string): string {
+  return crypto.createHash('sha256').update(`caloriq_salt_${password}`).digest('hex');
+}
+
 export function createGuestUser(): UserRow {
   const id = `guest_${crypto.randomUUID()}`;
   const user: UserRow = {
@@ -237,74 +292,10 @@ export function createGuestUser(): UserRow {
     lastLoginAt: Date.now()
   };
   db.users[id] = user;
-
-  db.profiles[id] = {
-    name: 'Guest User',
-    username: `caloriq_${id.slice(6, 11)}`,
-    age: 28,
-    gender: 'female',
-    heightCm: 168,
-    fitnessLevel: 'intermediate',
-    currentWeightKg: 65,
-    goalWeightKg: 60,
-    dailyActivity: 'moderate',
-    goalSpeed: 'lose_normal',
-    unitSystem: 'metric',
-    pinnedWhy: 'Building steady energy and long-term strength, one measured week at a time.',
-    themeMode: 'dark',
-    streakFreezesUsed: [],
-    waterReminderEnabled: false,
-    mealReminderEnabled: false,
-    weeklyBudget: 85,
-    streakOptIn: true,
-    waterChallengeJoined: true
-  };
-
+  db.profiles[id] = createEmptyProfile('Guest User', `caloriq_${id.slice(6, 11)}`);
   db.userXp[id] = { xp: 0, badges: [] };
-  seedDefaultSocialFriends(id);
   saveDb();
   return user;
-}
-
-function seedDefaultSocialFriends(userId: string) {
-  const existing = db.friends.filter(f => f.userId === userId);
-  if (existing.length > 0) return;
-
-  const defaults: Array<Omit<FriendRecord, 'id' | 'userId' | 'createdAt'>> = [
-    {
-      username: 'claire_m',
-      displayName: 'Claire M.',
-      streakDays: 14,
-      daysOnTargetThisWeek: 6,
-      waterDaysCompleted: 22,
-      isPartner: true
-    },
-    {
-      username: 'marcus_r',
-      displayName: 'Marcus R.',
-      streakDays: 9,
-      daysOnTargetThisWeek: 5,
-      waterDaysCompleted: 19,
-      isPartner: false
-    },
-    {
-      username: 'elena_v',
-      displayName: 'Elena V.',
-      streakDays: 21,
-      daysOnTargetThisWeek: 7,
-      waterDaysCompleted: 26,
-      isPartner: false
-    }
-  ];
-
-  for (const f of defaults) {
-    db.friends.push({
-      ...f,
-      id: `fr_${crypto.randomUUID()}`,
-      userId,
-      createdAt: Date.now()
-    });
-  }
 }
 
 export function findUserById(id: string): UserRow | undefined {
@@ -316,131 +307,59 @@ export function findUserByEmail(email: string): UserRow | undefined {
   return Object.values(db.users).find(u => u.email === norm);
 }
 
-export function getOtpRecord(email: string): OtpCodeRow | undefined {
+export function signupUser(email: string, password: string, guestIdToMigrate?: string): UserRow {
   const norm = email.toLowerCase().trim();
-  return db.otpCodes[norm];
-}
-
-export function saveOtp(email: string, code: string) {
-  const norm = email.toLowerCase().trim();
-  db.otpCodes[norm] = {
-    email: norm,
-    code,
-    expiresAt: Date.now() + 10 * 60 * 1000,
-    attempts: 0,
-    locked: false,
-    createdAt: Date.now()
-  };
-  saveDb();
-}
-
-export interface VerifyOtpResult {
-  valid: boolean;
-  reason?: 'expired' | 'wrong_code' | 'locked';
-  message?: string;
-  attemptsRemaining?: number;
-}
-
-export function verifyOtp(email: string, code: string): VerifyOtpResult {
-  const norm = email.toLowerCase().trim();
-  const record = db.otpCodes[norm];
-  if (!record) {
-    return {
-      valid: false,
-      reason: 'expired',
-      message: 'That code has expired. Tap Resend to get a new one.'
-    };
-  }
-
-  if (Date.now() > record.expiresAt) {
-    delete db.otpCodes[norm];
-    saveDb();
-    return {
-      valid: false,
-      reason: 'expired',
-      message: 'That code has expired. Tap Resend to get a new one.'
-    };
-  }
-
-  if (record.locked || (record.attempts || 0) >= 5) {
-    record.locked = true;
-    saveDb();
-    return {
-      valid: false,
-      reason: 'locked',
-      message: 'Too many failed attempts. This code is locked. Tap Resend to get a new one.',
-      attemptsRemaining: 0
-    };
-  }
-
-  const match = record.code.trim() === code.trim();
-  if (!match) {
-    record.attempts = (record.attempts || 0) + 1;
-    if (record.attempts >= 5) {
-      record.locked = true;
-      saveDb();
-      return {
-        valid: false,
-        reason: 'locked',
-        message: 'Too many failed attempts. This code is locked. Tap Resend to get a new one.',
-        attemptsRemaining: 0
-      };
-    }
-    saveDb();
-    return {
-      valid: false,
-      reason: 'wrong_code',
-      message: "That code isn't right. Check your email and try again.",
-      attemptsRemaining: 5 - record.attempts
-    };
-  }
-
-  delete db.otpCodes[norm];
-  saveDb();
-  return { valid: true };
-}
-
-export function loginOrRegisterVerifiedUser(email: string, guestIdToMigrate?: string): UserRow {
-  const norm = email.toLowerCase().trim();
+  const pwHash = hashPassword(password);
   let user = findUserByEmail(norm);
 
-  if (!user) {
+  if (user) {
+    if (user.passwordHash && user.passwordHash !== pwHash) {
+      throw new Error('An account with this email already exists. Please sign in.');
+    }
+    user.passwordHash = pwHash;
+    user.lastLoginAt = Date.now();
+  } else {
     const id = `usr_${crypto.randomUUID()}`;
     user = {
       id,
       email: norm,
+      passwordHash: pwHash,
       isGuest: false,
       createdAt: Date.now(),
       lastLoginAt: Date.now()
     };
     db.users[id] = user;
-
-    db.profiles[id] = {
-      name: norm.split('@')[0],
-      username: norm.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase(),
-      age: 28,
-      gender: 'female',
-      heightCm: 168,
-      fitnessLevel: 'intermediate',
-      currentWeightKg: 65,
-      goalWeightKg: 60,
-      dailyActivity: 'moderate',
-      goalSpeed: 'lose_normal',
-      unitSystem: 'metric',
-      pinnedWhy: 'Building steady energy and long-term strength, one measured week at a time.',
-      themeMode: 'dark',
-      streakFreezesUsed: [],
-      waterReminderEnabled: false,
-      mealReminderEnabled: false,
-      weeklyBudget: 85,
-      streakOptIn: true,
-      waterChallengeJoined: true
-    };
+    const defaultName = norm.split('@')[0];
+    const defaultUsername = norm.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+    db.profiles[id] = createEmptyProfile(defaultName, defaultUsername);
     db.userXp[id] = { xp: 0, badges: [] };
-    seedDefaultSocialFriends(id);
-  } else {
-    user.lastLoginAt = Date.now();
   }
+
+  if (guestIdToMigrate && guestIdToMigrate !== user.id && db.users[guestIdToMigrate]) {
+    migrateGuestData(guestIdToMigrate, user.id);
+  }
+
+  saveDb();
+  return user;
+}
+
+export function loginUser(email: string, password: string, guestIdToMigrate?: string): UserRow {
+  const norm = email.toLowerCase().trim();
+  const pwHash = hashPassword(password);
+  const user = findUserByEmail(norm);
+
+  if (!user) {
+    throw new Error('No account found with that email. Please sign up first.');
+  }
+
+  if (user.passwordHash && user.passwordHash !== pwHash) {
+    throw new Error('Incorrect password. Please try again.');
+  }
+
+  if (!user.passwordHash) {
+    user.passwordHash = pwHash;
+  }
+  user.lastLoginAt = Date.now();
 
   if (guestIdToMigrate && guestIdToMigrate !== user.id && db.users[guestIdToMigrate]) {
     migrateGuestData(guestIdToMigrate, user.id);
@@ -503,10 +422,16 @@ function migrateGuestData(guestId: string, targetUserId: string) {
     if (t.userId === guestId) t.userId = targetUserId;
   }
   if (db.profiles[guestId]) {
-    db.profiles[targetUserId] = {
-      ...db.profiles[guestId],
-      name: db.profiles[targetUserId]?.name || db.profiles[guestId].name
-    };
+    const guestProf = db.profiles[guestId];
+    const targetProf = db.profiles[targetUserId];
+    const guestHasCustomStats = guestProf.age > 0 && guestProf.heightCm > 0 && guestProf.currentWeightKg > 0;
+    if (guestHasCustomStats) {
+      db.profiles[targetUserId] = {
+        ...guestProf,
+        name: targetProf?.name || guestProf.name,
+        username: targetProf?.username || guestProf.username
+      };
+    }
     delete db.profiles[guestId];
   }
   if (db.plans[guestId]) {
@@ -528,30 +453,9 @@ function migrateGuestData(guestId: string, targetUserId: string) {
 // ------------------- PROFILE & XP & STREAKS -------------------
 export function getProfile(userId: string): UserProfile {
   if (!db.profiles[userId]) {
-    db.profiles[userId] = {
-      name: 'User',
-      username: `user_${userId.slice(0, 6)}`,
-      age: 28,
-      gender: 'female',
-      heightCm: 168,
-      fitnessLevel: 'intermediate',
-      currentWeightKg: 65,
-      goalWeightKg: 60,
-      dailyActivity: 'moderate',
-      goalSpeed: 'lose_normal',
-      unitSystem: 'metric',
-      pinnedWhy: 'Building steady energy and long-term strength, one measured week at a time.',
-      themeMode: 'dark',
-      streakFreezesUsed: [],
-      waterReminderEnabled: false,
-      mealReminderEnabled: false,
-      weeklyBudget: 85,
-      streakOptIn: true,
-      waterChallengeJoined: true
-    };
+    db.profiles[userId] = createEmptyProfile('User', `user_${userId.slice(0, 6)}`);
     saveDb();
   }
-  seedDefaultSocialFriends(userId);
   return db.profiles[userId];
 }
 
@@ -1014,21 +918,25 @@ export function deletePantryItem(userId: string, id: string): boolean {
 
 // ------------------- SOCIAL & FRIENDS -------------------
 export function getFriends(userId: string): FriendRecord[] {
-  seedDefaultSocialFriends(userId);
   return db.friends.filter(f => f.userId === userId);
 }
 
 export function addFriend(userId: string, username: string, isPartner?: boolean): FriendRecord {
   const cleanUser = username.replace(/^@/, '').trim().toLowerCase();
   const display = cleanUser.charAt(0).toUpperCase() + cleanUser.slice(1).replace(/_/g, ' ');
+  // Look up real user streak if that account exists in db
+  const matchedUserId = Object.keys(db.profiles).find(
+    uid => (db.profiles[uid]?.username || '').toLowerCase() === cleanUser
+  );
+  const realStats = matchedUserId ? getUserStats(matchedUserId) : null;
   const item: FriendRecord = {
     id: `fr_${crypto.randomUUID()}`,
     userId,
     username: cleanUser,
-    displayName: display,
-    streakDays: Math.floor(Math.random() * 18) + 3,
-    daysOnTargetThisWeek: Math.floor(Math.random() * 4) + 4,
-    waterDaysCompleted: Math.floor(Math.random() * 15) + 12,
+    displayName: matchedUserId ? db.profiles[matchedUserId].name : display,
+    streakDays: realStats ? realStats.foodStreak : 0,
+    daysOnTargetThisWeek: 0,
+    waterDaysCompleted: 0,
     isPartner: Boolean(isPartner),
     createdAt: Date.now()
   };

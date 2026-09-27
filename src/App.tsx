@@ -191,7 +191,12 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
       <OnboardingModal />
       <FirstRunTooltips />
       {!isGuest && <WeeklyRecapModal />}
-      <AuthModal />
+      <AuthModal
+        onAuthComplete={() => {
+          setCurrentTab('diary');
+          window.history.pushState({}, '', '/dashboard');
+        }}
+      />
       <GuestLockSheet />
       <GuestExpiredOverlay />
       <MilestoneConfettiModal />
@@ -220,7 +225,11 @@ export default function App() {
     if (window.location.pathname === '/terms' || params.get('view') === 'terms') {
       return 'terms';
     }
-    if (params.get('view') === 'app' || window.location.pathname === '/app') {
+    if (
+      params.get('view') === 'app' ||
+      window.location.pathname === '/app' ||
+      window.location.pathname === '/dashboard'
+    ) {
       return 'app';
     }
     return 'landing';
@@ -237,7 +246,11 @@ export default function App() {
         setActiveView('privacy');
       } else if (window.location.pathname === '/terms' || params.get('view') === 'terms') {
         setActiveView('terms');
-      } else if (params.get('view') === 'app' || window.location.pathname === '/app') {
+      } else if (
+        params.get('view') === 'app' ||
+        window.location.pathname === '/app' ||
+        window.location.pathname === '/dashboard'
+      ) {
         setActiveView('app');
       } else {
         setActiveView('landing');
@@ -266,7 +279,7 @@ export default function App() {
     }
 
     setActiveView('app');
-    window.history.pushState({}, '', '/app');
+    window.history.pushState({}, '', '/dashboard');
   };
 
   const handleOpenDescription = () => {

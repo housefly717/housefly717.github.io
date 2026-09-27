@@ -207,14 +207,14 @@ export interface UserProfile {
   name: string;
   username?: string;
   age: number;
-  gender: 'male' | 'female';
+  gender: 'male' | 'female' | '';
   heightCm: number;
-  fitnessLevel: 'beginner' | 'intermediate' | 'advanced';
+  fitnessLevel: 'beginner' | 'intermediate' | 'advanced' | '';
   bodyFatPercent?: number;
   currentWeightKg: number;
   goalWeightKg: number;
-  dailyActivity: 'sedentary' | 'light' | 'moderate' | 'active' | 'athlete';
-  goalSpeed: 'lose_slow' | 'lose_normal' | 'lose_fast' | 'maintain' | 'gain_slow' | 'gain_normal';
+  dailyActivity: 'sedentary' | 'light' | 'moderate' | 'active' | 'athlete' | '';
+  goalSpeed: 'lose_slow' | 'lose_normal' | 'lose_fast' | 'maintain' | 'gain_slow' | 'gain_normal' | '';
   unitSystem: 'metric' | 'imperial';
   pinnedWhy?: string;
   themeMode?: 'dark' | 'light' | 'auto';

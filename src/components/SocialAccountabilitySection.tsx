@@ -52,9 +52,17 @@ export const SocialAccountabilitySection: React.FC = () => {
         api.getSocial(),
         api.getSavedRecipes()
       ]);
-      setFriends(socRes.friends || []);
+      const fakeSet = new Set(['claire_m', 'marcus_r', 'elena_v']);
+      const realFriends = (socRes.friends || []).filter(
+        (f: FriendRecord) => !fakeSet.has((f.username || '').toLowerCase())
+      );
+      setFriends(realFriends);
       setSharedRecipes(socRes.sharedRecipes || []);
-      setSavedRecipes(recRes.recipes || []);
+      const loadedRecipes = recRes.recipes || [];
+      setSavedRecipes(loadedRecipes);
+      if (loadedRecipes.length > 0 && !selectedRecipeId) {
+        setSelectedRecipeId(loadedRecipes[0].id);
+      }
     } catch {
       // ignore
     }
@@ -165,25 +173,17 @@ export const SocialAccountabilitySection: React.FC = () => {
   // #46 Share a recipe to another Caloriq user
   const handleShareRecipe = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!recipeRecipient.trim()) return;
+    if (!recipeRecipient.trim() || savedRecipes.length === 0) return;
     const chosen = savedRecipes.find(r => r.id === selectedRecipeId) || savedRecipes[0];
-    const payload = chosen
-      ? {
-          toUsername: recipeRecipient.trim().replace(/^@/, ''),
-          recipeName: chosen.name,
-          calories: chosen.totalCalories,
-          protein: chosen.totalProtein,
-          carbs: chosen.totalCarbs,
-          fat: chosen.totalFat
-        }
-      : {
-          toUsername: recipeRecipient.trim().replace(/^@/, ''),
-          recipeName: 'High-Protein Macro Bowl',
-          calories: 520,
-          protein: 42,
-          carbs: 48,
-          fat: 16
-        };
+    if (!chosen) return;
+    const payload = {
+      toUsername: recipeRecipient.trim().replace(/^@/, ''),
+      recipeName: chosen.name,
+      calories: chosen.totalCalories,
+      protein: chosen.totalProtein,
+      carbs: chosen.totalCarbs,
+      fat: chosen.totalFat
+    };
 
     const rec = await api.shareRecipe(payload);
     setSharedRecipes(prev => [rec, ...prev]);
@@ -192,7 +192,11 @@ export const SocialAccountabilitySection: React.FC = () => {
     setTimeout(() => setStatusMsg(null), 2500);
   };
 
-  const partnerFriend = friends.find(f => f.isPartner || f.username === profile.accountabilityPartner);
+  const partnerFriend = friends.find(
+    f =>
+      (f.isPartner || f.username === profile.accountabilityPartner) &&
+      !['claire_m', 'marcus_r', 'elena_v'].includes((f.username || '').toLowerCase())
+  );
 
   return (
     <div className="space-y-5">
@@ -300,15 +304,19 @@ export const SocialAccountabilitySection: React.FC = () => {
               <span className="text-xs font-semibold text-zinc-200 block">Accountability Partner</span>
               <span className="text-[10px] text-zinc-500">
                 {partnerFriend
-                  ? `@${partnerFriend.username} (${partnerFriend.streakDays}d streak) · Gentle ping active on 2 missed days`
-                  : 'Choose a friend below or above to enable 2-day missed log nudges'}
+                  ? `@${partnerFriend.username} (${partnerFriend.streakDays}d streak)`
+                  : 'No partner set yet.'}
               </span>
             </div>
           </div>
         </div>
 
         {/* Friends List (Streak Only) */}
-        {friends.length > 0 && (
+        {friends.length === 0 ? (
+          <p className="text-xs text-zinc-500 text-center py-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl">
+            No friends yet. Add someone by username to get started.
+          </p>
+        ) : (
           <div className="space-y-1.5">
             {friends.map((f) => (
               <div
@@ -388,12 +396,16 @@ export const SocialAccountabilitySection: React.FC = () => {
             </button>
           </div>
 
-          {profile.waterChallengeJoined && (
-            <div className="text-[11px] text-cyan-300/90 font-mono flex items-center justify-between pt-1 border-t border-zinc-900">
-              <span>Group participants hitting 8/8 today</span>
-              <span>{friends.length + (waterGlasses >= 8 ? 1 : 0)} / {friends.length + 1} on track</span>
-            </div>
-          )}
+          <div className="text-[11px] text-zinc-400 font-mono flex items-center justify-between pt-1 border-t border-zinc-900">
+            {profile.waterChallengeJoined ? (
+              <>
+                <span>Your challenge progress today</span>
+                <span className="text-cyan-300">{waterGlasses >= 8 ? '1 / 1 on track' : '0 / 1 on track'}</span>
+              </>
+            ) : (
+              <span>No one has joined this challenge yet. Be the first.</span>
+            )}
+          </div>
         </div>
 
         {/* #46 Share a Recipe */}
@@ -402,37 +414,39 @@ export const SocialAccountabilitySection: React.FC = () => {
             <ChefHat className="w-4 h-4 text-teal-400" />
             <span className="text-xs font-semibold text-zinc-200">Share a Saved Recipe</span>
           </div>
-          <form onSubmit={handleShareRecipe} className="flex gap-2">
-            <select
-              value={selectedRecipeId}
-              onChange={(e) => setSelectedRecipeId(e.target.value)}
-              className="bg-zinc-950 border border-zinc-800 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 max-w-[140px]"
-            >
-              {savedRecipes.length === 0 ? (
-                <option value="">Macro Bowl (520 kcal)</option>
-              ) : (
-                savedRecipes.map(r => (
+          {savedRecipes.length === 0 ? (
+            <p className="text-xs text-zinc-500 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-center">
+              You haven&apos;t saved any recipes yet.
+            </p>
+          ) : (
+            <form onSubmit={handleShareRecipe} className="flex gap-2">
+              <select
+                value={selectedRecipeId}
+                onChange={(e) => setSelectedRecipeId(e.target.value)}
+                className="bg-zinc-950 border border-zinc-800 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 max-w-[140px]"
+              >
+                {savedRecipes.map(r => (
                   <option key={r.id} value={r.id}>
                     {r.name} ({r.totalCalories} kcal)
                   </option>
-                ))
-              )}
-            </select>
-            <input
-              type="text"
-              value={recipeRecipient}
-              onChange={(e) => setRecipeRecipient(e.target.value)}
-              placeholder="To @username..."
-              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs text-zinc-100"
-            />
-            <button
-              type="submit"
-              className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs flex items-center gap-1 shrink-0"
-            >
-              <Send className="w-3 h-3" />
-              Send
-            </button>
-          </form>
+                ))}
+              </select>
+              <input
+                type="text"
+                value={recipeRecipient}
+                onChange={(e) => setRecipeRecipient(e.target.value)}
+                placeholder="To @username..."
+                className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs text-zinc-100"
+              />
+              <button
+                type="submit"
+                className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs flex items-center gap-1 shrink-0"
+              >
+                <Send className="w-3 h-3" />
+                Send
+              </button>
+            </form>
+          )}
 
           {sharedRecipes.length > 0 && (
             <div className="space-y-1">

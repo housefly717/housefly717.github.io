@@ -1,97 +1,63 @@
-import React, { useState, useEffect } from 'react';
-import { Mail, KeyRound, ArrowRight, CheckCircle2, X, RefreshCw, Shield } from 'lucide-react';
+import React, { useState } from 'react';
+import { Mail, Lock, ArrowRight, X, RefreshCw, Shield, LogOut } from 'lucide-react';
 import { api } from '../services/api.js';
 import { useApp } from '../context/AppContext.js';
 
-export const AuthModal: React.FC = () => {
-  const { isAuthModalOpen, closeAuthModal, isGuest, userEmail, onAuthSuccess, profile, updateUserProfile } = useApp();
-  const [email, setEmail] = useState('');
-  const [referralCode, setReferralCode] = useState('');
-  const [otpCode, setOtpCode] = useState('');
-  const [step, setStep] = useState<'email' | 'otp'>('email');
-  const [isLoading, setIsLoading] = useState(false);
-  const [isResending, setIsResending] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [statusMsg, setStatusMsg] = useState('');
-  const [resendCooldown, setResendCooldown] = useState(0);
-  const [isCodeLocked, setIsCodeLocked] = useState(false);
+interface AuthModalProps {
+  onAuthComplete?: () => void;
+}
 
-  useEffect(() => {
-    if (resendCooldown <= 0) return;
-    const timer = setInterval(() => {
-      setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [resendCooldown]);
+export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
+  const {
+    isAuthModalOpen,
+    closeAuthModal,
+    isGuest,
+    userEmail,
+    onAuthSuccess,
+    profile,
+    updateUserProfile,
+    resetGuestSession
+  } = useApp();
+
+  const [mode, setMode] = useState<'signup' | 'login'>('signup');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [referralCode, setReferralCode] = useState('');
+  const [rememberMe, setRememberMe] = useState<boolean>(() => {
+    const saved = localStorage.getItem('caloriq_remember_me');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   if (!isAuthModalOpen) return null;
 
-  const handleSendOtp = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = email.trim();
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setErrorMsg('Please enter a valid email address');
+      setErrorMsg('Please enter a valid email address.');
+      return;
+    }
+    if (!password || password.length < 6) {
+      setErrorMsg('Password must be at least 6 characters.');
       return;
     }
 
+    localStorage.setItem('caloriq_remember_me', String(rememberMe));
     setErrorMsg('');
-    setStatusMsg('');
     setIsLoading(true);
-    try {
-      const res = await api.sendOtp(cleanEmail, false);
-      setStep('otp');
-      setOtpCode('');
-      setIsCodeLocked(false);
-      setStatusMsg(res.message);
-      setResendCooldown(res.resendCooldownSeconds ?? 30);
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to send verification code');
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
-  const handleResendOtp = async () => {
-    if (resendCooldown > 0 || isResending) return;
-    const cleanEmail = email.trim();
-    setErrorMsg('');
-    setStatusMsg('');
-    setIsResending(true);
     try {
-      const res = await api.sendOtp(cleanEmail, true);
-      setOtpCode('');
-      setIsCodeLocked(false);
-      setStatusMsg(res.message);
-      setResendCooldown(res.resendCooldownSeconds ?? 30);
-    } catch (err: any) {
-      if (err.retryAfterSeconds) {
-        setResendCooldown(err.retryAfterSeconds);
+      if (mode === 'signup') {
+        await api.signup(cleanEmail, password, rememberMe);
+      } else {
+        await api.login(cleanEmail, password, rememberMe);
       }
-      setErrorMsg(err.message || 'Failed to resend verification code');
-    } finally {
-      setIsResending(false);
-    }
-  };
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (isCodeLocked) {
-      setErrorMsg('Too many failed attempts. This code is locked. Tap Resend to get a new one.');
-      return;
-    }
-    if (!otpCode || otpCode.trim().length !== 6) {
-      setErrorMsg("That code isn't right. Check your email and try again.");
-      return;
-    }
-
-    setErrorMsg('');
-    setStatusMsg('');
-    setIsLoading(true);
-    try {
-      const res = await api.verifyOtp(email.trim(), otpCode.trim());
-      setStatusMsg(res.message);
       await onAuthSuccess();
-      if (referralCode.trim()) {
+
+      if (mode === 'signup' && referralCode.trim()) {
         const cleanRef = referralCode.trim().toUpperCase();
         const used = profile.usedReferrals || [];
         if (!used.includes(cleanRef)) {
@@ -101,23 +67,31 @@ export const AuthModal: React.FC = () => {
           });
         }
       }
-      setTimeout(() => {
-        closeAuthModal();
-        setStep('email');
-        setOtpCode('');
-        setReferralCode('');
-        setErrorMsg('');
-        setStatusMsg('');
-        setIsCodeLocked(false);
-      }, 900);
-    } catch (err: any) {
-      if (err.reason === 'locked') {
-        setIsCodeLocked(true);
+
+      closeAuthModal();
+      setEmail('');
+      setPassword('');
+      setReferralCode('');
+      setErrorMsg('');
+
+      if (typeof window !== 'undefined') {
+        window.history.pushState({}, '', '/dashboard');
       }
-      setErrorMsg(err.message || "That code isn't right. Check your email and try again.");
+      if (onAuthComplete) {
+        onAuthComplete();
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || (mode === 'signup' ? 'Failed to create account.' : 'Invalid email or password.'));
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSignOut = async () => {
+    api.clearToken();
+    localStorage.removeItem('caloriq_user_email');
+    await resetGuestSession();
+    closeAuthModal();
   };
 
   return (
@@ -137,148 +111,144 @@ export const AuthModal: React.FC = () => {
           </div>
           <div>
             <h3 className="text-base font-semibold text-zinc-100">
-              {isGuest ? 'Save Account & Sync Devices' : 'Account Details'}
+              {isGuest ? (mode === 'signup' ? 'Create Account' : 'Member Sign In') : 'Account Details'}
             </h3>
             <p className="text-xs text-zinc-400">
-              {isGuest ? 'Your guest data will automatically transfer.' : `Logged in as ${userEmail}`}
+              {isGuest ? 'Your guest data will automatically transfer.' : `Signed in as ${userEmail}`}
             </p>
           </div>
         </div>
 
-        {errorMsg && (
-          <div className="mb-4 p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
-            {errorMsg}
-          </div>
-        )}
-
-        {statusMsg && (
-          <div className="mb-4 p-2.5 bg-teal-950/60 border border-teal-900/60 rounded-xl text-xs text-teal-300 flex items-center gap-2">
-            <CheckCircle2 className="w-4 h-4 text-teal-400 shrink-0" />
-            <span>{statusMsg}</span>
-          </div>
-        )}
-
-        {step === 'email' ? (
-          <form onSubmit={handleSendOtp} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                Email Address
-              </label>
-              <div className="relative">
-                <Mail className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@example.com"
-                  required
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
-                />
-              </div>
+        {!isGuest ? (
+          <div className="space-y-4">
+            <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-300 space-y-1">
+              <span className="text-[10px] font-mono uppercase text-zinc-500 block">Signed-in Email</span>
+              <span className="font-semibold text-zinc-100">{userEmail}</span>
             </div>
-
-            <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                Referral Code (Optional — +500 XP)
-              </label>
-              <input
-                type="text"
-                value={referralCode}
-                onChange={(e) => setReferralCode(e.target.value)}
-                placeholder="e.g. CQ7A9B2"
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono uppercase placeholder:normal-case text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
-              />
-            </div>
-
             <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+              type="button"
+              onClick={handleSignOut}
+              className="w-full bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
             >
-              {isLoading ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  Signing up...
-                </>
-              ) : (
-                <>
-                  Sign up
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </>
-              )}
+              <LogOut className="w-3.5 h-3.5" />
+              Sign out to Guest Mode
             </button>
-          </form>
+          </div>
         ) : (
-          <form onSubmit={handleVerifyOtp} className="space-y-4">
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="block text-xs font-medium text-zinc-400">
-                  Enter 6-Digit Code
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setStep('email');
-                    setErrorMsg('');
-                    setStatusMsg('');
-                  }}
-                  className="text-xs text-teal-400 hover:underline"
-                >
-                  Change email
-                </button>
-              </div>
-              <div className="relative">
-                <KeyRound className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  value={otpCode}
-                  disabled={isCodeLocked}
-                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                  placeholder="123456"
-                  required
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 tracking-widest font-mono disabled:opacity-50"
-                />
-              </div>
-              <div className="flex items-center justify-between mt-2">
-                <span className="text-[11px] text-zinc-500">
-                  Code expires in 10 minutes
-                </span>
-                <button
-                  type="button"
-                  onClick={handleResendOtp}
-                  disabled={resendCooldown > 0 || isResending}
-                  className="text-xs font-medium text-teal-400 hover:text-teal-300 disabled:text-zinc-500 disabled:cursor-not-allowed transition-colors"
-                >
-                  {isResending
-                    ? 'Sending...'
-                    : resendCooldown > 0
-                    ? `Resend (${resendCooldown}s)`
-                    : 'Resend'}
-                </button>
-              </div>
+          <>
+            <div className="grid grid-cols-2 gap-1 bg-zinc-950 p-1 rounded-xl border border-zinc-800 mb-4">
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('signup');
+                  setErrorMsg('');
+                }}
+                className={`py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  mode === 'signup' ? 'bg-teal-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Sign up
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('login');
+                  setErrorMsg('');
+                }}
+                className={`py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  mode === 'login' ? 'bg-teal-500 text-zinc-950' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Log in
+              </button>
             </div>
 
-            <button
-              type="submit"
-              disabled={isLoading || isCodeLocked}
-              className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
-            >
-              {isLoading ? (
-                <>
-                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                  Verifying...
-                </>
-              ) : (
-                <>
-                  Verify
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                </>
+            {errorMsg && (
+              <div className="mb-4 p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+                {errorMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Email Address
+                </label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="name@example.com"
+                    required
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Password
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="At least 6 characters"
+                    minLength={6}
+                    required
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
+              </div>
+
+              {mode === 'signup' && (
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                    Referral Code (Optional — +500 XP)
+                  </label>
+                  <input
+                    type="text"
+                    value={referralCode}
+                    onChange={(e) => setReferralCode(e.target.value)}
+                    placeholder="e.g. CQ7A9B2"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono uppercase placeholder:normal-case text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                  />
+                </div>
               )}
-            </button>
-          </form>
+
+              <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="accent-teal-500 rounded w-3.5 h-3.5"
+                />
+                <span>Remember me</span>
+              </label>
+
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+              >
+                {isLoading ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    {mode === 'signup' ? 'Creating account...' : 'Signing in...'}
+                  </>
+                ) : (
+                  <>
+                    {mode === 'signup' ? 'Sign up' : 'Log in'}
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </>
+                )}
+              </button>
+            </form>
+          </>
         )}
       </div>
     </div>

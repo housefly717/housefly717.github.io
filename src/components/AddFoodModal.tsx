@@ -628,7 +628,11 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
               </div>
 
               <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
-                {filteredSavedFoods.length === 0 ? (
+                {savedFoods.length === 0 ? (
+                  <p className="text-[11px] text-zinc-500 py-2 text-center">
+                    Foods you log will appear here for one-tap re-adding.
+                  </p>
+                ) : filteredSavedFoods.length === 0 ? (
                   <p className="text-[11px] text-zinc-500 py-2 text-center">No saved foods found.</p>
                 ) : (
                   filteredSavedFoods.map((f) => (

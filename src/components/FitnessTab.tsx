@@ -4,12 +4,7 @@ import {
   Flame,
   Plus,
   Trash2,
-  Clock,
   Info,
-  Play,
-  Pause,
-  RotateCcw,
-  Footprints,
   Trophy,
   TrendingUp,
   Ruler,
@@ -19,7 +14,6 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
-import { triggerHaptic } from '../utils/haptics.js';
 import { decipherExerciseText } from '../utils/localAiEngine.js';
 import type { BodyMeasurement, ProgressPhoto } from '../types/index.js';
 
@@ -30,8 +24,6 @@ export const FitnessTab: React.FC = () => {
     stats,
     exercises,
     allExercises,
-    todayHabit,
-    saveTodayHabit,
     addExerciseItem,
     deleteExerciseItem,
     triggerUndoableDelete
@@ -44,17 +36,6 @@ export const FitnessTab: React.FC = () => {
   const [distanceKm, setDistanceKm] = useState<string>('');
   const [plankSeconds, setPlankSeconds] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // #18 Workout Timer & Rest Timer between sets
-  const [timerMode, setTimerMode] = useState<'work' | 'rest'>('rest');
-  const [timerPresetSec, setTimerPresetSec] = useState<number>(90);
-  const [secondsLeft, setSecondsLeft] = useState<number>(90);
-  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false);
-  const [completedSets, setCompletedSets] = useState<number>(0);
-
-  // #19 Step Counter (Motion Sensor + Manual Sync)
-  const [isSensorActive, setIsSensorActive] = useState<boolean>(false);
-  const [stepCount, setStepCount] = useState<number>(todayHabit?.steps || 0);
 
   // #22 Body Measurements
   const [measurements, setMeasurements] = useState<BodyMeasurement[]>([]);
@@ -70,10 +51,6 @@ export const FitnessTab: React.FC = () => {
   const [photoNote, setPhotoNote] = useState('');
   const [compareLeftId, setCompareLeftId] = useState<string>('');
   const [compareRightId, setCompareRightId] = useState<string>('');
-
-  useEffect(() => {
-    setStepCount(todayHabit?.steps || 0);
-  }, [todayHabit?.steps]);
 
   useEffect(() => {
     loadFitnessExtras();
@@ -97,59 +74,6 @@ export const FitnessTab: React.FC = () => {
       }
     } catch {
       // ignore
-    }
-  };
-
-  // #18 Timer countdown effect
-  useEffect(() => {
-    if (!isTimerRunning) return;
-    const interval = window.setInterval(() => {
-      setSecondsLeft(prev => {
-        if (prev <= 1) {
-          triggerHaptic('success');
-          setIsTimerRunning(false);
-          if (timerMode === 'work') {
-            setCompletedSets(s => s + 1);
-          }
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(interval);
-  }, [isTimerRunning, timerMode]);
-
-  // #19 Motion sensor listener for Step Counter
-  useEffect(() => {
-    if (!isSensorActive || typeof window === 'undefined') return;
-    let lastPeak = 0;
-    const handleMotion = (event: DeviceMotionEvent) => {
-      const acc = event.accelerationIncludingGravity;
-      if (!acc) return;
-      const mag = Math.sqrt((acc.x || 0) ** 2 + (acc.y || 0) ** 2 + (acc.z || 0) ** 2);
-      const now = Date.now();
-      if (mag > 13.5 && now - lastPeak > 380) {
-        lastPeak = now;
-        setStepCount(prev => prev + 1);
-      }
-    };
-    window.addEventListener('devicemotion', handleMotion);
-    return () => window.removeEventListener('devicemotion', handleMotion);
-  }, [isSensorActive]);
-
-  const handleSyncStepsToBurn = async (newSteps: number) => {
-    setStepCount(newSteps);
-    await saveTodayHabit({ steps: newSteps });
-    const stepKcal = Math.round(newSteps * 0.04);
-    if (stepKcal >= 15) {
-      await addExerciseItem({
-        date: activeDate,
-        activityName: `Daily Steps (${newSteps.toLocaleString()} steps)`,
-        met: 3.5,
-        minutes: Math.max(5, Math.round(newSteps / 100)),
-        caloriesBurned: stepKcal,
-        intensity: 'Low'
-      });
     }
   };
 
@@ -292,12 +216,6 @@ export const FitnessTab: React.FC = () => {
   const totalDayBurn = exercises.reduce((sum, e) => sum + (e.caloriesBurned || 0), 0);
   const workoutStreak = stats.workoutStreak ?? consecutiveTrainingDays;
 
-  const formatTimer = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  };
-
   const leftPhoto = photos.find(p => p.id === compareLeftId) || photos[0];
   const rightPhoto = photos.find(p => p.id === compareRightId) || photos[photos.length - 1];
 
@@ -345,150 +263,6 @@ export const FitnessTab: React.FC = () => {
           </div>
         </div>
       )}
-
-      {/* #18 WORKOUT & REST TIMER */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-teal-400" />
-            <h4 className="text-xs font-semibold text-zinc-200">Workout & Rest Timer</h4>
-          </div>
-          <span className="text-[11px] font-mono text-teal-400">
-            Sets completed: {completedSets}
-          </span>
-        </div>
-
-        <div className="flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded-xl p-3">
-          <div>
-            <div className="flex items-center gap-1.5 mb-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setTimerMode('rest');
-                  setSecondsLeft(timerPresetSec);
-                  setIsTimerRunning(false);
-                }}
-                className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                  timerMode === 'rest' ? 'bg-teal-500 text-zinc-950' : 'text-zinc-400'
-                }`}
-              >
-                Rest Between Sets
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTimerMode('work');
-                  setSecondsLeft(timerPresetSec);
-                  setIsTimerRunning(false);
-                }}
-                className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                  timerMode === 'work' ? 'bg-teal-500 text-zinc-950' : 'text-zinc-400'
-                }`}
-              >
-                Work Interval
-              </button>
-            </div>
-            <span className="text-2xl font-extrabold font-mono text-zinc-100">
-              {formatTimer(secondsLeft)}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setIsTimerRunning(!isTimerRunning)}
-              className="p-2.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 rounded-xl font-bold transition-colors"
-              aria-label="Start or pause timer"
-            >
-              {isTimerRunning ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setIsTimerRunning(false);
-                setSecondsLeft(timerPresetSec);
-              }}
-              className="p-2.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition-colors"
-              aria-label="Reset timer"
-            >
-              <RotateCcw className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          {[30, 60, 90, 120, 180].map((sec) => (
-            <button
-              key={sec}
-              type="button"
-              onClick={() => {
-                setTimerPresetSec(sec);
-                setSecondsLeft(sec);
-                setIsTimerRunning(false);
-              }}
-              className={`flex-1 py-1 rounded-lg text-[11px] font-mono border transition-colors ${
-                timerPresetSec === sec
-                  ? 'bg-teal-500/15 border-teal-500/40 text-teal-300 font-bold'
-                  : 'bg-zinc-950 border-zinc-800 text-zinc-400'
-              }`}
-            >
-              {sec}s
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* #19 STEP COUNTER (Motion Sensors + Daily Burn) */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Footprints className="w-4 h-4 text-teal-400" />
-            <div>
-              <h4 className="text-xs font-semibold text-zinc-200">Step Counter</h4>
-              <span className="text-[10px] text-zinc-500">
-                +{Math.round(stepCount * 0.04)} kcal estimated step burn
-              </span>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsSensorActive(!isSensorActive)}
-            className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold border transition-colors ${
-              isSensorActive
-                ? 'bg-teal-500 text-zinc-950 border-teal-400'
-                : 'bg-zinc-950 text-teal-400 border-zinc-800'
-            }`}
-          >
-            {isSensorActive ? 'Sensor Active' : 'Enable Motion Sensor'}
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <input
-            type="number"
-            min="0"
-            step="100"
-            value={stepCount || ''}
-            onChange={(e) => setStepCount(Number(e.target.value) || 0)}
-            placeholder="Enter or sync steps (e.g. 8500)"
-            className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono text-zinc-100 focus:outline-none focus:border-teal-500"
-          />
-          <button
-            type="button"
-            onClick={() => handleSyncStepsToBurn(stepCount + 1000)}
-            className="px-2.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-xl text-xs font-mono"
-          >
-            +1k
-          </button>
-          <button
-            type="button"
-            onClick={() => handleSyncStepsToBurn(stepCount)}
-            className="px-3 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs"
-          >
-            Add to Burn
-          </button>
-        </div>
-      </div>
 
       {/* Log Exercise Box (In-Code AI Natural Language Decipherer) */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">

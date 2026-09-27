@@ -1,6 +1,21 @@
 import type { UserProfile, MacroTarget } from '../types/index.js';
 
+export function hasCompleteProfileStats(profile?: UserProfile | null): boolean {
+  if (!profile) return false;
+  return Boolean(
+    profile.age > 0 &&
+      profile.heightCm > 0 &&
+      profile.currentWeightKg > 0 &&
+      (profile.gender === 'male' || profile.gender === 'female') &&
+      profile.dailyActivity
+  );
+}
+
 export function calculateDailyCalorieTarget(profile: UserProfile): number {
+  if (!hasCompleteProfileStats(profile)) {
+    return 0;
+  }
+
   const { gender, currentWeightKg, heightCm, age, bodyFatPercent, dailyActivity, goalSpeed } = profile;
 
   let bmr: number;
@@ -18,7 +33,7 @@ export function calculateDailyCalorieTarget(profile: UserProfile): number {
   }
 
   // Activity multipliers
-  const activityMultipliers: Record<UserProfile['dailyActivity'], number> = {
+  const activityMultipliers: Record<string, number> = {
     sedentary: 1.2,
     light: 1.375,
     moderate: 1.55,
@@ -29,7 +44,7 @@ export function calculateDailyCalorieTarget(profile: UserProfile): number {
   const tdee = bmr * (activityMultipliers[dailyActivity] || 1.2);
 
   // Goal speed adjustments
-  const speedAdjustments: Record<UserProfile['goalSpeed'], number> = {
+  const speedAdjustments: Record<string, number> = {
     lose_slow: -250,
     lose_normal: -500,
     lose_fast: -750,
@@ -38,7 +53,7 @@ export function calculateDailyCalorieTarget(profile: UserProfile): number {
     gain_normal: 500
   };
 
-  let target = tdee + (speedAdjustments[goalSpeed] || 0);
+  let target = tdee + (speedAdjustments[goalSpeed || 'lose_normal'] ?? 0);
 
   // Floor at 1200 for women, 1500 for men
   const floor = gender === 'male' ? 1500 : 1200;
@@ -59,6 +74,17 @@ export function calculateDailyCalorieTarget(profile: UserProfile): number {
  */
 export function calculateMacroTargets(targetCalories: number): MacroTarget {
   const target = targetCalories;
+  if (!target || target <= 0) {
+    return {
+      calories: 0,
+      carbsGrams: 0,
+      fatGrams: 0,
+      proteinGrams: 0,
+      carbsPct: 40,
+      fatPct: 30,
+      proteinPct: 30
+    };
+  }
 
   // Initial target calories per macro
   const targetFatKcal = target * 0.30;
@@ -120,12 +146,16 @@ export function calculateMacroTargets(targetCalories: number): MacroTarget {
  * Calculates projected goal date based on weight difference and daily deficit/surplus
  */
 export function calculateProjectedGoalDate(profile: UserProfile): string {
+  if (!hasCompleteProfileStats(profile) || !profile.goalWeightKg || profile.goalWeightKg <= 0) {
+    return 'Enter your stats to see your calorie target.';
+  }
+
   const diffKg = profile.goalWeightKg - profile.currentWeightKg;
   if (Math.abs(diffKg) < 0.2) {
     return 'Goal reached (maintaining)';
   }
 
-  const speedAdjustments: Record<UserProfile['goalSpeed'], number> = {
+  const speedAdjustments: Record<string, number> = {
     lose_slow: -250,
     lose_normal: -500,
     lose_fast: -750,
@@ -134,7 +164,7 @@ export function calculateProjectedGoalDate(profile: UserProfile): string {
     gain_normal: 500
   };
 
-  const dailyCals = speedAdjustments[profile.goalSpeed];
+  const dailyCals = speedAdjustments[profile.goalSpeed || 'lose_normal'] ?? -500;
   if (dailyCals === 0) {
     return 'Maintaining current weight';
   }
