@@ -267,7 +267,7 @@ function createEmptyProfile(name: string, username: string): UserProfile {
     currentWeightKg: 0,
     goalWeightKg: 0,
     dailyActivity: '',
-    goalSpeed: 'lose_normal',
+    goalSpeed: '',
     unitSystem: 'metric',
     pinnedWhy: '',
     themeMode: 'dark',
@@ -329,9 +329,8 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
       lastLoginAt: Date.now()
     };
     db.users[id] = user;
-    const defaultName = norm.split('@')[0];
     const defaultUsername = norm.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-    db.profiles[id] = createEmptyProfile(defaultName, defaultUsername);
+    db.profiles[id] = createEmptyProfile('', defaultUsername);
     db.userXp[id] = { xp: 0, badges: [] };
   }
 

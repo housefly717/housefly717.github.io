@@ -1,4 +1,5 @@
 import { parseIngredientLine, BUILTIN_FOODS } from '../server/foodData.js';
+import { decipherFoodText } from '../utils/localAiEngine.js';
 import type {
   FoodItem,
   ExerciseItem,
@@ -181,7 +182,7 @@ function defaultProfile(name: string, username: string): UserProfile {
     currentWeightKg: 0,
     goalWeightKg: 0,
     dailyActivity: '',
-    goalSpeed: 'lose_normal',
+    goalSpeed: '',
     unitSystem: 'metric',
     pinnedWhy: '',
     themeMode: 'dark',
@@ -417,7 +418,9 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     const id = `usr_${email.replace(/[^a-z0-9]/gi, '_')}`;
     db.users[id] = { id, email, passwordHash: password, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
     if (!db.profiles[id]) {
-      db.profiles[id] = defaultProfile(email.split('@')[0], email.split('@')[0]);
+      db.profiles[id] = defaultProfile('', email.split('@')[0]);
+    } else if (db.profiles[id].name === email.split('@')[0] && !db.profiles[id].age) {
+      db.profiles[id].name = '';
     }
     saveDb();
     return { userId: id, email, isGuest: false, token: id };
@@ -774,24 +777,24 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
   // AI ENDPOINTS (Standalone intelligent parser & estimators)
   if (pathname === '/api/ai/voice-log' && method === 'POST') {
     const transcript = String(body.transcript || '').trim();
-    const parts = transcript
-      .split(/\s+(?:and|with|plus|,)\s+/i)
-      .map(s => s.trim())
-      .filter(Boolean);
-    const parsedItems = (parts.length > 0 ? parts : ['2 eggs', '1 slice sourdough bread']).map(line => {
-      const p = parseIngredientLine(line);
-      return {
-        name: p.name.charAt(0).toUpperCase() + p.name.slice(1),
-        serving: `${p.amount} ${p.unit} (~${p.calculatedGrams}g)`,
-        calories: p.calories || 140,
-        protein: p.protein || 10,
-        carbs: p.carbs || 12,
-        fat: p.fat || 6
-      };
-    });
+    const parsed = decipherFoodText(transcript);
     return {
-      mealSummaryName: transcript ? transcript.charAt(0).toUpperCase() + transcript.slice(1) : 'Voice Logged Meal',
-      items: parsedItems
+      mealName: parsed.mealSummaryName,
+      mealSummaryName: parsed.mealSummaryName,
+      totalCalories: parsed.totalCalories,
+      totalProtein: parsed.totalProtein,
+      totalCarbs: parsed.totalCarbs,
+      totalFat: parsed.totalFat,
+      needsWeightConfirmation: parsed.needsWeightConfirmation,
+      items: parsed.items.map(i => ({
+        name: i.name,
+        grams: i.grams,
+        serving: i.servingLabel,
+        calories: i.calories,
+        protein: i.protein,
+        carbs: i.carbs,
+        fat: i.fat
+      }))
     };
   }
 

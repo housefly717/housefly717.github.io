@@ -54,15 +54,15 @@ export const BUILTIN_FOODS: BuiltinFood[] = [
   { name: "shrimp", aliases: ["prawns", "prawn", "cooked shrimp"], calories: 99, protein: 24.0, fat: 0.3, carbs: 0.2, category: 'seafood' },
 
   // Eggs & Dairy & Plant proteins (including packaged-specific items)
-  { name: "egg", aliases: ["eggs", "whole egg", "large egg"], calories: 143, protein: 12.6, fat: 9.5, carbs: 0.7, defaultPieceGrams: 50, category: 'dairy' },
+  { name: "egg", aliases: ["eggs", "whole egg", "large egg"], calories: 143, protein: 12.6, fat: 9.5, carbs: 0.7, defaultPieceGrams: 60, category: 'dairy' },
   { name: "egg white", aliases: ["egg whites"], calories: 52, protein: 10.9, fat: 0.2, carbs: 0.7, defaultPieceGrams: 33, category: 'dairy' },
   { name: "tofu", aliases: ["firm tofu", "silken tofu", "extra firm tofu"], calories: 76, protein: 8.1, fat: 4.8, carbs: 1.9, category: 'produce', isPackagedSpecific: true },
   { name: "tempeh", aliases: ["organic tempeh"], calories: 192, protein: 20.3, fat: 10.8, carbs: 7.6, category: 'produce', isPackagedSpecific: true },
-  { name: "cheddar", aliases: ["cheddar cheese", "sharp cheddar"], calories: 403, protein: 24.9, fat: 33.1, carbs: 1.3, category: 'dairy', isPackagedSpecific: true },
-  { name: "mozzarella", aliases: ["mozzarella cheese", "fresh mozzarella"], calories: 280, protein: 28.0, fat: 17.1, carbs: 3.1, category: 'dairy', isPackagedSpecific: true },
-  { name: "camembert", aliases: ["camembert cheese"], calories: 300, protein: 19.8, fat: 24.3, carbs: 0.5, category: 'dairy', isPackagedSpecific: true },
-  { name: "feta", aliases: ["feta cheese"], calories: 264, protein: 14.2, fat: 21.3, carbs: 4.1, category: 'dairy', isPackagedSpecific: true },
-  { name: "halloumi", aliases: ["halloumi cheese"], calories: 321, protein: 21.0, fat: 25.0, carbs: 2.0, category: 'dairy', isPackagedSpecific: true },
+  { name: "cheddar", aliases: ["cheddar cheese", "sharp cheddar", "slice of cheese", "cheese slice"], calories: 403, protein: 24.9, fat: 33.1, carbs: 1.3, defaultPieceGrams: 20, category: 'dairy', isPackagedSpecific: true },
+  { name: "mozzarella", aliases: ["mozzarella cheese", "fresh mozzarella"], calories: 280, protein: 28.0, fat: 17.1, carbs: 3.1, defaultPieceGrams: 20, category: 'dairy', isPackagedSpecific: true },
+  { name: "camembert", aliases: ["camembert cheese"], calories: 300, protein: 19.8, fat: 24.3, carbs: 0.5, defaultPieceGrams: 20, category: 'dairy', isPackagedSpecific: true },
+  { name: "feta", aliases: ["feta cheese"], calories: 264, protein: 14.2, fat: 21.3, carbs: 4.1, defaultPieceGrams: 20, category: 'dairy', isPackagedSpecific: true },
+  { name: "halloumi", aliases: ["halloumi cheese"], calories: 321, protein: 21.0, fat: 25.0, carbs: 2.0, defaultPieceGrams: 20, category: 'dairy', isPackagedSpecific: true },
   { name: "cottage cheese", aliases: ["low fat cottage cheese"], calories: 98, protein: 11.1, fat: 4.3, carbs: 3.4, category: 'dairy' },
   { name: "Greek yogurt (0%)", aliases: ["greek yogurt", "nonfat greek yogurt", "greek yougurt", "greek yoghurt"], calories: 59, protein: 10.2, fat: 0.4, carbs: 3.6, category: 'dairy' },
   { name: "whole milk yogurt", aliases: ["plain yogurt", "yogurt", "yougurt", "yoghurt", "natural yogurt"], calories: 61, protein: 3.5, fat: 3.3, carbs: 4.7, category: 'dairy' },
@@ -80,26 +80,30 @@ export const BUILTIN_FOODS: BuiltinFood[] = [
   { name: "quinoa", aliases: ["cooked quinoa"], calories: 120, protein: 4.4, fat: 1.9, carbs: 21.3, category: 'pantry' },
   { name: "pasta", aliases: ["dry pasta", "spaghetti", "penne"], calories: 371, protein: 13.0, fat: 1.5, carbs: 74.7, category: 'pantry' },
   { name: "cooked pasta", aliases: ["boiled pasta"], calories: 158, protein: 5.8, fat: 0.9, carbs: 30.9, category: 'pantry' },
-  { name: "sourdough bread", aliases: ["sourdough"], calories: 247, protein: 9.1, fat: 1.2, carbs: 49.3, defaultPieceGrams: 40, category: 'pantry' },
-  { name: "whole wheat bread", aliases: ["brown bread"], calories: 247, protein: 13.0, fat: 3.4, carbs: 41.3, defaultPieceGrams: 40, category: 'pantry' },
-  { name: "white bread", aliases: ["toast bread"], calories: 265, protein: 9.0, fat: 3.2, carbs: 49.0, defaultPieceGrams: 35, category: 'pantry' },
+  { name: "sourdough bread", aliases: ["sourdough", "slice of bread"], calories: 247, protein: 9.1, fat: 1.2, carbs: 49.3, defaultPieceGrams: 30, category: 'pantry' },
+  { name: "whole wheat bread", aliases: ["brown bread"], calories: 247, protein: 13.0, fat: 3.4, carbs: 41.3, defaultPieceGrams: 30, category: 'pantry' },
+  { name: "white bread", aliases: ["toast bread"], calories: 265, protein: 9.0, fat: 3.2, carbs: 49.0, defaultPieceGrams: 30, category: 'pantry' },
   { name: "black beans", aliases: ["cooked black beans", "canned black beans"], calories: 132, protein: 8.9, fat: 0.5, carbs: 23.7, category: 'pantry' },
   { name: "chickpeas", aliases: ["garbanzo beans", "cooked chickpeas"], calories: 164, protein: 8.9, fat: 2.6, carbs: 27.4, category: 'pantry' },
   { name: "lentils", aliases: ["cooked lentils", "brown lentils", "red lentils"], calories: 116, protein: 9.0, fat: 0.4, carbs: 20.1, category: 'pantry' },
 
   // Fruits
-  { name: "banana", aliases: ["bananas"], calories: 89, protein: 1.1, fat: 0.3, carbs: 22.8, defaultPieceGrams: 118, category: 'produce' },
-  { name: "apple", aliases: ["apples"], calories: 52, protein: 0.3, fat: 0.2, carbs: 13.8, defaultPieceGrams: 182, category: 'produce' },
-  { name: "blueberries", aliases: ["blueberry"], calories: 57, protein: 0.7, fat: 0.3, carbs: 14.5, category: 'produce' },
-  { name: "strawberries", aliases: ["strawberry"], calories: 32, protein: 0.7, fat: 0.3, carbs: 7.7, category: 'produce' },
+  { name: "banana", aliases: ["bananas"], calories: 89, protein: 1.1, fat: 0.3, carbs: 22.8, defaultPieceGrams: 120, category: 'produce' },
+  { name: "apple", aliases: ["apples"], calories: 52, protein: 0.3, fat: 0.2, carbs: 13.8, defaultPieceGrams: 180, category: 'produce' },
+  { name: "raspberries", aliases: ["raspberry", "rasberry", "rasberries"], calories: 52, protein: 1.2, fat: 0.7, carbs: 11.9, defaultPieceGrams: 4, category: 'produce' },
+  { name: "blueberries", aliases: ["blueberry"], calories: 57, protein: 0.7, fat: 0.3, carbs: 14.5, defaultPieceGrams: 2, category: 'produce' },
+  { name: "strawberries", aliases: ["strawberry"], calories: 32, protein: 0.7, fat: 0.3, carbs: 7.7, defaultPieceGrams: 12, category: 'produce' },
+  { name: "blackberries", aliases: ["blackberry"], calories: 43, protein: 1.4, fat: 0.5, carbs: 9.6, defaultPieceGrams: 5, category: 'produce' },
+  { name: "grapes", aliases: ["grape"], calories: 69, protein: 0.7, fat: 0.2, carbs: 18.1, defaultPieceGrams: 5, category: 'produce' },
+  { name: "cherries", aliases: ["cherry"], calories: 63, protein: 1.1, fat: 0.2, carbs: 16.0, defaultPieceGrams: 8, category: 'produce' },
   { name: "avocado", aliases: ["avocados"], calories: 160, protein: 2.0, fat: 14.7, carbs: 8.5, defaultPieceGrams: 150, category: 'produce' },
-  { name: "orange", aliases: ["oranges"], calories: 47, protein: 0.9, fat: 0.1, carbs: 11.8, defaultPieceGrams: 130, category: 'produce' },
+  { name: "orange", aliases: ["oranges"], calories: 47, protein: 0.9, fat: 0.1, carbs: 11.8, defaultPieceGrams: 150, category: 'produce' },
 
   // Vegetables
   { name: "broccoli", aliases: ["steamed broccoli"], calories: 34, protein: 2.8, fat: 0.4, carbs: 6.6, category: 'produce' },
   { name: "spinach", aliases: ["baby spinach", "fresh spinach"], calories: 23, protein: 2.9, fat: 0.4, carbs: 3.6, category: 'produce' },
-  { name: "sweet potato", aliases: ["baked sweet potato", "sweet potatoes"], calories: 86, protein: 1.6, fat: 0.1, carbs: 20.1, defaultPieceGrams: 130, category: 'produce' },
-  { name: "potato", aliases: ["potatoes", "baked potato", "russet potato"], calories: 93, protein: 2.5, fat: 0.1, carbs: 21.2, defaultPieceGrams: 150, category: 'produce' },
+  { name: "sweet potato", aliases: ["baked sweet potato", "sweet potatoes"], calories: 86, protein: 1.6, fat: 0.1, carbs: 20.1, defaultPieceGrams: 170, category: 'produce' },
+  { name: "potato", aliases: ["potatoes", "baked potato", "russet potato"], calories: 93, protein: 2.5, fat: 0.1, carbs: 21.2, defaultPieceGrams: 170, category: 'produce' },
   { name: "cucumber", aliases: ["cucumbers"], calories: 15, protein: 0.7, fat: 0.1, carbs: 3.6, defaultPieceGrams: 200, category: 'produce' },
   { name: "tomato", aliases: ["tomatoes"], calories: 18, protein: 0.9, fat: 0.2, carbs: 3.9, defaultPieceGrams: 120, category: 'produce' },
   { name: "bell pepper", aliases: ["sweet pepper", "red bell pepper", "green pepper"], calories: 31, protein: 1.0, fat: 0.3, carbs: 6.0, defaultPieceGrams: 120, category: 'produce' },
@@ -266,16 +270,20 @@ export function parseIngredientLine(line: string): ParsedIngredient {
     };
   }
 
-  // Match in BUILTIN_FOODS
+  // Match in BUILTIN_FOODS using whole-word boundaries
   const normFoodName = normalizeName(foodName);
   const matched = BUILTIN_FOODS.find(f => {
     if (f.name === normFoodName) return true;
-    if (f.aliases.some(a => a === normFoodName || normFoodName.includes(a) || a.includes(normFoodName))) return true;
-    return false;
+    const candidates = [f.name, ...f.aliases];
+    return candidates.some(a => {
+      if (a === normFoodName) return true;
+      const escaped = a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`\\b${escaped}\\b`, 'i').test(normFoodName);
+    });
   });
 
-  // Convert unit to grams
-  let grams = 100;
+  // Convert unit to grams (never assume 100g default when weight is unknown)
+  let grams = 0;
   if (unit === 'g') {
     grams = amount;
   } else if (unit === 'kg') {
@@ -296,7 +304,7 @@ export function parseIngredientLine(line: string): ParsedIngredient {
     if (matched && matched.defaultPieceGrams) {
       grams = amount * matched.defaultPieceGrams;
     } else {
-      grams = amount * 100; // default 100g per item
+      grams = 0;
     }
   }
 
@@ -304,7 +312,7 @@ export function parseIngredientLine(line: string): ParsedIngredient {
     const factor = grams / 100;
     return {
       raw: trimmed,
-      name: matched.name,
+      name: foodName,
       amount,
       unit,
       isVague: false,

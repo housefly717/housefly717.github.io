@@ -24,6 +24,7 @@ export interface DecipheredFoodItem {
   rawText: string;
   name: string;
   grams: number;
+  needsWeightConfirmation?: boolean;
   servingLabel: string;
   calories: number;
   protein: number;
@@ -32,12 +33,20 @@ export interface DecipheredFoodItem {
   fiber: number;
   sugar: number;
   sodiumMg: number;
+  caloriesPer100g: number;
+  proteinPer100g: number;
+  carbsPer100g: number;
+  fatPer100g: number;
+  fiberPer100g: number;
+  sugarPer100g: number;
+  sodiumMgPer100g: number;
   category: 'produce' | 'protein' | 'dairy' | 'grain' | 'fat' | 'seasoning' | 'processed' | 'beverage';
 }
 
 export interface DecipheredFoodResult {
   mealSummaryName: string;
   items: DecipheredFoodItem[];
+  needsWeightConfirmation: boolean;
   totalCalories: number;
   totalProtein: number;
   totalCarbs: number;
@@ -374,8 +383,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 2.6,
     sugarPer100g: 12.2,
     sodiumMgPer100g: 1,
-    defaultGrams: 118,
-    defaultUnitLabel: '1 medium',
+    defaultGrams: 120,
+    defaultUnitLabel: '1 banana (120g)',
     category: 'produce'
   },
   {
@@ -389,12 +398,26 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     sugarPer100g: 10.4,
     sodiumMgPer100g: 1,
     defaultGrams: 180,
-    defaultUnitLabel: '1 medium',
+    defaultUnitLabel: '1 apple (180g)',
+    category: 'produce'
+  },
+  {
+    name: 'Raspberries',
+    keywords: ['raspberry', 'raspberries', 'rasberry', 'rasberries'],
+    caloriesPer100g: 52,
+    proteinPer100g: 1.2,
+    carbsPer100g: 11.9,
+    fatPer100g: 0.7,
+    fiberPer100g: 6.5,
+    sugarPer100g: 4.4,
+    sodiumMgPer100g: 1,
+    defaultGrams: 4,
+    defaultUnitLabel: '1 raspberry (4g)',
     category: 'produce'
   },
   {
     name: 'Blueberries',
-    keywords: ['blueberry', 'blueberries', 'berries', 'mixed berries'],
+    keywords: ['blueberry', 'blueberries'],
     caloriesPer100g: 57,
     proteinPer100g: 0.7,
     carbsPer100g: 14.5,
@@ -402,8 +425,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 2.4,
     sugarPer100g: 10.0,
     sodiumMgPer100g: 1,
-    defaultGrams: 100,
-    defaultUnitLabel: '100g',
+    defaultGrams: 2,
+    defaultUnitLabel: '1 blueberry (2g)',
     category: 'produce'
   },
   {
@@ -416,8 +439,36 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 2.0,
     sugarPer100g: 4.9,
     sodiumMgPer100g: 1,
-    defaultGrams: 120,
-    defaultUnitLabel: '1 cup',
+    defaultGrams: 12,
+    defaultUnitLabel: '1 strawberry (12g)',
+    category: 'produce'
+  },
+  {
+    name: 'Blackberries',
+    keywords: ['blackberry', 'blackberries'],
+    caloriesPer100g: 43,
+    proteinPer100g: 1.4,
+    carbsPer100g: 9.6,
+    fatPer100g: 0.5,
+    fiberPer100g: 5.3,
+    sugarPer100g: 4.9,
+    sodiumMgPer100g: 1,
+    defaultGrams: 5,
+    defaultUnitLabel: '1 blackberry (5g)',
+    category: 'produce'
+  },
+  {
+    name: 'Cherries',
+    keywords: ['cherry', 'cherries'],
+    caloriesPer100g: 63,
+    proteinPer100g: 1.1,
+    carbsPer100g: 16.0,
+    fatPer100g: 0.2,
+    fiberPer100g: 2.1,
+    sugarPer100g: 12.8,
+    sodiumMgPer100g: 0,
+    defaultGrams: 8,
+    defaultUnitLabel: '1 cherry (8g)',
     category: 'produce'
   },
   {
@@ -444,8 +495,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 2.4,
     sugarPer100g: 9.4,
     sodiumMgPer100g: 0,
-    defaultGrams: 130,
-    defaultUnitLabel: '1 medium',
+    defaultGrams: 150,
+    defaultUnitLabel: '1 orange (150g)',
     category: 'produce'
   },
   {
@@ -472,8 +523,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 0.9,
     sugarPer100g: 15.5,
     sodiumMgPer100g: 2,
-    defaultGrams: 120,
-    defaultUnitLabel: '1 cup',
+    defaultGrams: 5,
+    defaultUnitLabel: '1 grape (5g)',
     category: 'produce'
   },
   {
@@ -535,8 +586,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     category: 'dairy'
   },
   {
-    name: 'Cheddar Cheese',
-    keywords: ['cheddar', 'cheese', 'cheddar cheese', 'sliced cheese'],
+    name: 'Cheese',
+    keywords: ['cheddar', 'cheese', 'cheddar cheese', 'sliced cheese', 'slice of cheese'],
     caloriesPer100g: 403,
     proteinPer100g: 24.9,
     carbsPer100g: 1.3,
@@ -544,8 +595,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 0,
     sugarPer100g: 0.5,
     sodiumMgPer100g: 621,
-    defaultGrams: 30,
-    defaultUnitLabel: '30g slice',
+    defaultGrams: 20,
+    defaultUnitLabel: '1 slice (20g)',
     category: 'dairy'
   },
   {
@@ -649,8 +700,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     category: 'seasoning'
   },
   {
-    name: 'Honey / Maple Syrup',
-    keywords: ['honey', 'maple syrup', 'agave', 'syrup'],
+    name: 'Honey',
+    keywords: ['honey', 'raw honey'],
     caloriesPer100g: 304,
     proteinPer100g: 0.3,
     carbsPer100g: 82.4,
@@ -660,6 +711,20 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     sodiumMgPer100g: 4,
     defaultGrams: 21,
     defaultUnitLabel: '1 tbsp (21g)',
+    category: 'processed'
+  },
+  {
+    name: 'Maple Syrup',
+    keywords: ['maple syrup', 'agave', 'syrup'],
+    caloriesPer100g: 260,
+    proteinPer100g: 0,
+    carbsPer100g: 67.0,
+    fatPer100g: 0,
+    fiberPer100g: 0,
+    sugarPer100g: 60.5,
+    sodiumMgPer100g: 12,
+    defaultGrams: 20,
+    defaultUnitLabel: '1 tbsp (20g)',
     category: 'processed'
   },
   {
@@ -688,8 +753,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 0,
     sugarPer100g: 0.4,
     sodiumMgPer100g: 142,
-    defaultGrams: 50,
-    defaultUnitLabel: '1 large egg (50g)',
+    defaultGrams: 60,
+    defaultUnitLabel: '1 egg (60g)',
     category: 'protein'
   },
   {
@@ -905,7 +970,7 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     category: 'grain'
   },
   {
-    name: 'Sourdough / Whole Grain Bread',
+    name: 'Bread',
     keywords: ['sourdough', 'bread', 'toast', 'whole wheat bread', 'slice of bread', 'rye bread', 'bagel', 'wrap', 'tortilla'],
     caloriesPer100g: 250,
     proteinPer100g: 10.0,
@@ -914,8 +979,8 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     fiberPer100g: 4.5,
     sugarPer100g: 3.0,
     sodiumMgPer100g: 450,
-    defaultGrams: 40,
-    defaultUnitLabel: '1 slice (40g)',
+    defaultGrams: 30,
+    defaultUnitLabel: '1 slice (30g)',
     category: 'grain'
   },
   {
@@ -1178,6 +1243,53 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
   }
 ];
 
+// Known per-item weights (in grams) for count-based inputs without explicit weight
+const KNOWN_ITEM_WEIGHTS_GRAMS: Array<{ pattern: RegExp; grams: number; unitLabel: string }> = [
+  { pattern: /\b(raspberry|raspberries|rasberry|rasberries)\b/i, grams: 4, unitLabel: 'raspberry' },
+  { pattern: /\b(blueberry|blueberries)\b/i, grams: 2, unitLabel: 'blueberry' },
+  { pattern: /\b(strawberry|strawberries)\b/i, grams: 12, unitLabel: 'strawberry' },
+  { pattern: /\b(blackberry|blackberries)\b/i, grams: 5, unitLabel: 'blackberry' },
+  { pattern: /\b(grape|grapes)\b/i, grams: 5, unitLabel: 'grape' },
+  { pattern: /\b(cherry|cherries)\b/i, grams: 8, unitLabel: 'cherry' },
+  { pattern: /\b(egg|eggs)\b/i, grams: 60, unitLabel: 'egg' },
+  { pattern: /\b(banana|bananas|bannana)\b/i, grams: 120, unitLabel: 'banana' },
+  { pattern: /\b(apple|apples)\b/i, grams: 180, unitLabel: 'apple' },
+  { pattern: /\b(orange|oranges|mandarin|clementine)\b/i, grams: 150, unitLabel: 'orange' },
+  { pattern: /\b(potato|potatoes|sweet potato|sweet potatoes)\b/i, grams: 170, unitLabel: 'potato' },
+  { pattern: /\b(slice of bread|slices of bread|bread|toast|sourdough|whole wheat bread|rye bread)\b/i, grams: 30, unitLabel: 'slice of bread' },
+  { pattern: /\b(slice of cheese|slices of cheese|cheese slice|cheddar|cheese)\b/i, grams: 20, unitLabel: 'slice of cheese' }
+];
+
+function getKnownPerItemWeight(foodPhrase: string, unit: string): number | null {
+  const combined = `${unit} ${foodPhrase}`.trim();
+  if (unit === 'slice' || unit === 'slices') {
+    if (/\b(cheese|cheddar|mozzarella|swiss|gouda|provolone)\b/i.test(foodPhrase)) {
+      return 20;
+    }
+    if (/\b(bread|toast|sourdough|rye|wheat|loaf)\b/i.test(foodPhrase)) {
+      return 30;
+    }
+  }
+  for (const item of KNOWN_ITEM_WEIGHTS_GRAMS) {
+    if (item.pattern.test(combined) || item.pattern.test(foodPhrase)) {
+      return item.grams;
+    }
+  }
+  return null;
+}
+
+function formatTypedFoodName(foodPhrase: string): string {
+  const cleaned = foodPhrase
+    .replace(/\b(of|some|a|an|the)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return 'Food Item';
+  return cleaned
+    .split(' ')
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
+
 function findBestFoodMatch(foodPhrase: string): LocalFoodEntry | null {
   const cleaned = foodPhrase
     .toLowerCase()
@@ -1194,25 +1306,20 @@ function findBestFoodMatch(foodPhrase: string): LocalFoodEntry | null {
     }
   }
 
-  // 2. Multi-word phrase contains keyword (sort longest keyword first so "greek yogurt" beats "yogurt")
+  // 2. Whole-word match inside phrase (longest keyword first so "greek yogurt" beats "yogurt")
   let bestEntry: LocalFoodEntry | null = null;
   let longestKwLen = 0;
   for (const entry of LOCAL_FOOD_DB) {
     for (const kw of entry.keywords) {
-      if (cleaned.includes(kw) && kw.length > longestKwLen) {
+      const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const wordRegex = new RegExp(`\\b${escaped}\\b`, 'i');
+      if (wordRegex.test(cleaned) && kw.length > longestKwLen) {
         bestEntry = entry;
         longestKwLen = kw.length;
       }
     }
   }
   if (bestEntry) return bestEntry;
-
-  // 3. Keyword contains cleaned word
-  for (const entry of LOCAL_FOOD_DB) {
-    if (entry.keywords.some(kw => kw.includes(cleaned) && cleaned.length >= 3)) {
-      return entry;
-    }
-  }
 
   return null;
 }
@@ -1230,14 +1337,16 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     const mult = WORD_NUMBERS[countWord] || parseFloat(countWord) || 1;
     const itemName = pinchMatch[3].trim();
     const matched = findBestFoodMatch(itemName);
+    const displayName = formatTypedFoodName(itemName);
     const grams = Math.round(mult * 0.4 * 10) / 10; // 1 pinch ≈ 0.4g
     const factor = grams / 100;
 
     if (matched) {
       return {
         rawText: raw,
-        name: matched.name,
+        name: displayName,
         grams,
+        needsWeightConfirmation: false,
         servingLabel: `${mult > 1 ? mult + ' pinches' : '1 pinch'} (${grams}g)`,
         calories: Math.round(matched.caloriesPer100g * factor),
         protein: Math.round(matched.proteinPer100g * factor * 10) / 10,
@@ -1246,14 +1355,23 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
         fiber: Math.round(matched.fiberPer100g * factor * 10) / 10,
         sugar: Math.round(matched.sugarPer100g * factor * 10) / 10,
         sodiumMg: Math.round(matched.sodiumMgPer100g * factor),
+        caloriesPer100g: matched.caloriesPer100g,
+        proteinPer100g: matched.proteinPer100g,
+        carbsPer100g: matched.carbsPer100g,
+        fatPer100g: matched.fatPer100g,
+        fiberPer100g: matched.fiberPer100g,
+        sugarPer100g: matched.sugarPer100g,
+        sodiumMgPer100g: matched.sodiumMgPer100g,
         category: matched.category
       };
     }
 
+    const sodiumPer100g = /salt/i.test(itemName) ? 38758 : 1250;
     return {
       rawText: raw,
-      name: itemName.charAt(0).toUpperCase() + itemName.slice(1),
+      name: displayName,
       grams,
+      needsWeightConfirmation: false,
       servingLabel: `1 pinch (${grams}g)`,
       calories: 0,
       protein: 0,
@@ -1262,18 +1380,23 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
       fiber: 0,
       sugar: 0,
       sodiumMg: /salt/i.test(itemName) ? 155 : 5,
+      caloriesPer100g: 0,
+      proteinPer100g: 0,
+      carbsPer100g: 0,
+      fatPer100g: 0,
+      fiberPer100g: 0,
+      sugarPer100g: 0,
+      sodiumMgPer100g: sodiumPer100g,
       category: 'seasoning'
     };
   }
 
-  // Standard quantity + unit + food name
-  // e.g. "80g mangos", "10g yougurt", "1.5 cups oats", "2 tbsp peanut butter", "a handful of almonds", "2 eggs"
   let amount = 1;
   let unit = '';
   let foodPhrase = raw;
 
   const explicitUnitMatch = raw.match(
-    /^(?:(a|an|one|two|three|four|five|six|half|quarter|\d+(?:[.,/]\d+)?)\s*)?(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|handfuls?|scoops?|slices?|bowls?|pieces?)\b\s*(?:of\s+)?(.+)$/i
+    /^(?:(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|half|quarter|\d+(?:[.,/]\d+)?)\s*)?(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|slices?)\b\s*(?:of\s+)?(.+)$/i
   );
 
   if (explicitUnitMatch && explicitUnitMatch[3]) {
@@ -1287,8 +1410,8 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     unit = explicitUnitMatch[2].toLowerCase();
     foodPhrase = explicitUnitMatch[3].trim();
   } else {
-    // Check leading number/word without unit, e.g. "2 eggs", "half an avocado"
-    const countMatch = raw.match(/^(a|an|one|two|three|four|five|six|seven|eight|nine|ten|half|quarter|\d+(?:[.,/]\d+)?)\s+(?:of\s+|an?\s+)?(.+)$/i);
+    // Check leading number/word without unit, e.g. "3 raspberries", "2 eggs", "half an avocado"
+    const countMatch = raw.match(/^(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|forty|fifty|half|quarter|\d+(?:[.,/]\d+)?)\s+(?:of\s+|an?\s+)?(.+)$/i);
     if (countMatch) {
       const rawQty = countMatch[1].toLowerCase();
       if (rawQty.includes('/')) {
@@ -1299,14 +1422,20 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
       }
       unit = 'piece';
       foodPhrase = countMatch[2].trim();
+    } else {
+      amount = 1;
+      unit = 'piece';
+      foodPhrase = raw;
     }
   }
 
   const matched = findBestFoodMatch(foodPhrase);
+  // Always log the food name the user actually typed (e.g. "Raspberries", "Honey")
+  const displayName = formatTypedFoodName(foodPhrase);
 
-  // Calculate grams
-  let grams = matched ? matched.defaultGrams : 100;
-  let servingLabel = `${grams}g`;
+  let grams = 0;
+  let needsWeightConfirmation = false;
+  let servingLabel = '';
 
   if (unit === 'g' || unit === 'gram' || unit === 'grams') {
     grams = amount;
@@ -1316,10 +1445,10 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     servingLabel = `${amount}kg (${grams}g)`;
   } else if (unit === 'ml' || unit === 'milliliter' || unit === 'milliliters') {
     grams = amount;
-    servingLabel = `${amount}ml`;
+    servingLabel = `${amount}ml (${grams}g)`;
   } else if (unit === 'l' || unit === 'liter' || unit === 'liters') {
     grams = amount * 1000;
-    servingLabel = `${amount}L`;
+    servingLabel = `${amount}L (${grams}g)`;
   } else if (unit === 'oz' || unit === 'ounce' || unit === 'ounces') {
     grams = Math.round(amount * 28.35);
     servingLabel = `${amount} oz (${grams}g)`;
@@ -1332,25 +1461,22 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
   } else if (unit === 'tsp' || unit === 'teaspoon' || unit === 'teaspoons') {
     grams = Math.round(amount * 5);
     servingLabel = `${amount} tsp (${grams}g)`;
-  } else if (unit === 'handful' || unit === 'handfuls') {
-    grams = Math.round(amount * 30);
-    servingLabel = `${amount} handful (${grams}g)`;
-  } else if (unit === 'scoop' || unit === 'scoops') {
-    grams = Math.round(amount * 30);
-    servingLabel = `${amount} scoop (${grams}g)`;
-  } else if (unit === 'slice' || unit === 'slices') {
-    grams = Math.round(amount * 40);
-    servingLabel = `${amount} slice${amount > 1 ? 's' : ''} (${grams}g)`;
-  } else if (unit === 'bowl' || unit === 'bowls') {
-    grams = Math.round(amount * 220);
-    servingLabel = `${amount} bowl (${grams}g)`;
-  } else if (unit === 'piece' || unit === 'pieces') {
-    const basePiece = matched ? matched.defaultGrams : 100;
-    grams = Math.round(amount * basePiece);
-    servingLabel = `${amount} × ${matched ? matched.name : foodPhrase} (${grams}g)`;
-  } else if (matched) {
-    grams = matched.defaultGrams;
-    servingLabel = matched.defaultUnitLabel;
+  } else {
+    // Count or bare item: check the explicit known per-item weight table
+    const knownPieceGrams = getKnownPerItemWeight(foodPhrase, unit);
+    if (knownPieceGrams !== null) {
+      grams = Math.round(amount * knownPieceGrams * 10) / 10;
+      if (unit === 'slice' || unit === 'slices') {
+        servingLabel = `${amount} slice${amount > 1 ? 's' : ''} (${grams}g)`;
+      } else {
+        servingLabel = `${amount} × ${displayName} (${grams}g)`;
+      }
+    } else {
+      // Never assume a default of 100g per item. Return grams: 0 and ask the user to confirm.
+      grams = 0;
+      needsWeightConfirmation = true;
+      servingLabel = 'Confirm weight (g)';
+    }
   }
 
   const factor = grams / 100;
@@ -1358,8 +1484,9 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
   if (matched) {
     return {
       rawText: raw,
-      name: matched.name,
+      name: displayName,
       grams: Math.round(grams * 10) / 10,
+      needsWeightConfirmation,
       servingLabel,
       calories: Math.round(matched.caloriesPer100g * factor),
       protein: Math.round(matched.proteinPer100g * factor * 10) / 10,
@@ -1368,16 +1495,23 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
       fiber: Math.round(matched.fiberPer100g * factor * 10) / 10,
       sugar: Math.round(matched.sugarPer100g * factor * 10) / 10,
       sodiumMg: Math.round(matched.sodiumMgPer100g * factor),
+      caloriesPer100g: matched.caloriesPer100g,
+      proteinPer100g: matched.proteinPer100g,
+      carbsPer100g: matched.carbsPer100g,
+      fatPer100g: matched.fatPer100g,
+      fiberPer100g: matched.fiberPer100g,
+      sugarPer100g: matched.sugarPer100g,
+      sodiumMgPer100g: matched.sodiumMgPer100g,
       category: matched.category
     };
   }
 
-  // Fallback for unrecognized custom items
-  const cleanDisplayName = foodPhrase.charAt(0).toUpperCase() + foodPhrase.slice(1);
+  // Fallback for unrecognized custom items (never default to 100g if weight wasn't provided)
   return {
     rawText: raw,
-    name: cleanDisplayName,
-    grams: Math.round(grams),
+    name: displayName,
+    grams: Math.round(grams * 10) / 10,
+    needsWeightConfirmation,
     servingLabel,
     calories: Math.round(135 * factor),
     protein: Math.round(6 * factor * 10) / 10,
@@ -1386,26 +1520,23 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     fiber: Math.round(1.5 * factor * 10) / 10,
     sugar: Math.round(3.0 * factor * 10) / 10,
     sodiumMg: Math.round(140 * factor),
+    caloriesPer100g: 135,
+    proteinPer100g: 6,
+    carbsPer100g: 16,
+    fatPer100g: 4.5,
+    fiberPer100g: 1.5,
+    sugarPer100g: 3.0,
+    sodiumMgPer100g: 140,
     category: 'grain'
   };
 }
 
-export function decipherFoodText(rawInput: string): DecipheredFoodResult {
-  const parts = rawInput
-    .split(/(?:[,;\n+]+|\b(?:and|with|plus|topped with|on|alongside)\b)/i)
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  const items: DecipheredFoodItem[] = [];
-  for (const part of parts) {
-    const parsed = parseFoodSegment(part);
-    if (parsed) items.push(parsed);
-  }
-
+export function buildDecipheredFoodSummary(items: DecipheredFoodItem[]): DecipheredFoodResult {
   if (items.length === 0) {
     return {
       mealSummaryName: 'Custom Meal',
       items: [],
+      needsWeightConfirmation: false,
       totalCalories: 0,
       totalProtein: 0,
       totalCarbs: 0,
@@ -1427,26 +1558,21 @@ export function decipherFoodText(rawInput: string): DecipheredFoodResult {
   const totalFiber = Math.round(items.reduce((s, i) => s + i.fiber, 0) * 10) / 10;
   const totalSugar = Math.round(items.reduce((s, i) => s + i.sugar, 0) * 10) / 10;
   const totalSodiumMg = items.reduce((s, i) => s + i.sodiumMg, 0);
+  const needsWeightConfirmation = items.some(i => i.grams <= 0 || i.needsWeightConfirmation);
 
-  // Build clean meal summary name
   const mainNames = items.filter(i => i.category !== 'seasoning' || items.length === 1).map(i => i.name);
   const mealSummaryName =
     mainNames.length <= 3
       ? mainNames.join(' & ')
       : `${mainNames.slice(0, 2).join(', ')} + ${mainNames.length - 2} more`;
 
-  // =========================================================================
-  // DETERMINISTIC HEALTH RATING (1 to 10) & ADD / REMOVE RECOMMENDATIONS
-  // =========================================================================
   let score = 6.5;
 
   const hasProduce = items.some(i => i.category === 'produce');
-  const hasProteinOrDairy = items.some(i => i.category === 'protein' || i.category === 'dairy');
   const hasProcessed = items.some(i => i.category === 'processed' || i.category === 'beverage');
   const hasAddedSalt = items.some(i => /salt|soy sauce/i.test(i.name));
   const yogurtItem = items.find(i => /yogurt/i.test(i.name));
 
-  // Positive factors
   if (hasProduce) score += 1.2;
   if (totalFiber >= 3) score += 0.8;
   else if (totalFiber >= 1.2) score += 0.4;
@@ -1455,7 +1581,6 @@ export function decipherFoodText(rawInput: string): DecipheredFoodResult {
   else if (totalProtein >= 10) score += 0.6;
   else if (totalProtein < 4 && totalCalories > 30) score -= 0.7;
 
-  // Negative factors
   if (hasProcessed) score -= 2.0;
   if (totalSodiumMg > 800) score -= 1.2;
   else if (hasAddedSalt && totalCalories < 150) score -= 0.4;
@@ -1477,7 +1602,6 @@ export function decipherFoodText(rawInput: string): DecipheredFoodResult {
   const whatToAdd: string[] = [];
   const whatToTakeOut: string[] = [];
 
-  // Tailor "What to Add"
   if (totalProtein < 12) {
     if (yogurtItem && yogurtItem.grams < 80) {
       whatToAdd.push(
@@ -1510,7 +1634,6 @@ export function decipherFoodText(rawInput: string): DecipheredFoodResult {
     whatToAdd.push('A glass of water or a sprinkle of seeds/herbs — your macro and micronutrient profile is already well balanced.');
   }
 
-  // Tailor "What to Take Out / Reduce"
   const saltItem = items.find(i => /salt|soy sauce/i.test(i.name));
   if (saltItem) {
     whatToTakeOut.push(
@@ -1551,6 +1674,7 @@ export function decipherFoodText(rawInput: string): DecipheredFoodResult {
   return {
     mealSummaryName,
     items,
+    needsWeightConfirmation,
     totalCalories,
     totalProtein,
     totalCarbs,
@@ -1563,4 +1687,44 @@ export function decipherFoodText(rawInput: string): DecipheredFoodResult {
     whatToAdd,
     whatToTakeOut
   };
+}
+
+export function recalculateDecipheredFoodWithGrams(
+  baseResult: DecipheredFoodResult,
+  gramOverrides: Record<number, number>
+): DecipheredFoodResult {
+  const updatedItems = baseResult.items.map((item, idx) => {
+    const hasOverride = Object.prototype.hasOwnProperty.call(gramOverrides, idx);
+    const grams = hasOverride ? Math.max(0, Number(gramOverrides[idx]) || 0) : item.grams;
+    const factor = grams / 100;
+    return {
+      ...item,
+      grams: Math.round(grams * 10) / 10,
+      needsWeightConfirmation: grams <= 0,
+      servingLabel: hasOverride ? `${Math.round(grams * 10) / 10}g` : item.servingLabel,
+      calories: Math.round(item.caloriesPer100g * factor),
+      protein: Math.round(item.proteinPer100g * factor * 10) / 10,
+      carbs: Math.round(item.carbsPer100g * factor * 10) / 10,
+      fat: Math.round(item.fatPer100g * factor * 10) / 10,
+      fiber: Math.round(item.fiberPer100g * factor * 10) / 10,
+      sugar: Math.round(item.sugarPer100g * factor * 10) / 10,
+      sodiumMg: Math.round(item.sodiumMgPer100g * factor)
+    };
+  });
+  return buildDecipheredFoodSummary(updatedItems);
+}
+
+export function decipherFoodText(rawInput: string): DecipheredFoodResult {
+  const parts = rawInput
+    .split(/(?:[,;\n+]+|\b(?:and|with|plus|topped with|on|alongside)\b)/i)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const items: DecipheredFoodItem[] = [];
+  for (const part of parts) {
+    const parsed = parseFoodSegment(part);
+    if (parsed) items.push(parsed);
+  }
+
+  return buildDecipheredFoodSummary(items);
 }

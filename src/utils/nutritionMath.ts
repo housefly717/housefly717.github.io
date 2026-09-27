@@ -3,12 +3,64 @@ import type { UserProfile, MacroTarget } from '../types/index.js';
 export function hasCompleteProfileStats(profile?: UserProfile | null): boolean {
   if (!profile) return false;
   return Boolean(
-    profile.age > 0 &&
+    profile.name &&
+      profile.name.trim().length > 0 &&
+      profile.age >= 13 &&
+      profile.age <= 120 &&
       profile.heightCm > 0 &&
       profile.currentWeightKg > 0 &&
-      (profile.gender === 'male' || profile.gender === 'female') &&
-      profile.dailyActivity
+      profile.goalWeightKg > 0 &&
+      (profile.gender === 'male' ||
+        profile.gender === 'female' ||
+        profile.gender === 'prefer_not_to_say') &&
+      profile.dailyActivity &&
+      profile.goalSpeed
   );
+}
+
+function computeRawBmr(profile: UserProfile): number {
+  const { gender, currentWeightKg, heightCm, age, bodyFatPercent } = profile;
+
+  if (bodyFatPercent && bodyFatPercent > 3 && bodyFatPercent < 60) {
+    // Katch-McArdle formula
+    const leanMass = currentWeightKg * (1 - bodyFatPercent / 100);
+    return 370 + 21.6 * leanMass;
+  }
+
+  // Mifflin-St Jeor formula
+  const base = 10 * currentWeightKg + 6.25 * heightCm - 5 * age;
+  if (gender === 'male') {
+    return base + 5;
+  }
+  if (gender === 'female') {
+    return base - 161;
+  }
+  // Prefer not to say: average of male (+5) and female (-161) formulas = -78
+  return base - 78;
+}
+
+export function calculateBmr(profile: UserProfile): number {
+  if (!hasCompleteProfileStats(profile)) {
+    return 0;
+  }
+  return Math.round(computeRawBmr(profile));
+}
+
+export function calculateMaintenanceCalories(profile: UserProfile): number {
+  if (!hasCompleteProfileStats(profile)) {
+    return 0;
+  }
+  const bmr = computeRawBmr(profile);
+  const activityMultipliers: Record<string, number> = {
+    sedentary: 1.2,
+    light: 1.375,
+    moderate: 1.55,
+    active: 1.725,
+    athlete: 1.9
+  };
+  const multiplier = activityMultipliers[profile.dailyActivity];
+  if (!multiplier) return 0;
+  return Math.round(bmr * multiplier);
 }
 
 export function calculateDailyCalorieTarget(profile: UserProfile): number {
@@ -16,23 +68,9 @@ export function calculateDailyCalorieTarget(profile: UserProfile): number {
     return 0;
   }
 
-  const { gender, currentWeightKg, heightCm, age, bodyFatPercent, dailyActivity, goalSpeed } = profile;
+  const { gender, dailyActivity, goalSpeed } = profile;
+  const bmr = computeRawBmr(profile);
 
-  let bmr: number;
-  if (bodyFatPercent && bodyFatPercent > 3 && bodyFatPercent < 60) {
-    // Katch-McArdle formula
-    const leanMass = currentWeightKg * (1 - bodyFatPercent / 100);
-    bmr = 370 + 21.6 * leanMass;
-  } else {
-    // Mifflin-St Jeor
-    if (gender === 'male') {
-      bmr = 10 * currentWeightKg + 6.25 * heightCm - 5 * age + 5;
-    } else {
-      bmr = 10 * currentWeightKg + 6.25 * heightCm - 5 * age - 161;
-    }
-  }
-
-  // Activity multipliers
   const activityMultipliers: Record<string, number> = {
     sedentary: 1.2,
     light: 1.375,
@@ -41,9 +79,11 @@ export function calculateDailyCalorieTarget(profile: UserProfile): number {
     athlete: 1.9
   };
 
-  const tdee = bmr * (activityMultipliers[dailyActivity] || 1.2);
+  const multiplier = activityMultipliers[dailyActivity];
+  if (!multiplier) return 0;
 
-  // Goal speed adjustments
+  const tdee = bmr * multiplier;
+
   const speedAdjustments: Record<string, number> = {
     lose_slow: -250,
     lose_normal: -500,
@@ -53,10 +93,14 @@ export function calculateDailyCalorieTarget(profile: UserProfile): number {
     gain_normal: 500
   };
 
-  let target = tdee + (speedAdjustments[goalSpeed || 'lose_normal'] ?? 0);
+  if (!goalSpeed || !(goalSpeed in speedAdjustments)) {
+    return 0;
+  }
 
-  // Floor at 1200 for women, 1500 for men
-  const floor = gender === 'male' ? 1500 : 1200;
+  let target = tdee + speedAdjustments[goalSpeed];
+
+  // Floor at 1200 for women, 1500 for men, 1350 (average) for prefer_not_to_say
+  const floor = gender === 'male' ? 1500 : gender === 'female' ? 1200 : 1350;
   if (target < floor) {
     target = floor;
   }
@@ -86,23 +130,18 @@ export function calculateMacroTargets(targetCalories: number): MacroTarget {
     };
   }
 
-  // Initial target calories per macro
   const targetFatKcal = target * 0.30;
   const targetProteinKcal = target * 0.30;
-  const targetCarbsKcal = target * 0.40;
 
   let proteinGrams = Math.round(targetProteinKcal / 4);
   let fatGrams = Math.round(targetFatKcal / 9);
 
-  // Remainder for carbs
   let remainingKcal = target - (proteinGrams * 4 + fatGrams * 9);
   let carbsGrams = Math.round(remainingKcal / 4);
 
-  // Exact adjustment: (proteinGrams * 4 + fatGrams * 9 + carbsGrams * 4) === target
   let currentTotal = proteinGrams * 4 + fatGrams * 9 + carbsGrams * 4;
   let diff = target - currentTotal;
 
-  // Nudge fat or carbs by 1-2 to make grams * 4/4/9 exactly match target
   let attempts = 0;
   while (diff !== 0 && attempts < 20) {
     attempts++;
@@ -110,7 +149,6 @@ export function calculateMacroTargets(targetCalories: number): MacroTarget {
       carbsGrams += diff / 4;
       break;
     } else {
-      // Nudge fat by 1g (+9 or -9 kcal) and recompute carbs
       if (diff > 0) {
         fatGrams += 1;
       } else {
@@ -121,7 +159,6 @@ export function calculateMacroTargets(targetCalories: number): MacroTarget {
     }
   }
 
-  // Final check
   currentTotal = proteinGrams * 4 + fatGrams * 9 + carbsGrams * 4;
   if (currentTotal !== target) {
     carbsGrams = Math.max(0, Math.floor((target - (proteinGrams * 4 + fatGrams * 9)) / 4));
@@ -143,16 +180,17 @@ export function calculateMacroTargets(targetCalories: number): MacroTarget {
 }
 
 /**
- * Calculates projected goal date based on weight difference and daily deficit/surplus
+ * Calculates projected goal date based on weight difference and daily deficit/surplus.
+ * Never invents numbers if required stats are incomplete.
  */
 export function calculateProjectedGoalDate(profile: UserProfile): string {
   if (!hasCompleteProfileStats(profile) || !profile.goalWeightKg || profile.goalWeightKg <= 0) {
-    return 'Enter your stats to see your calorie target.';
+    return '';
   }
 
   const diffKg = profile.goalWeightKg - profile.currentWeightKg;
-  if (Math.abs(diffKg) < 0.2) {
-    return 'Goal reached (maintaining)';
+  if (Math.abs(diffKg) < 0.2 || profile.goalSpeed === 'maintain') {
+    return 'Maintaining current weight';
   }
 
   const speedAdjustments: Record<string, number> = {
@@ -164,9 +202,9 @@ export function calculateProjectedGoalDate(profile: UserProfile): string {
     gain_normal: 500
   };
 
-  const dailyCals = speedAdjustments[profile.goalSpeed || 'lose_normal'] ?? -500;
-  if (dailyCals === 0) {
-    return 'Maintaining current weight';
+  const dailyCals = speedAdjustments[profile.goalSpeed];
+  if (!dailyCals) {
+    return '';
   }
 
   // 1 kg body mass ~ 7700 kcal
@@ -176,11 +214,13 @@ export function calculateProjectedGoalDate(profile: UserProfile): string {
   const targetDate = new Date();
   targetDate.setDate(targetDate.getDate() + daysNeeded);
 
-  return targetDate.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
-  }) + ` (~${daysNeeded} days)`;
+  return (
+    targetDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    }) + ` (~${daysNeeded} days)`
+  );
 }
 
 export function formatWeight(kg: number, unitSystem: 'metric' | 'imperial'): string {

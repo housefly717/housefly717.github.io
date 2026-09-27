@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { decipherFoodText } from '../utils/localAiEngine.js';
 
 function getAiClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -15,15 +16,34 @@ function getAiClient(): GoogleGenAI {
   });
 }
 
-// 3. Voice log parser ("two eggs and toast" -> ingredients & macros)
+// 3. Voice/text log parser ("two eggs and toast" or "3 raspberries, 56g honey" -> ingredients & macros)
 export async function parseVoiceMealWithGemini(transcript: string) {
   try {
     const ai = getAiClient();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Parse this spoken meal description into structured food items with estimated calories and macronutrients: "${transcript}"`,
+      contents: `Parse this meal description into structured food items: "${transcript}"`,
       config: {
-        systemInstruction: 'You are a nutrition parser. Break spoken meal descriptions into individual food items with accurate calories, protein, carbs, fat, and serving size. Never include emojis.',
+        systemInstruction: `You are a precise nutrition parser. Follow these strict rules:
+1. Only assign a weight when the user gives one (e.g. if they say "56g honey", use grams: 56).
+2. If the user gives a count without a weight (like "3 raspberries" or "2 eggs"), use the exact per-item weight from this table multiplied by the count:
+   - Raspberry: 4 g
+   - Blueberry: 2 g
+   - Strawberry: 12 g
+   - Blackberry: 5 g
+   - Grape: 5 g
+   - Cherry: 8 g
+   - Egg: 60 g
+   - Banana: 120 g
+   - Apple: 180 g
+   - Orange: 150 g
+   - Potato: 170 g
+   - Slice of bread: 30 g
+   - Slice of cheese: 20 g
+3. Never assume a default of 100g per item. If you do not know the per-item weight and the user did not provide a weight, return grams: 0 so the user can confirm the weight before saving.
+4. Log the exact food name the user actually typed (e.g. if the user says raspberries, log Raspberries, never Blueberries).
+5. Never combine names like "Honey / Maple Syrup" — if the user wrote honey, log Honey.
+6. Never include emojis.`,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,
@@ -35,13 +55,14 @@ export async function parseVoiceMealWithGemini(transcript: string) {
                 type: Type.OBJECT,
                 properties: {
                   name: { type: Type.STRING },
+                  grams: { type: Type.NUMBER },
                   serving: { type: Type.STRING },
                   calories: { type: Type.NUMBER },
                   protein: { type: Type.NUMBER },
                   carbs: { type: Type.NUMBER },
                   fat: { type: Type.NUMBER }
                 },
-                required: ['name', 'serving', 'calories', 'protein', 'carbs', 'fat']
+                required: ['name', 'grams', 'serving', 'calories', 'protein', 'carbs', 'fat']
               }
             }
           },
@@ -51,13 +72,18 @@ export async function parseVoiceMealWithGemini(transcript: string) {
     });
     return JSON.parse(response.text || '{}');
   } catch (err) {
-    const cleaned = transcript.trim() || 'Two eggs and sourdough toast';
+    const fallback = decipherFoodText(transcript);
     return {
-      mealSummaryName: cleaned.charAt(0).toUpperCase() + cleaned.slice(1),
-      items: [
-        { name: 'Large whole eggs (2)', serving: '2 eggs (100g)', calories: 144, protein: 12.6, carbs: 0.8, fat: 9.6 },
-        { name: 'Toasted sourdough slice', serving: '1 slice (45g)', calories: 120, protein: 4.2, carbs: 23.0, fat: 0.8 }
-      ]
+      mealSummaryName: fallback.mealSummaryName,
+      items: fallback.items.map(i => ({
+        name: i.name,
+        grams: i.grams,
+        serving: i.servingLabel,
+        calories: i.calories,
+        protein: i.protein,
+        carbs: i.carbs,
+        fat: i.fat
+      }))
     };
   }
 }

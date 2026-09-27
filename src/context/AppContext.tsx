@@ -111,7 +111,7 @@ const defaultProfile: UserProfile = {
   currentWeightKg: 0,
   goalWeightKg: 0,
   dailyActivity: '',
-  goalSpeed: 'lose_normal',
+  goalSpeed: '',
   unitSystem: 'metric',
   themeMode: 'dark',
   streakFreezesUsed: []

@@ -19,7 +19,7 @@ import {
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { BarcodeScannerModal } from './BarcodeScannerModal.js';
-import { decipherFoodText } from '../utils/localAiEngine.js';
+import { decipherFoodText, recalculateDecipheredFoodWithGrams } from '../utils/localAiEngine.js';
 import type { MealType, SavedFood } from '../types/index.js';
 
 interface AddFoodModalProps {
@@ -61,11 +61,21 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
 
   // Smart Food Decipherer State (In-Code AI)
   const [smartFoodText, setSmartFoodText] = useState('');
-  const decipheredFood = useMemo(() => decipherFoodText(smartFoodText), [smartFoodText]);
+  const [gramOverrides, setGramOverrides] = useState<Record<number, number>>({});
+
+  useEffect(() => {
+    setGramOverrides({});
+  }, [smartFoodText]);
+
+  const baseDecipheredFood = useMemo(() => decipherFoodText(smartFoodText), [smartFoodText]);
+  const decipheredFood = useMemo(
+    () => recalculateDecipheredFoodWithGrams(baseDecipheredFood, gramOverrides),
+    [baseDecipheredFood, gramOverrides]
+  );
 
   const handleSaveSmartFood = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!smartFoodText.trim() || decipheredFood.items.length === 0) return;
+    if (!smartFoodText.trim() || decipheredFood.items.length === 0 || decipheredFood.needsWeightConfirmation) return;
 
     if (isGuest) {
       const allowed = consumeGuestAiCall();
@@ -85,12 +95,13 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       fiber: decipheredFood.totalFiber,
       sugar: decipheredFood.totalSugar,
       sodium: decipheredFood.totalSodiumMg,
-      serving: `${decipheredFood.items.reduce((s, i) => s + i.grams, 0)}g total`,
+      serving: `${Math.round(decipheredFood.items.reduce((s, i) => s + i.grams, 0) * 10) / 10}g total`,
       note: `Health Rating: ${decipheredFood.healthRating}/10`,
       source: 'manual'
     });
 
     setSmartFoodText('');
+    setGramOverrides({});
     onClose();
   };
 
@@ -714,26 +725,72 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                   </div>
                 </div>
 
-                {/* Itemized Ingredient Breakdown */}
+                {/* Confirm Weights & Itemized Ingredient Breakdown */}
                 {decipheredFood.items.length > 0 && (
-                  <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
-                    {decipheredFood.items.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between text-[11px] bg-zinc-900/60 px-2.5 py-1.5 rounded-lg border border-zinc-800/60"
-                      >
-                        <div>
-                          <span className="text-zinc-200 font-medium">{item.name}</span>
-                          <span className="text-zinc-500 font-mono ml-1.5">({item.servingLabel})</span>
-                        </div>
-                        <div className="flex items-center gap-2 font-mono text-[10px]">
-                          <span className="text-teal-400 font-bold">{item.calories} kcal</span>
-                          <span className="text-blue-400">{item.carbs}c</span>
-                          <span className="text-amber-400">{item.fat}f</span>
-                          <span className="text-red-400">{item.protein}p</span>
-                        </div>
+                  <div className="pt-2.5 border-t border-zinc-800/80 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] uppercase tracking-wider font-semibold text-teal-400">
+                        Confirm weights
+                      </span>
+                      <span className="text-[10px] text-zinc-500">
+                        Tap grams to adjust before saving
+                      </span>
+                    </div>
+
+                    {decipheredFood.needsWeightConfirmation && (
+                      <div className="p-2 rounded-lg bg-amber-950/40 border border-amber-500/40 text-[11px] text-amber-300 flex items-center gap-1.5">
+                        <HelpCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                        <span>Please confirm the gram weight for items marked 0g before saving.</span>
                       </div>
-                    ))}
+                    )}
+
+                    <div className="space-y-1.5">
+                      {decipheredFood.items.map((item, idx) => {
+                        const currentGrams = Object.prototype.hasOwnProperty.call(gramOverrides, idx)
+                          ? gramOverrides[idx]
+                          : item.grams;
+                        const isUnconfirmed = item.grams <= 0 || item.needsWeightConfirmation;
+                        return (
+                          <div
+                            key={idx}
+                            className={`flex items-center justify-between gap-2 text-[11px] bg-zinc-900/60 px-2.5 py-2 rounded-lg border ${
+                              isUnconfirmed ? 'border-amber-500/60 bg-amber-950/20' : 'border-zinc-800/60'
+                            }`}
+                          >
+                            <div className="min-w-0 flex-1">
+                              <span className="text-zinc-200 font-medium block truncate">{item.name}</span>
+                              <span className="text-zinc-500 font-mono text-[10px] block truncate">
+                                {item.servingLabel} — {item.calories} kcal ({item.carbs}c · {item.fat}f · {item.protein}p)
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                aria-label={`Grams for ${item.name}`}
+                                value={currentGrams === 0 && isUnconfirmed && !Object.prototype.hasOwnProperty.call(gramOverrides, idx) ? '' : currentGrams}
+                                placeholder="0"
+                                onChange={(e) => {
+                                  const rawVal = e.target.value;
+                                  const numVal = rawVal === '' ? 0 : Math.max(0, parseFloat(rawVal) || 0);
+                                  setGramOverrides((prev) => ({
+                                    ...prev,
+                                    [idx]: numVal
+                                  }));
+                                }}
+                                className={`w-16 bg-zinc-950 border rounded-md px-2 py-1 text-right font-mono text-xs text-zinc-100 focus:outline-none ${
+                                  isUnconfirmed
+                                    ? 'border-amber-500/80 focus:border-amber-400'
+                                    : 'border-zinc-700 focus:border-teal-500'
+                                }`}
+                              />
+                              <span className="text-[11px] font-mono text-zinc-400">g</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
 
@@ -801,11 +858,11 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
 
               <button
                 type="submit"
-                disabled={!smartFoodText.trim() || decipheredFood.items.length === 0}
+                disabled={!smartFoodText.trim() || decipheredFood.items.length === 0 || decipheredFood.needsWeightConfirmation}
                 className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
               >
                 <Check className="w-4 h-4" />
-                Save Food
+                {decipheredFood.needsWeightConfirmation ? 'Confirm Item Weights Above to Save' : 'Save Food'}
               </button>
             </form>
           )}

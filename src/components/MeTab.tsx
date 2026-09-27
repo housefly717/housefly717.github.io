@@ -36,6 +36,9 @@ import { api } from '../services/api.js';
 import { WeeklyRecapModal } from './WeeklyRecapModal.js';
 import { SocialAccountabilitySection } from './SocialAccountabilitySection.js';
 import {
+  hasCompleteProfileStats,
+  calculateBmr,
+  calculateMaintenanceCalories,
   calculateDailyCalorieTarget,
   calculateMacroTargets,
   calculateProjectedGoalDate,
@@ -202,7 +205,10 @@ export const MeTab: React.FC<MeTabProps> = ({
     }
   };
 
-  // Math recalculations live from form data
+  // Math recalculations live from form data (only when all required fields are answered)
+  const isProfileComplete = hasCompleteProfileStats(formData);
+  const currentBmrKcal = calculateBmr(formData);
+  const currentMaintenanceKcal = calculateMaintenanceCalories(formData);
   const currentTargetKcal = calculateDailyCalorieTarget(formData);
   const currentMacros = calculateMacroTargets(currentTargetKcal);
   const projectedGoalDate = calculateProjectedGoalDate(formData);
@@ -593,7 +599,7 @@ export const MeTab: React.FC<MeTabProps> = ({
           </div>
 
           <div className="text-right">
-            {currentTargetKcal > 0 ? (
+            {isProfileComplete && currentTargetKcal > 0 ? (
               <>
                 <span className="text-xl font-extrabold text-teal-400 font-mono block">
                   {currentTargetKcal}
@@ -601,43 +607,63 @@ export const MeTab: React.FC<MeTabProps> = ({
                 <span className="text-[10px] text-zinc-500 uppercase">kcal / day</span>
               </>
             ) : (
-              <span className="text-xs font-medium text-zinc-400 block max-w-[160px]">
-                Enter your stats to see your calorie target.
-              </span>
+              <button
+                type="button"
+                onClick={openAuthModal}
+                className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs transition-colors"
+              >
+                Finish profile questions
+              </button>
             )}
           </div>
         </div>
 
-        {/* Calculated Macros Confirmation */}
-        <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-800 grid grid-cols-3 gap-2 text-center text-xs font-mono">
-          <div>
-            <span className="text-zinc-500 block text-[10px]">Carbs (40%)</span>
-            <span className="font-bold text-blue-400">
-              {currentTargetKcal > 0 ? `${currentMacros.carbsGrams}g` : '—'}
-            </span>
+        {formData.gender === 'prefer_not_to_say' && (
+          <div className="p-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-[11px] text-zinc-300">
+            Gender is set to &ldquo;Prefer not to say&rdquo; — Caloriq is using the average of the male and female Mifflin-St Jeor calorie formulas.
           </div>
-          <div>
-            <span className="text-zinc-500 block text-[10px]">Fat (30%)</span>
-            <span className="font-bold text-amber-400">
-              {currentTargetKcal > 0 ? `${currentMacros.fatGrams}g` : '—'}
-            </span>
-          </div>
-          <div>
-            <span className="text-zinc-500 block text-[10px]">Protein (30%)</span>
-            <span className="font-bold text-red-400">
-              {currentTargetKcal > 0 ? `${currentMacros.proteinGrams}g` : '—'}
-            </span>
-          </div>
-        </div>
+        )}
 
-        {/* Projected Goal Date */}
-        <div className="bg-teal-950/40 border border-teal-900/60 rounded-xl p-3 flex items-center gap-2.5 text-xs text-teal-300">
-          <TrendingDown className="w-4 h-4 text-teal-400 shrink-0" />
-          <div>
-            <span className="font-semibold block">Projected Target Date:</span>
-            <span className="text-teal-200">{projectedGoalDate}</span>
-          </div>
-        </div>
+        {/* Calculated BMR, Maintenance, Macros & Projected Goal Date (only shown when all required questions are answered) */}
+        {isProfileComplete && currentTargetKcal > 0 && (
+          <>
+            <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-800 grid grid-cols-2 gap-2 text-center text-xs font-mono">
+              <div>
+                <span className="text-zinc-500 block text-[10px]">BMR (At Rest)</span>
+                <span className="font-bold text-zinc-200">{currentBmrKcal} kcal</span>
+              </div>
+              <div>
+                <span className="text-zinc-500 block text-[10px]">Maintenance</span>
+                <span className="font-bold text-zinc-200">{currentMaintenanceKcal} kcal</span>
+              </div>
+            </div>
+
+            <div className="bg-zinc-950 p-3 rounded-xl border border-zinc-800 grid grid-cols-3 gap-2 text-center text-xs font-mono">
+              <div>
+                <span className="text-zinc-500 block text-[10px]">Carbs (40%)</span>
+                <span className="font-bold text-blue-400">{currentMacros.carbsGrams}g</span>
+              </div>
+              <div>
+                <span className="text-zinc-500 block text-[10px]">Fat (30%)</span>
+                <span className="font-bold text-amber-400">{currentMacros.fatGrams}g</span>
+              </div>
+              <div>
+                <span className="text-zinc-500 block text-[10px]">Protein (30%)</span>
+                <span className="font-bold text-red-400">{currentMacros.proteinGrams}g</span>
+              </div>
+            </div>
+
+            {projectedGoalDate && (
+              <div className="bg-teal-950/40 border border-teal-900/60 rounded-xl p-3 flex items-center gap-2.5 text-xs text-teal-300">
+                <TrendingDown className="w-4 h-4 text-teal-400 shrink-0" />
+                <div>
+                  <span className="font-semibold block">Projected Target Date:</span>
+                  <span className="text-teal-200">{projectedGoalDate}</span>
+                </div>
+              </div>
+            )}
+          </>
+        )}
 
         {/* #6 Streak Freeze (1 per month) */}
         <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center justify-between">
@@ -862,6 +888,7 @@ export const MeTab: React.FC<MeTabProps> = ({
               <option value="">Select gender</option>
               <option value="female">Female (floor 1200 kcal)</option>
               <option value="male">Male (floor 1500 kcal)</option>
+              <option value="prefer_not_to_say">Prefer not to say (average of both formulas)</option>
             </select>
           </div>
 
@@ -869,14 +896,19 @@ export const MeTab: React.FC<MeTabProps> = ({
             <label className="block text-xs font-medium text-zinc-400 mb-1">Age</label>
             <input
               type="number"
-              min="14"
-              max="110"
+              min="13"
+              max="120"
               value={formData.age > 0 ? formData.age : ''}
               onChange={(e) => setFormData(p => ({ ...p, age: e.target.value ? Number(e.target.value) : 0 }))}
-              placeholder="e.g. 28"
+              placeholder=""
               required
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
+            {formData.age > 0 && formData.age < 18 && (
+              <span className="text-[10px] text-amber-400 mt-1 block">
+                Use Caloriq with a parent or guardian.
+              </span>
+            )}
           </div>
 
           <div>
@@ -997,17 +1029,19 @@ export const MeTab: React.FC<MeTabProps> = ({
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-zinc-400 mb-1">Goal Speed</label>
+          <label className="block text-xs font-medium text-zinc-400 mb-1">Goal</label>
           <select
-            value={formData.goalSpeed || 'lose_normal'}
+            value={formData.goalSpeed || ''}
             onChange={(e) => setFormData(p => ({ ...p, goalSpeed: e.target.value as any }))}
+            required
             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
           >
+            <option value="">Select your goal</option>
+            <option value="lose_normal">Lose fat — about 0.5 kg per week (−500 kcal/day)</option>
+            <option value="maintain">Maintain — eat at your maintenance (0 adjustment)</option>
+            <option value="gain_slow">Build muscle — small lean surplus (+250 kcal/day)</option>
             <option value="lose_slow">Lose Slow (−250 kcal/day · ~0.25 kg/wk)</option>
-            <option value="lose_normal">Lose Normal (−500 kcal/day · ~0.5 kg/wk)</option>
             <option value="lose_fast">Lose Fast (−750 kcal/day · ~0.75 kg/wk)</option>
-            <option value="maintain">Maintain Current Weight (0 adjustment)</option>
-            <option value="gain_slow">Lean Gain Slow (+250 kcal/day)</option>
             <option value="gain_normal">Gain Normal (+500 kcal/day)</option>
           </select>
         </div>

@@ -207,7 +207,7 @@ export interface UserProfile {
   name: string;
   username?: string;
   age: number;
-  gender: 'male' | 'female' | '';
+  gender: 'male' | 'female' | 'prefer_not_to_say' | '';
   heightCm: number;
   fitnessLevel: 'beginner' | 'intermediate' | 'advanced' | '';
   bodyFatPercent?: number;
