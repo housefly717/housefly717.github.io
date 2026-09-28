@@ -20,7 +20,16 @@ import type {
   SharedRecipeRecord
 } from '../types/index.js';
 import { standaloneFetch } from './standaloneBackend.js';
-import { getDeviceMetadata } from '../utils/validation.js';
+import { getClientDeviceFingerprint } from '../utils/validation.js';
+
+function getDeviceMetadata() {
+  const fp = getClientDeviceFingerprint();
+  return {
+    ...fp,
+    rawFingerprint: `${fp.userAgent}|${fp.screenSize}|${fp.timezone}|${fp.language}|${fp.platform}`,
+    deviceName: fp.platform || 'Web Browser'
+  };
+}
 
 const TOKEN_KEY = 'caloriq_session_token';
 const GUEST_KEY = 'caloriq_guest_id';
@@ -499,7 +508,7 @@ class ApiService {
     const deviceMeta = getDeviceMetadata();
     let res: Response;
     try {
-      res = await fetch('/api/auth/send-verification-code', {
+      res = await standaloneFetch('/api/auth/send-verification-code', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -566,7 +575,7 @@ class ApiService {
 
     let res: Response;
     try {
-      res = await fetch('/api/auth/verify-signup', {
+      res = await standaloneFetch('/api/auth/verify-signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -774,7 +783,7 @@ class ApiService {
 
     let res: Response;
     try {
-      res = await fetch('/api/auth/login', {
+      res = await standaloneFetch('/api/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1251,18 +1260,19 @@ class ApiService {
       const curr = this.getLocalProfile(this.token);
       this.saveLocalProfile(this.token, { ...curr, ...updates });
     }
-    try {
-      const updated = await this.request<UserProfile>('/api/profile', {
-        method: 'PUT',
-        body: JSON.stringify(updates)
-      });
-      if (this.token && updated) {
-        this.saveLocalProfile(this.token, updated);
-      }
-      return updated;
-    } catch {
-      return this.getLocalProfile(this.token || 'guest');
+    const updated = await this.request<UserProfile>('/api/profile', {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    });
+    const merged = {
+      ...(this.token ? this.getLocalProfile(this.token) : {}),
+      ...updates,
+      ...(updated || {})
+    } as UserProfile;
+    if (this.token) {
+      this.saveLocalProfile(this.token, merged);
     }
+    return merged;
   }
 
   async getStats(): Promise<UserStats> {
@@ -1293,7 +1303,7 @@ class ApiService {
       method: 'POST',
       body: JSON.stringify({ email, name, guestId })
     });
-    this.setToken(data.token, rememberMe);
+    this.setToken(data.token, false, rememberMe);
     localStorage.removeItem(GUEST_KEY);
     if (data.email) {
       localStorage.setItem('caloriq_user_email', data.email);

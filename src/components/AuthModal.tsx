@@ -118,6 +118,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const [questionStep, setQuestionStep] = useState<number>(1);
   const [savedMidFlowNotice, setSavedMidFlowNotice] = useState<string | null>(null);
   const [showClosePrompt, setShowClosePrompt] = useState(false);
+  const [saveButtonPhase, setSaveButtonPhase] = useState<'idle' | 'saving' | 'saved'>('idle');
 
   // 30-second countdown timer for Resend button
   useEffect(() => {
@@ -138,6 +139,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
     if (!isAuthModalOpen) {
       setShowClosePrompt(false);
       setSavedMidFlowNotice(null);
+      setSaveButtonPhase('idle');
+      return;
+    }
+
+    if (saveButtonPhase !== 'idle') {
       return;
     }
 
@@ -153,7 +159,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       }
     }
 
-    if (!isGuest && !hasCompleteProfileStats(profile)) {
+    const isSignupAlreadyDone =
+      hasCompleteProfileStats(profile) ||
+      Boolean(profile?.signupComplete) ||
+      (userId ? localStorage.getItem(`caloriq_signup_complete_${userId}`) === 'true' : false);
+
+    if (!isGuest && !isSignupAlreadyDone) {
       try {
         const raw = localStorage.getItem(`caloriq_signup_draft_${userId}`);
         if (raw) {
@@ -177,10 +188,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       setDraft(EMPTY_DRAFT);
       setFlowStage('intro');
       setQuestionStep(1);
-    } else if (isGuest) {
+    } else {
       setFlowStage('credentials');
     }
-  }, [isAuthModalOpen, isGuest, profile, userId]);
+  }, [isAuthModalOpen, isGuest, profile, userId, saveButtonPhase]);
 
   // Persist draft whenever it changes during intro/questions/final
   const saveDraftState = (nextDraft: SignupDraft, nextStage?: SignupFlowStage, nextStep?: number) => {
@@ -232,6 +243,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
   const candidateProfile: UserProfile = useMemo(() => {
     const parsedAge = parseInt(draft.age, 10);
+    const resolvedGoalWeightKg =
+      computedGoalWeightKg > 0 ? computedGoalWeightKg : computedCurrentWeightKg;
     return {
       ...profile,
       name: draft.name.trim(),
@@ -239,7 +252,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       gender: draft.gender,
       heightCm: computedHeightCm,
       currentWeightKg: computedCurrentWeightKg,
-      goalWeightKg: computedGoalWeightKg,
+      goalWeightKg: resolvedGoalWeightKg,
       dailyActivity: draft.dailyActivity,
       goalSpeed: draft.goalSpeed,
       unitSystem: draft.weightUnit
@@ -569,20 +582,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   };
 
   const handleSaveAndStart = async () => {
-    if (!allQuestionsComplete) return;
+    if (!allQuestionsComplete || isLoading || saveButtonPhase !== 'idle') return;
     setIsLoading(true);
+    setSaveButtonPhase('saving');
     setErrorMsg('');
     try {
+      if (isGuest && email.trim() && password) {
+        await api.signup(email.trim(), password, rememberMe);
+      }
+
       await updateUserProfile({
         name: candidateProfile.name,
         age: candidateProfile.age,
         gender: candidateProfile.gender,
         heightCm: candidateProfile.heightCm,
+        height: candidateProfile.heightCm,
         currentWeightKg: candidateProfile.currentWeightKg,
+        currentWeight: candidateProfile.currentWeightKg,
         goalWeightKg: candidateProfile.goalWeightKg,
+        goalWeight: candidateProfile.goalWeightKg,
         dailyActivity: candidateProfile.dailyActivity,
+        activity: candidateProfile.dailyActivity,
         goalSpeed: candidateProfile.goalSpeed,
-        unitSystem: candidateProfile.unitSystem
+        goal: candidateProfile.goalSpeed,
+        unitSystem: candidateProfile.unitSystem,
+        signupComplete: true
       });
 
       if (candidateProfile.currentWeightKg > 0) {
@@ -594,7 +618,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       }
 
       try {
+        localStorage.setItem('caloriq_signup_complete', 'true');
+        localStorage.setItem('caloriq_onboarding_complete_v1', 'true');
         if (userId) {
+          localStorage.setItem(`caloriq_signup_complete_${userId}`, 'true');
           localStorage.removeItem(`caloriq_signup_draft_${userId}`);
         }
         localStorage.removeItem(draftStorageKey);
@@ -602,19 +629,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
         // ignore
       }
 
+      await onAuthSuccess();
+
+      setSaveButtonPhase('saved');
       setShowClosePrompt(false);
       setSavedMidFlowNotice(null);
       trackEvent('signup');
+
+      await new Promise((resolve) => setTimeout(resolve, 450));
+
       closeAuthModal();
 
       if (typeof window !== 'undefined') {
         window.history.pushState({}, '', '/dashboard');
+        window.dispatchEvent(new PopStateEvent('popstate'));
       }
       if (onAuthComplete) {
         onAuthComplete();
       }
-    } catch (err: any) {
-      setErrorMsg(err.message || 'Could not save profile.');
+    } catch {
+      setErrorMsg("Couldn't save your profile. Try again.");
+      setSaveButtonPhase('idle');
     } finally {
       setIsLoading(false);
     }
@@ -1304,24 +1339,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                   </div>
                 )}
 
-                {calculatedGoalDate && (
+                {calculatedGoalDetails && (
                   <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-1">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <span className="text-xs font-semibold text-zinc-200 block">
                           Projected goal date
                         </span>
-                        <span className="text-[11px] text-zinc-400">
-                          {calculatedGoalDetails?.usedActualTrend
-                            ? 'Based on your last 2 weeks'
-                            : 'Based on your goal speed.'}
-                        </span>
+                        {!calculatedGoalDetails.isMaintain && (
+                          <span className="text-[11px] text-zinc-400">
+                            Based on your goal speed.
+                          </span>
+                        )}
                       </div>
                       <span className="font-mono text-xs font-bold text-teal-300 text-right">
-                        {calculatedGoalDate}
+                        {calculatedGoalDetails.isMaintain ? '—' : calculatedGoalDate}
                       </span>
                     </div>
-                    {calculatedGoalDetails?.isCappedAtTwoYears && (
+                    {!calculatedGoalDetails.isMaintain && calculatedGoalDetails.calculationText && (
+                      <p className="text-[11px] text-zinc-400 pt-0.5">
+                        {calculatedGoalDetails.calculationText}
+                      </p>
+                    )}
+                    {!calculatedGoalDetails.isMaintain && calculatedGoalDetails.isCappedAtTwoYears && (
                       <p className="text-[11px] text-amber-300 font-medium">
                         Long-term trend — keep logging to refine.
                       </p>
@@ -1337,14 +1377,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
             <button
               type="button"
-              disabled={isLoading || !allQuestionsComplete}
+              disabled={isLoading || saveButtonPhase !== 'idle' || !allQuestionsComplete}
               onClick={handleSaveAndStart}
               className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
             >
-              {isLoading ? (
+              {saveButtonPhase === 'saving' ? (
                 <>
                   <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                   Saving...
+                </>
+              ) : saveButtonPhase === 'saved' ? (
+                <>
+                  <Check className="w-4 h-4" />
+                  Saved. Opening your diary...
                 </>
               ) : (
                 <>

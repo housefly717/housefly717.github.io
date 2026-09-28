@@ -584,8 +584,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSelectedMealForAdd(null);
   };
 
-  const openAuthModal = () => setIsAuthModalOpen(true);
-  const closeAuthModal = () => setIsAuthModalOpen(false);
+  const openAuthModal = useCallback(() => setIsAuthModalOpen(true), []);
+  const closeAuthModal = useCallback(() => setIsAuthModalOpen(false), []);
 
   const addFoodItem = async (food: Omit<FoodItem, 'id' | 'userId' | 'createdAt'>): Promise<FoodItem> => {
     if (food.mealType) {
@@ -747,6 +747,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateUserProfile = async (updates: Partial<UserProfile>): Promise<void> => {
     const updated = await api.updateProfile(updates);
     setProfile(updated);
+    if (updates.signupComplete) {
+      setIsGuest(false);
+      setIsGuestLockOpen(false);
+    }
     loadGeneralData();
   };
 

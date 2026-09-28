@@ -83,6 +83,7 @@ interface MainAppContentProps {
   onOpenPress: () => void;
   initialTab?: TabType;
   autoOpenAuth?: boolean;
+  onAutoOpenAuthHandled?: () => void;
 }
 
 const MainAppContent: React.FC<MainAppContentProps> = ({
@@ -94,7 +95,8 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
   onOpenContact,
   onOpenPress,
   initialTab = 'diary',
-  autoOpenAuth = false
+  autoOpenAuth = false,
+  onAutoOpenAuthHandled
 }) => {
   const [currentTab, setCurrentTab] = useState<TabType>(initialTab);
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
@@ -129,8 +131,11 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
   useEffect(() => {
     if (autoOpenAuth) {
       openAuthModal();
+      if (onAutoOpenAuthHandled) {
+        onAutoOpenAuthHandled();
+      }
     }
-  }, [autoOpenAuth, openAuthModal]);
+  }, [autoOpenAuth, openAuthModal, onAutoOpenAuthHandled]);
 
   // #9 Keyboard shortcuts (desktop): N = Add Food, W = log water, E = exercise log, ? = shortcuts list
   useEffect(() => {
@@ -754,6 +759,7 @@ export default function App() {
             onOpenPress={handleOpenPress}
             initialTab={initialTab}
             autoOpenAuth={autoOpenAuth}
+            onAutoOpenAuthHandled={() => setAutoOpenAuth(false)}
           />
           <DesktopScrollbar />
         </AppProvider>

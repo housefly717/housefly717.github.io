@@ -183,6 +183,10 @@ export function calculateMacroTargets(targetCalories: number): MacroTarget {
 export interface ProjectedGoalDetails {
   dateText: string;
   daysNeeded: number;
+  weeksNeeded: number;
+  diffKg: number;
+  calculationText: string;
+  isMaintain: boolean;
   basisLabel: 'Based on your last 2 weeks' | 'Based on your goal speed' | '';
   usedActualTrend: boolean;
   ratePerWeekKg: number;
@@ -192,31 +196,51 @@ export interface ProjectedGoalDetails {
 }
 
 /**
- * Calculates projected goal date details, adapting to the user's actual weight trend
- * if they have 2 or more weigh-ins in the last 14 days (unless overridden by goal speed),
- * and capping projections at 2 years (730 days).
- * Formula:
+ * Calculates projected goal date details using the exact formula:
  * weeks = |current weight − goal weight| ÷ rate per week
  * days = weeks × 7
  * projected date = today + days
+ *
+ * If goal speed is Lose slow, use 0.25 kg/week.
+ * If Lose normal, use 0.5 kg/week.
+ * If Lose fast, use 0.75 kg/week.
+ * If Build muscle, use the gain rate.
+ * If Maintain, hide the projected date entirely and show "—".
  */
 export function calculateProjectedGoalDetails(
   profile: UserProfile,
-  weights: WeightRecord[] = [],
-  forceGoalSpeedOverride: boolean = false
+  _weights: WeightRecord[] = [],
+  _forceGoalSpeedOverride: boolean = false
 ): ProjectedGoalDetails {
   const emptyResult: ProjectedGoalDetails = {
     dateText: '',
     daysNeeded: 0,
+    weeksNeeded: 0,
+    diffKg: 0,
+    calculationText: '',
+    isMaintain: false,
     basisLabel: '',
     usedActualTrend: false,
     ratePerWeekKg: 0,
     isCappedAtTwoYears: false,
     cappedNote: '',
-    whyText: 'We use your recent weigh-ins to project. Change your goal speed in the Me tab to override.'
+    whyText: 'We use your goal speed to project. Change your goal speed in the Me tab anytime.'
   };
 
-  if (!hasCompleteProfileStats(profile) || !profile.goalWeightKg || profile.goalWeightKg <= 0) {
+  if (!hasCompleteProfileStats(profile)) {
+    return emptyResult;
+  }
+
+  if (profile.goalSpeed === 'maintain') {
+    return {
+      ...emptyResult,
+      dateText: '—',
+      isMaintain: true,
+      basisLabel: 'Based on your goal speed'
+    };
+  }
+
+  if (!profile.goalWeightKg || profile.goalWeightKg <= 0) {
     return emptyResult;
   }
 
@@ -230,79 +254,24 @@ export function calculateProjectedGoalDetails(
     gain_normal: 0.5
   };
 
-  // Filter weigh-ins in the last 14 days
-  const today = new Date();
-  const cutoffDate = new Date(today);
-  cutoffDate.setDate(today.getDate() - 14);
-  const cutoffStr = cutoffDate.toISOString().split('T')[0];
-
-  const recentWeighIns = [...(weights || [])]
-    .filter((w) => w && typeof w.weightKg === 'number' && w.weightKg > 0 && w.date >= cutoffStr)
-    .sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt || 0) - (b.createdAt || 0));
-
-  const latestWeighInCreatedAt =
-    recentWeighIns.length > 0
-      ? Math.max(...recentWeighIns.map((w) => w.createdAt || 0))
-      : 0;
-
-  const isOverriddenByGoalSpeed =
-    forceGoalSpeedOverride ||
-    Boolean(
-      profile.goalSpeedOverriddenAt &&
-        latestWeighInCreatedAt > 0 &&
-        profile.goalSpeedOverriddenAt > latestWeighInCreatedAt
-    );
-
-  // Effective current weight: use most recent weigh-in from last 14 days if using trend, else profile.currentWeightKg
-  const effectiveCurrentWeightKg =
-    !isOverriddenByGoalSpeed && recentWeighIns.length >= 2
-      ? recentWeighIns[recentWeighIns.length - 1].weightKg
-      : profile.currentWeightKg;
-
-  const diffKg = Math.abs(effectiveCurrentWeightKg - profile.goalWeightKg);
-  if (diffKg < 0.1 || profile.goalSpeed === 'maintain') {
+  const diffKg = Math.round(Math.abs(profile.currentWeightKg - profile.goalWeightKg) * 10) / 10;
+  if (diffKg < 0.1) {
     return {
       ...emptyResult,
-      dateText: 'Maintaining current weight',
+      dateText: '—',
+      isMaintain: true,
       basisLabel: 'Based on your goal speed'
     };
   }
 
-  const formulaRate = weeklyRateBySpeed[profile.goalSpeed] || 0;
-  let usedActualTrend = false;
-  let ratePerWeek = formulaRate;
-  let rawDaysNeeded = 0;
-
-  if (!isOverriddenByGoalSpeed && recentWeighIns.length >= 2) {
-    usedActualTrend = true;
-    const first = recentWeighIns[0];
-    const last = recentWeighIns[recentWeighIns.length - 1];
-    const firstMs = new Date(first.date + 'T00:00:00').getTime();
-    const lastMs = new Date(last.date + 'T00:00:00').getTime();
-    const rawSpanDays = Math.round((lastMs - firstMs) / (1000 * 60 * 60 * 24));
-    const spanDays = rawSpanDays > 0 ? rawSpanDays : 14;
-
-    const isGoalLoss = profile.goalWeightKg < effectiveCurrentWeightKg;
-    const changeTowardGoalKg = isGoalLoss
-      ? first.weightKg - last.weightKg
-      : last.weightKg - first.weightKg;
-
-    const actualRatePerWeek = (changeTowardGoalKg / spanDays) * 7;
-    if (actualRatePerWeek > 0) {
-      ratePerWeek = Math.round(actualRatePerWeek * 100) / 100;
-      const weeks = diffKg / actualRatePerWeek;
-      rawDaysNeeded = Math.max(1, Math.round(weeks * 7));
-    } else {
-      ratePerWeek = 0;
-      rawDaysNeeded = 731; // Triggers 2-year cap when trend is flat or moving away from goal
-    }
-  } else {
-    if (!formulaRate || formulaRate <= 0) {
-      return emptyResult;
-    }
-    const weeks = diffKg / formulaRate;
-    rawDaysNeeded = Math.max(1, Math.round(weeks * 7));
+  const ratePerWeek = weeklyRateBySpeed[profile.goalSpeed] || 0;
+  if (!ratePerWeek || ratePerWeek <= 0) {
+    return emptyResult;
   }
+
+  const weeks = diffKg / ratePerWeek;
+  const roundedWeeks = Math.max(1, Math.round(weeks));
+  const rawDaysNeeded = Math.max(1, Math.round(weeks * 7));
 
   const MAX_DAYS_TWO_YEARS = 730;
   const isCappedAtTwoYears = rawDaysNeeded > MAX_DAYS_TWO_YEARS;
@@ -318,15 +287,23 @@ export function calculateProjectedGoalDetails(
       year: 'numeric'
     }) + ` (~${daysNeeded} days)`;
 
+  const calculationText = `${diffKg} kg to go ÷ ${ratePerWeek} kg per week = ${roundedWeeks} ${
+    roundedWeeks === 1 ? 'week' : 'weeks'
+  }`;
+
   return {
     dateText: formattedDate,
     daysNeeded,
-    basisLabel: usedActualTrend ? 'Based on your last 2 weeks' : 'Based on your goal speed',
-    usedActualTrend,
+    weeksNeeded: roundedWeeks,
+    diffKg,
+    calculationText,
+    isMaintain: false,
+    basisLabel: 'Based on your goal speed',
+    usedActualTrend: false,
     ratePerWeekKg: ratePerWeek,
     isCappedAtTwoYears,
     cappedNote: isCappedAtTwoYears ? 'Long-term trend — keep logging to refine.' : '',
-    whyText: 'We use your recent weigh-ins to project. Change your goal speed in the Me tab to override.'
+    whyText: 'We use your goal speed to project. Change your goal speed in the Me tab anytime.'
   };
 }
 

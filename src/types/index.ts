@@ -21,9 +21,11 @@ export interface FoodItem {
   unusualQuantity?: boolean;
   loggedHour?: number; // 0-23
   costEstimate?: number;
-  source?: 'manual' | 'recipe' | 'packaged' | 'usda' | 'saved' | 'plan' | 'voice' | 'photo' | 'restaurant';
+  source?: 'manual' | 'recipe' | 'packaged' | 'usda' | 'saved' | 'plan' | 'voice' | 'photo' | 'restaurant' | 'ai';
   createdAt: number;
 }
+
+export type DiaryEntry = FoodItem;
 
 export interface ExerciseItem {
   id: string;
@@ -210,13 +212,19 @@ export interface UserProfile {
   age: number;
   gender: 'male' | 'female' | 'prefer_not_to_say' | '';
   heightCm: number;
+  height?: number;
   fitnessLevel: 'beginner' | 'intermediate' | 'advanced' | '';
   bodyFatPercent?: number;
   currentWeightKg: number;
+  currentWeight?: number;
   goalWeightKg: number;
+  goalWeight?: number;
   dailyActivity: 'sedentary' | 'light' | 'moderate' | 'active' | 'athlete' | '';
+  activity?: string;
   goalSpeed: 'lose_slow' | 'lose_normal' | 'lose_fast' | 'lose_aggressive' | 'maintain' | 'gain_slow' | 'gain_normal' | '';
+  goal?: string;
   goalSpeedOverriddenAt?: number;
+  signupComplete?: boolean;
   unitSystem: 'metric' | 'imperial';
   pinnedWhy?: string;
   themeMode?: 'dark' | 'light' | 'auto';

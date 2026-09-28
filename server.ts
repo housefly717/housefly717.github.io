@@ -2503,7 +2503,7 @@ app.post('/api/ai/send-weekly-sunday-report', authenticateUser, async (req, res)
     const avgProtein = Math.round(totalProt / daysLogged);
     const targetCalories = Number(req.body?.targetCalories) || 2000;
 
-    const insights = await generateWeeklyInsightsWithGemini({
+    const insightRes = await generateWeeklyInsightsWithGemini({
       avgCalories,
       targetCalories,
       avgProtein,
@@ -2511,7 +2511,8 @@ app.post('/api/ai/send-weekly-sunday-report', authenticateUser, async (req, res)
       avgSleepHours: 7.4,
       workoutCount: allWorkouts.filter((w) => last7Dates.has(w.date)).length,
       waterDaysMet: Math.min(7, daysLogged)
-    });
+    } as any);
+    const insights = Array.isArray(insightRes) ? insightRes : insightRes.bullets || [];
 
     const recipientEmail = String(req.body?.email || user?.email || '').trim();
     const emailed = await sendWeeklySundayAiReportEmail({

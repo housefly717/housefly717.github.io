@@ -349,3 +349,13 @@ export function getClientDeviceFingerprint(): DeviceFingerprintPayload {
   };
 }
 
+export function getDeviceMetadata() {
+  const fp = getClientDeviceFingerprint();
+  return {
+    ...fp,
+    rawFingerprint: `${fp.userAgent}|${fp.screenSize}|${fp.timezone}|${fp.language}|${fp.platform}`,
+    deviceName: fp.platform || 'Web Browser'
+  };
+}
+
+

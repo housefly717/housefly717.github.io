@@ -412,6 +412,42 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     return { userId: id, isGuest: true, token: id };
   }
 
+  if (pathname === '/api/auth/send-verification-code' && method === 'POST') {
+    return { sent: true, resendCooldownSeconds: 30 };
+  }
+
+  if (pathname === '/api/auth/verify-signup' && method === 'POST') {
+    const email = (body.email || '').toLowerCase().trim();
+    const password = String(body.password || '');
+    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_') || uid('user')}`;
+    db.users[id] = { id, email, passwordHash: password, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
+    if (!db.profiles[id]) {
+      db.profiles[id] = defaultProfile('', email.split('@')[0]);
+    }
+    saveDb();
+    return { userId: id, email, isGuest: false, token: id };
+  }
+
+  if (pathname === '/api/auth/forgot-password' && method === 'POST') {
+    return { sent: true, resendCooldownSeconds: 30, message: 'If that email is registered, a code has been sent.' };
+  }
+
+  if (pathname === '/api/auth/reset-password' && method === 'POST') {
+    const email = (body.email || '').toLowerCase().trim();
+    const newPassword = String(body.newPassword || '');
+    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_') || uid('user')}`;
+    db.users[id] = { id, email, passwordHash: newPassword, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
+    if (!db.profiles[id]) {
+      db.profiles[id] = defaultProfile('', email.split('@')[0]);
+    }
+    saveDb();
+    return { userId: id, email, isGuest: false, token: id };
+  }
+
+  if (pathname === '/api/auth/logout' && method === 'POST') {
+    return { success: true };
+  }
+
   if (pathname === '/api/auth/signup' && method === 'POST') {
     const email = (body.email || '').toLowerCase().trim();
     const password = String(body.password || '');

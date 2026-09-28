@@ -835,30 +835,21 @@ export const MeTab: React.FC<MeTabProps> = ({
                   <div className="flex-1 space-y-1">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
                       <span className="font-semibold">Projected Target Date:</span>
-                      <span className="text-teal-200 font-mono">{projectedGoalDate}</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-[11px] text-teal-300/90">
-                      <span>
-                        {projectedGoalDetails.usedActualTrend
-                          ? 'Based on your last 2 weeks'
-                          : 'Based on your goal speed.'}
+                      <span className="text-teal-200 font-mono">
+                        {projectedGoalDetails.isMaintain ? '—' : projectedGoalDate}
                       </span>
-                      {projectedGoalDetails.usedActualTrend && (
-                        <button
-                          type="button"
-                          onClick={() => setShowProjectedWhy((prev) => !prev)}
-                          className="text-teal-400 hover:text-teal-200 underline font-medium"
-                        >
-                          Why?
-                        </button>
-                      )}
                     </div>
-                    {showProjectedWhy && projectedGoalDetails.usedActualTrend && (
-                      <p className="text-[11px] text-zinc-300 bg-zinc-950/80 border border-teal-900/50 rounded-lg px-2.5 py-1.5">
-                        We use your recent weigh-ins to project. Change your goal speed in the Me tab to override.
+                    {!projectedGoalDetails.isMaintain && projectedGoalDetails.calculationText && (
+                      <p className="text-[11px] text-zinc-400">
+                        {projectedGoalDetails.calculationText}
                       </p>
                     )}
-                    {projectedGoalDetails.isCappedAtTwoYears && (
+                    {!projectedGoalDetails.isMaintain && (
+                      <div className="flex items-center gap-2 text-[11px] text-teal-300/90">
+                        <span>Based on your goal speed.</span>
+                      </div>
+                    )}
+                    {!projectedGoalDetails.isMaintain && projectedGoalDetails.isCappedAtTwoYears && (
                       <p className="text-[11px] text-amber-300 font-medium">
                         Long-term trend — keep logging to refine.
                       </p>
