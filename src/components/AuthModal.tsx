@@ -9,7 +9,7 @@ import {
   calculateMaintenanceCalories,
   calculateDailyCalorieTarget,
   calculateMacroTargets,
-  calculateProjectedGoalDate
+  calculateProjectedGoalDetails
 } from '../utils/nutritionMath.js';
 import {
   useDebounce,
@@ -18,7 +18,8 @@ import {
   validateHeightCm,
   validateHeightImperial,
   validateWeight,
-  getPasswordStrength
+  getPasswordStrength,
+  validatePasswordRules
 } from '../utils/validation.js';
 import type { UserProfile } from '../types/index.js';
 
@@ -29,6 +30,7 @@ interface AuthModalProps {
 type SignupFlowStage =
   | 'credentials'
   | 'verify_code'
+  | 'verify_login_device'
   | 'forgot_password'
   | 'reset_password'
   | 'intro'
@@ -109,6 +111,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const [resetToken, setResetToken] = useState('');
   const [newResetPassword, setNewResetPassword] = useState('');
   const [resetSentSuccess, setResetSentSuccess] = useState(false);
+  const [accountUnlockTime, setAccountUnlockTime] = useState<string | null>(null);
 
   // Multi-step signup state
   const [flowStage, setFlowStage] = useState<SignupFlowStage>('credentials');
@@ -275,10 +278,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
     () => (allQuestionsComplete ? calculateMacroTargets(calculatedTarget) : calculateMacroTargets(0)),
     [allQuestionsComplete, calculatedTarget]
   );
-  const calculatedGoalDate = useMemo(
-    () => (allQuestionsComplete ? calculateProjectedGoalDate(candidateProfile) : ''),
+  const calculatedGoalDetails = useMemo(
+    () => (allQuestionsComplete ? calculateProjectedGoalDetails(candidateProfile, [], true) : null),
     [allQuestionsComplete, candidateProfile]
   );
+  const calculatedGoalDate = calculatedGoalDetails?.dateText || '';
 
   if (!isAuthModalOpen) return null;
 
@@ -1301,16 +1305,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 )}
 
                 {calculatedGoalDate && (
-                  <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between gap-3">
-                    <div>
-                      <span className="text-xs font-semibold text-zinc-200 block">
-                        Projected goal date
+                  <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <span className="text-xs font-semibold text-zinc-200 block">
+                          Projected goal date
+                        </span>
+                        <span className="text-[11px] text-zinc-400">
+                          {calculatedGoalDetails?.usedActualTrend
+                            ? 'Based on your last 2 weeks'
+                            : 'Based on your goal speed.'}
+                        </span>
+                      </div>
+                      <span className="font-mono text-xs font-bold text-teal-300 text-right">
+                        {calculatedGoalDate}
                       </span>
-                      <span className="text-[11px] text-zinc-400">If you stick to the target</span>
                     </div>
-                    <span className="font-mono text-xs font-bold text-teal-300 text-right">
-                      {calculatedGoalDate}
-                    </span>
+                    {calculatedGoalDetails?.isCappedAtTwoYears && (
+                      <p className="text-[11px] text-amber-300 font-medium">
+                        Long-term trend — keep logging to refine.
+                      </p>
+                    )}
                   </div>
                 )}
               </div>

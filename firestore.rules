@@ -6,36 +6,51 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == userId;
     }
 
+    // Helper function to verify the single developer account
+    function isDev() {
+      return request.auth != null &&
+        request.auth.token.email != null &&
+        request.auth.token.email == 'housefly@mail2world.com';
+    }
+
     match /users/{userId} {
       allow read, write: if isOwner(userId);
+      allow read, delete: if isDev();
 
       match /{allSubcollections=**} {
         allow read, write: if isOwner(userId);
+        allow read, delete: if isDev();
       }
     }
 
     match /profiles/{userId} {
       allow read, write: if isOwner(userId);
+      allow read, delete: if isDev();
     }
 
     match /diaryEntries/{entryId} {
-      allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow read, update, delete: if request.auth != null && (resource.data.userId == request.auth.uid || isDev());
       allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
     }
 
     match /waterEntries/{entryId} {
-      allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow read, update, delete: if request.auth != null && (resource.data.userId == request.auth.uid || isDev());
       allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
     }
 
     match /exerciseEntries/{entryId} {
-      allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow read, update, delete: if request.auth != null && (resource.data.userId == request.auth.uid || isDev());
       allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
     }
 
     match /weightEntries/{entryId} {
-      allow read, update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+      allow read, update, delete: if request.auth != null && (resource.data.userId == request.auth.uid || isDev());
       allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+    }
+
+    // Security events detective log — block all non-dev reads and writes
+    match /securityEvents/{eventId} {
+      allow read, write: if isDev();
     }
   }
 }

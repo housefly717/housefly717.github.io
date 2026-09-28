@@ -51,7 +51,7 @@ import {
   calculateMaintenanceCalories,
   calculateDailyCalorieTarget,
   calculateMacroTargets,
-  calculateProjectedGoalDate,
+  calculateProjectedGoalDetails,
   formatWeight
 } from '../utils/nutritionMath.js';
 import {
@@ -209,6 +209,8 @@ export const MeTab: React.FC<MeTabProps> = ({
   const [formData, setFormData] = useState<UserProfile>(profile);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [showProjectedWhy, setShowProjectedWhy] = useState(false);
+  const [localGoalSpeedOverride, setLocalGoalSpeedOverride] = useState(false);
   const debouncedFormData = useDebounce(formData, 400);
 
   // "Why I started" pinned card state (#42)
@@ -272,7 +274,12 @@ export const MeTab: React.FC<MeTabProps> = ({
   const currentMaintenanceKcal = calculateMaintenanceCalories(formData);
   const currentTargetKcal = calculateDailyCalorieTarget(formData);
   const currentMacros = calculateMacroTargets(currentTargetKcal);
-  const projectedGoalDate = calculateProjectedGoalDate(formData);
+  const projectedGoalDetails = calculateProjectedGoalDetails(
+    formData,
+    weights,
+    localGoalSpeedOverride
+  );
+  const projectedGoalDate = projectedGoalDetails.dateText;
 
   const handleSaveWhy = async () => {
     await updateUserProfile({ pinnedWhy: whyText.trim() });
@@ -822,11 +829,41 @@ export const MeTab: React.FC<MeTabProps> = ({
             </div>
 
             {projectedGoalDate && (
-              <div className="bg-teal-950/40 border border-teal-900/60 rounded-xl p-3 flex items-center gap-2.5 text-xs text-teal-300">
-                <TrendingDown className="w-4 h-4 text-teal-400 shrink-0" />
-                <div>
-                  <span className="font-semibold block">Projected Target Date:</span>
-                  <span className="text-teal-200">{projectedGoalDate}</span>
+              <div className="bg-teal-950/40 border border-teal-900/60 rounded-xl p-3 space-y-1.5 text-xs text-teal-300">
+                <div className="flex items-start gap-2.5">
+                  <TrendingDown className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 space-y-1">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <span className="font-semibold">Projected Target Date:</span>
+                      <span className="text-teal-200 font-mono">{projectedGoalDate}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px] text-teal-300/90">
+                      <span>
+                        {projectedGoalDetails.usedActualTrend
+                          ? 'Based on your last 2 weeks'
+                          : 'Based on your goal speed.'}
+                      </span>
+                      {projectedGoalDetails.usedActualTrend && (
+                        <button
+                          type="button"
+                          onClick={() => setShowProjectedWhy((prev) => !prev)}
+                          className="text-teal-400 hover:text-teal-200 underline font-medium"
+                        >
+                          Why?
+                        </button>
+                      )}
+                    </div>
+                    {showProjectedWhy && projectedGoalDetails.usedActualTrend && (
+                      <p className="text-[11px] text-zinc-300 bg-zinc-950/80 border border-teal-900/50 rounded-lg px-2.5 py-1.5">
+                        We use your recent weigh-ins to project. Change your goal speed in the Me tab to override.
+                      </p>
+                    )}
+                    {projectedGoalDetails.isCappedAtTwoYears && (
+                      <p className="text-[11px] text-amber-300 font-medium">
+                        Long-term trend — keep logging to refine.
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -1240,18 +1277,30 @@ export const MeTab: React.FC<MeTabProps> = ({
           <label className="block text-xs font-medium text-zinc-400 mb-1">Goal</label>
           <select
             value={formData.goalSpeed || ''}
-            onChange={(e) => setFormData(p => ({ ...p, goalSpeed: e.target.value as any }))}
+            onChange={(e) => {
+              const nextSpeed = e.target.value as UserProfile['goalSpeed'];
+              setLocalGoalSpeedOverride(true);
+              setFormData((p) => ({
+                ...p,
+                goalSpeed: nextSpeed,
+                goalSpeedOverriddenAt: Date.now()
+              }));
+            }}
             required
             className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
           >
             <option value="">Select your goal</option>
+            <option value="lose_slow">Lose Slow (−250 kcal/day · ~0.25 kg/wk)</option>
             <option value="lose_normal">Lose fat — about 0.5 kg per week (−500 kcal/day)</option>
+            <option value="lose_fast">Lose Fast (−750 kcal/day · ~0.75 kg/wk)</option>
+            <option value="lose_aggressive">Lose faster — up to 1 kg/week (aggressive)</option>
             <option value="maintain">Maintain — eat at your maintenance (0 adjustment)</option>
             <option value="gain_slow">Build muscle — small lean surplus (+250 kcal/day)</option>
-            <option value="lose_slow">Lose Slow (−250 kcal/day · ~0.25 kg/wk)</option>
-            <option value="lose_fast">Lose Fast (−750 kcal/day · ~0.75 kg/wk)</option>
             <option value="gain_normal">Gain Normal (+500 kcal/day)</option>
           </select>
+          <p className="text-[11px] text-zinc-400 mt-1.5 leading-relaxed">
+            Only if you&apos;ve been losing at this rate already and feel well. Not recommended to start here.
+          </p>
         </div>
 
         {profileError && (

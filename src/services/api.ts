@@ -20,6 +20,7 @@ import type {
   SharedRecipeRecord
 } from '../types/index.js';
 import { standaloneFetch } from './standaloneBackend.js';
+import { getDeviceMetadata } from '../utils/validation.js';
 
 const TOKEN_KEY = 'caloriq_session_token';
 const GUEST_KEY = 'caloriq_guest_id';
@@ -160,7 +161,31 @@ class ApiService {
   }
 
   logout() {
+    if (this.token && !this.token.startsWith('guest_')) {
+      fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.token}`,
+          'X-Device-Meta': JSON.stringify(getDeviceMetadata())
+        },
+        body: JSON.stringify({ deviceMeta: getDeviceMetadata() })
+      }).catch(() => {});
+    }
+    localStorage.removeItem(USER_EMAIL_KEY);
     this.clearToken();
+  }
+
+  endGuestSession() {
+    // Keep guest data on the device; only end the active session view
+    this.token = null;
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(USER_EMAIL_KEY);
+    if (this.sse) {
+      this.sse.close();
+      this.sse = null;
+    }
   }
 
   getOfflineQueue(): QueuedRequest[] {
@@ -298,6 +323,7 @@ class ApiService {
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'X-Device-Meta': JSON.stringify(getDeviceMetadata()),
       ...(options.headers as Record<string, string>)
     };
 
@@ -470,24 +496,56 @@ class ApiService {
     honeypot?: string
   ): Promise<{ sent: boolean; resendCooldownSeconds: number }> {
     const cleanEmail = email.trim().toLowerCase();
-    if (honeypot) {
-      throw new Error('Unable to process request.');
-    }
+    const deviceMeta = getDeviceMetadata();
     let res: Response;
     try {
       res = await fetch('/api/auth/send-verification-code', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password, honeypot })
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({ email: cleanEmail, password, honeypot, purpose: 'signup', deviceMeta })
       });
     } catch {
-      throw new Error("Couldn't send the email. Try again in a minute.");
+      throw new Error("Couldn't send the code. Try again in a minute.");
     }
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const err: any = new Error(errBody.error || "Couldn't send the email. Try again in a minute.");
-      err.retryAfterSeconds = errBody.retryAfterSeconds;
+      const err: any = new Error(errBody.error || "Couldn't send the code. Try again in a minute.");
+      err.retryAfterSeconds = errBody.retryAfterSeconds || errBody.cooldownSeconds;
+      err.cooldownSeconds = errBody.cooldownSeconds || errBody.retryAfterSeconds;
+      throw err;
+    }
+
+    return await res.json();
+  }
+
+  async sendLoginDeviceVerificationCode(
+    email: string
+  ): Promise<{ sent: boolean; resendCooldownSeconds: number }> {
+    const cleanEmail = email.trim().toLowerCase();
+    const deviceMeta = getDeviceMetadata();
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/send-verification-code', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({ email: cleanEmail, purpose: 'login_device', deviceMeta })
+      });
+    } catch {
+      throw new Error("Couldn't send the code. Try again in a minute.");
+    }
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const err: any = new Error(errBody.error || "Couldn't send the code. Try again in a minute.");
+      err.retryAfterSeconds = errBody.retryAfterSeconds || errBody.cooldownSeconds;
+      err.cooldownSeconds = errBody.cooldownSeconds || errBody.retryAfterSeconds;
       throw err;
     }
 
@@ -498,18 +556,23 @@ class ApiService {
     email: string,
     password: string,
     code: string,
-    rememberMe: boolean = true
+    rememberMe: boolean = true,
+    honeypot?: string
   ): Promise<{ userId: string; email: string; token: string }> {
     const cleanEmail = email.trim().toLowerCase();
     const guestId = this.getGuestId();
     const pwHash = hashClientPassword(password);
+    const deviceMeta = getDeviceMetadata();
 
     let res: Response;
     try {
       res = await fetch('/api/auth/verify-signup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password, code: code.trim(), guestId })
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({ email: cleanEmail, password, code: code.trim(), guestId, honeypot, deviceMeta })
       });
     } catch {
       throw new Error("Can't reach the server right now. Please try again.");
@@ -538,23 +601,29 @@ class ApiService {
     return data;
   }
 
-  async requestPasswordReset(email: string): Promise<{ sent: boolean }> {
+  async requestPasswordReset(email: string): Promise<{ sent: boolean; message?: string; resendCooldownSeconds?: number }> {
     const cleanEmail = email.trim().toLowerCase();
     const appOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const deviceMeta = getDeviceMetadata();
     let res: Response;
     try {
       res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, appOrigin })
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({ email: cleanEmail, appOrigin, deviceMeta })
       });
     } catch {
-      throw new Error("Couldn't send the email. Try again in a minute.");
+      throw new Error("Couldn't send the code. Try again in a minute.");
     }
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      throw new Error(errBody.error || "Couldn't send the email. Try again in a minute.");
+      const err: any = new Error(errBody.error || "Couldn't send the code. Try again in a minute.");
+      err.retryAfterSeconds = errBody.retryAfterSeconds || errBody.cooldownSeconds;
+      throw err;
     }
 
     return await res.json();
@@ -562,20 +631,32 @@ class ApiService {
 
   async resetPassword(
     email: string,
-    token: string,
+    codeOrToken: string,
     newPassword: string,
     rememberMe: boolean = true
   ): Promise<{ userId: string; email: string; token: string }> {
     const cleanEmail = email.trim().toLowerCase();
     const guestId = this.getGuestId();
     const pwHash = hashClientPassword(newPassword);
+    const deviceMeta = getDeviceMetadata();
 
     let res: Response;
     try {
       res = await fetch('/api/auth/reset-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, token: token.trim(), newPassword, guestId })
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({
+          email: cleanEmail,
+          code: codeOrToken.trim(),
+          token: codeOrToken.trim(),
+          newPassword,
+          confirmPassword: newPassword,
+          guestId,
+          deviceMeta
+        })
       });
     } catch {
       throw new Error("Can't reach the server right now. Please try again.");
@@ -583,7 +664,11 @@ class ApiService {
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      throw new Error(errBody.error || 'Could not reset password.');
+      const err: any = new Error(errBody.error || 'Could not reset password.');
+      err.reason = errBody.reason;
+      err.locked = Boolean(errBody.locked);
+      err.attemptsRemaining = errBody.attemptsRemaining;
+      throw err;
     }
 
     const data = await res.json();
@@ -671,62 +756,69 @@ class ApiService {
   async login(
     email: string,
     password: string,
-    rememberMe: boolean = true
-  ): Promise<{ userId: string; email: string; token: string }> {
+    rememberMe: boolean = true,
+    verificationCode?: string
+  ): Promise<{
+    userId?: string;
+    email?: string;
+    token?: string;
+    requiresVerification?: boolean;
+    reason?: string;
+    message?: string;
+    cooldownSeconds?: number;
+  }> {
     const cleanEmail = email.trim().toLowerCase();
     const guestId = this.getGuestId();
     const pwHash = hashClientPassword(password);
+    const deviceMeta = getDeviceMetadata();
 
+    let res: Response;
     try {
-      const res = await fetch('/api/auth/login', {
+      res = await fetch('/api/auth/login', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password, guestId })
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        const users = getClientUsers();
-        users[cleanEmail] = {
-          userId: data.userId,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({
           email: cleanEmail,
-          passwordHash: pwHash,
-          createdAt: Date.now()
-        };
-        saveClientUsers(users);
-        localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
-        this.setToken(data.token, false, rememberMe);
+          password,
+          verificationCode: verificationCode ? verificationCode.trim() : undefined,
+          guestId,
+          deviceMeta
+        })
+      });
+    } catch {
+      throw new Error("Can't reach the server right now. Please try again.");
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.requiresVerification) {
         return data;
       }
-
-      if (res.status === 400 || res.status === 401) {
-        const err = await res.json().catch(() => ({ error: 'Invalid email or password.' }));
-        throw new Error(err.error || 'Invalid email or password.');
-      }
-    } catch (err: any) {
-      if (err.message && (err.message.includes('No account found') || err.message.includes('Incorrect password') || err.message.includes('Invalid email'))) {
-        throw err;
-      }
-      // Static host fallback: verify in browser
+      const users = getClientUsers();
+      users[cleanEmail] = {
+        userId: data.userId,
+        email: cleanEmail,
+        passwordHash: pwHash,
+        createdAt: Date.now()
+      };
+      saveClientUsers(users);
+      localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+      localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+      this.setToken(data.token, false, rememberMe);
+      return data;
     }
 
-    const users = getClientUsers();
-    const existing = users[cleanEmail];
-    if (!existing) {
-      throw new Error('No account found with that email. Please sign up first.');
-    }
-    if (existing.passwordHash !== pwHash) {
-      throw new Error('Incorrect password. Please try again.');
-    }
-
-    localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
-    localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
-    this.setToken(existing.userId, false, rememberMe);
-    return {
-      userId: existing.userId,
-      email: cleanEmail,
-      token: existing.userId
-    };
+    const errBody = await res.json().catch(() => ({ error: 'Invalid email or password.' }));
+    const err: any = new Error(errBody.error || 'Invalid email or password.');
+    err.reason = errBody.reason;
+    err.locked = Boolean(errBody.locked);
+    err.unlockAt = errBody.unlockAt;
+    err.unlockAtFormatted = errBody.unlockAtFormatted;
+    err.attemptsRemaining = errBody.attemptsRemaining;
+    throw err;
   }
 
   // Diary
@@ -1461,6 +1553,146 @@ class ApiService {
     }
 
     return res.json();
+  }
+
+  // === DEV TOOLS (housefly@mail2world.com only) ===
+  async devSendTestEmail(recipientEmail: string, templateType: 'verification_code' | 'password_reset' | 'welcome' | 'weekly_recap' | 'suspicious_login_alert'): Promise<{
+    success: boolean;
+    recipientEmail: string;
+    templateType: string;
+    resendResult: {
+      ok: boolean;
+      messageId?: string;
+      statusCode?: number;
+      error?: string;
+      rawResponse?: any;
+      simulatedWithoutKey?: boolean;
+    };
+  }> {
+    return this.request('/api/dev/send-test-email', {
+      method: 'POST',
+      body: JSON.stringify({ recipientEmail, templateType })
+    });
+  }
+
+  async devInspectAccount(email: string): Promise<{
+    found: boolean;
+    message?: string;
+    account?: {
+      userId: string;
+      email: string;
+      displayName: string;
+      createdDate: string;
+      lastSignIn: string;
+      trustedDevicesCount: number;
+      daysLogged: number;
+      mealsLogged: number;
+      weightEntries: number;
+      hasProfile: boolean;
+      currentStreak: number;
+      totalXP: number;
+      badgesEarned: string[];
+    };
+  }> {
+    return this.request(`/api/dev/inspect-account?email=${encodeURIComponent(email)}`);
+  }
+
+  async devSendManualCode(email: string): Promise<{
+    success: boolean;
+    email: string;
+    resendResult: {
+      ok: boolean;
+      messageId?: string;
+      statusCode?: number;
+      error?: string;
+      rawResponse?: any;
+      simulatedWithoutKey?: boolean;
+    };
+  }> {
+    return this.request('/api/dev/send-manual-code', {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    });
+  }
+
+  async devDeleteUser(email: string, confirmEmail: string): Promise<{
+    success: boolean;
+    deletedUserId: string;
+    deletedEmail: string;
+    displayName: string;
+    createdDate: string;
+    summary: string;
+  }> {
+    return this.request('/api/dev/delete-user', {
+      method: 'POST',
+      body: JSON.stringify({ email, confirmEmail })
+    });
+  }
+
+  async devSeedDemoAccount(): Promise<{
+    success: boolean;
+    userId: string;
+    email: string;
+    password: string;
+    daysLogged: number;
+    mealsLogged: number;
+    exercisesLogged: number;
+    weightEntries: number;
+    waterGlassesTotal: number;
+  }> {
+    return this.request('/api/dev/seed-demo-account', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+
+  async devGetRecentErrors(): Promise<{
+    errors: Array<{
+      id: string;
+      timestamp: string;
+      endpoint: string;
+      errorMessage: string;
+      userEmail: string;
+    }>;
+  }> {
+    return this.request('/api/dev/recent-errors');
+  }
+
+  async devGetSecurityEvents(params?: { search?: string; eventType?: string; limit?: number }): Promise<{
+    events: Array<{
+      id: string;
+      timestamp: string;
+      timestampMs: number;
+      eventType: string;
+      userEmail: string;
+      ip: string;
+      city: string;
+      country: string;
+      deviceFingerprint: string;
+      rawFingerprint: string;
+      userAgent: string;
+      requestPath: string;
+      summary: string;
+      metadata?: Record<string, any>;
+    }>;
+    suspiciousPatterns: {
+      flaggedEventIds: string[];
+      eventReasons: Record<string, string[]>;
+      alerts: Array<{
+        type: 'ip_spray' | 'email_distributed' | 'failed_login_burst' | 'datacenter_vpn_signup';
+        title: string;
+        detail: string;
+        severity: 'high' | 'medium';
+        target: string;
+      }>;
+    };
+  }> {
+    const qs = new URLSearchParams();
+    if (params?.search) qs.set('search', params.search);
+    if (params?.eventType) qs.set('eventType', params.eventType);
+    if (params?.limit) qs.set('limit', String(params.limit));
+    const queryStr = qs.toString();
+    return this.request(`/api/dev/security-events${queryStr ? `?${queryStr}` : ''}`);
   }
 }
 

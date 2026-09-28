@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { isCommonPassword } from './commonPasswords.js';
 
 /**
  * #15 Debounce hook — waits `delay` ms (default 400ms) after value stops changing
@@ -246,29 +247,105 @@ export function validateDateRange(dateStr: string): string | null {
 }
 
 /**
- * #22 Password strength meter: Weak / Fair / Strong. Require "Fair" minimum.
+ * #22 & 5.E Password rules & strength meter:
+ * - Minimum 8 characters
+ * - At least one number or symbol
+ * - Reject the 1,000 most common passwords
+ * - No password can match the email
+ * - Show strength meter: Weak / Fair / Strong. Require "Fair" minimum.
  */
 export type PasswordStrength = 'Weak' | 'Fair' | 'Strong';
 
-export function getPasswordStrength(password: string): {
+export function validatePasswordRules(password: string, email?: string): string | null {
+  if (!password || password.length < 8) {
+    return 'Password must be at least 8 characters.';
+  }
+  if (!/[0-9]|[^A-Za-z0-9]/.test(password)) {
+    return 'Password must contain at least one number or symbol.';
+  }
+  if (email && password.trim().toLowerCase() === email.trim().toLowerCase()) {
+    return 'Password cannot match your email address.';
+  }
+  if (isCommonPassword(password)) {
+    return 'This password is in the list of most common passwords. Choose a more unique password.';
+  }
+  return null;
+}
+
+export function getPasswordStrength(password: string, email?: string): {
   strength: PasswordStrength;
   score: number; // 1 = Weak, 2 = Fair, 3 = Strong
+  error: string | null;
 } {
-  if (!password || password.length < 6) {
-    return { strength: 'Weak', score: 1 };
+  const ruleError = validatePasswordRules(password, email);
+  if (ruleError) {
+    return { strength: 'Weak', score: 1, error: ruleError };
   }
+
   let points = 0;
-  if (password.length >= 6) points += 1;
-  if (password.length >= 10) points += 1;
+  if (password.length >= 8) points += 1;
+  if (password.length >= 11) points += 1;
   if (/[A-Z]/.test(password) && /[a-z]/.test(password)) points += 1;
   if (/\d/.test(password)) points += 1;
   if (/[^A-Za-z0-9]/.test(password)) points += 1;
 
-  if (points >= 4 && password.length >= 8) {
-    return { strength: 'Strong', score: 3 };
+  if (points >= 4 && password.length >= 10) {
+    return { strength: 'Strong', score: 3, error: null };
   }
-  if (points >= 2 && password.length >= 6) {
-    return { strength: 'Fair', score: 2 };
-  }
-  return { strength: 'Weak', score: 1 };
+  return { strength: 'Fair', score: 2, error: null };
 }
+
+export interface DeviceFingerprintPayload {
+  userAgent: string;
+  screenSize: string;
+  timezone: string;
+  language: string;
+  platform: string;
+  fingerprintHash: string;
+}
+
+function simpleClientHash(input: string): string {
+  let h1 = 0xdeadbeef ^ input.length;
+  let h2 = 0x41c6ce57 ^ input.length;
+  for (let i = 0, ch; i < input.length; i++) {
+    ch = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
+}
+
+export function getClientDeviceFingerprint(): DeviceFingerprintPayload {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return {
+      userAgent: 'Server',
+      screenSize: '0x0',
+      timezone: 'UTC',
+      language: 'en',
+      platform: 'Unknown',
+      fingerprintHash: '0000000000000000'
+    };
+  }
+  const userAgent = navigator.userAgent || '';
+  const screenSize = window.screen ? `${window.screen.width}x${window.screen.height}` : '0x0';
+  let timezone = 'UTC';
+  try {
+    timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {
+    timezone = 'UTC';
+  }
+  const language = navigator.language || 'en';
+  const platform = navigator.platform || 'Web';
+  const raw = `${userAgent}|${screenSize}|${timezone}|${language}|${platform}`;
+  return {
+    userAgent,
+    screenSize,
+    timezone,
+    language,
+    platform,
+    fingerprintHash: simpleClientHash(raw)
+  };
+}
+

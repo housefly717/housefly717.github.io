@@ -23,6 +23,17 @@ import type {
   SharedRecipeRecord
 } from '../types/index.js';
 
+export interface TrustedDeviceRecord {
+  fingerprintHash: string;
+  rawFingerprint: string;
+  deviceName: string;
+  userAgent: string;
+  ip: string;
+  city: string;
+  trustedAt: number;
+  lastUsedAt: number;
+}
+
 export interface UserRow {
   id: string;
   email?: string;
@@ -30,6 +41,56 @@ export interface UserRow {
   isGuest: boolean;
   createdAt: number;
   lastLoginAt: number;
+  trustedDevices?: TrustedDeviceRecord[];
+}
+
+export type SecurityEventType =
+  | 'failed_login'
+  | 'login_new_device'
+  | 'login_known_device'
+  | 'signup_attempt'
+  | 'code_requested'
+  | 'code_correct'
+  | 'code_wrong'
+  | 'code_expired'
+  | 'code_locked'
+  | 'code_rate_limit'
+  | 'password_reset_requested'
+  | 'password_reset_completed'
+  | 'password_reset_new_device'
+  | 'rate_limit_hit'
+  | 'honeypot_triggered'
+  | 'account_lockout'
+  | 'email_change_requested'
+  | 'session_revoked'
+  | 'dev_action';
+
+export interface SecurityEventRecord {
+  id: string;
+  timestamp: string;
+  createdAt: number;
+  eventType: SecurityEventType;
+  userEmail: string;
+  ip: string;
+  city: string;
+  country: string;
+  ispOrOrg?: string;
+  isVpnOrDatacenter?: boolean;
+  deviceFingerprint: string;
+  deviceName: string;
+  userAgent: string;
+  requestPath: string;
+  summary: string;
+  metadata?: Record<string, any>;
+}
+
+export interface BackendErrorRecord {
+  id: string;
+  timestamp: string;
+  createdAt: number;
+  endpoint: string;
+  errorMessage: string;
+  userEmail: string;
 }
 
 export interface SettingsRow {
@@ -58,6 +119,8 @@ export interface DatabaseSchema {
   plans: Record<string, WeekPlan>; // key: userId
   chatMessages: ChatMessage[];
   userXp: Record<string, { xp: number; badges: string[] }>;
+  securityEvents: SecurityEventRecord[];
+  recentErrors: BackendErrorRecord[];
   settings: SettingsRow;
 }
 
@@ -85,6 +148,8 @@ const INITIAL_DB: DatabaseSchema = {
   plans: {},
   chatMessages: [],
   userXp: {},
+  securityEvents: [],
+  recentErrors: [],
   settings: { id: 'global' }
 };
 
@@ -145,7 +210,11 @@ function initDb() {
         nonScaleVictories: parsed.nonScaleVictories || [],
         pantryItems: parsed.pantryItems || [],
         friends: cleanedFriends,
-        sharedRecipes: parsed.sharedRecipes || []
+        sharedRecipes: parsed.sharedRecipes || [],
+        securityEvents: (parsed.securityEvents || []).filter(
+          (ev: any) => Date.now() - (ev.createdAt || 0) <= 90 * 24 * 60 * 60 * 1000
+        ),
+        recentErrors: (parsed.recentErrors || []).slice(0, 50)
       };
       saveDb();
     } else {
@@ -283,6 +352,12 @@ function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(`caloriq_salt_${password}`).digest('hex');
 }
 
+export function constantTimeHashEqual(hashA: string, hashB: string): boolean {
+  const bufA = crypto.createHash('sha256').update(String(hashA)).digest();
+  const bufB = crypto.createHash('sha256').update(String(hashB)).digest();
+  return crypto.timingSafeEqual(bufA, bufB) && hashA.length === hashB.length;
+}
+
 export function createGuestUser(): UserRow {
   const id = `guest_${crypto.randomUUID()}`;
   const user: UserRow = {
@@ -313,7 +388,7 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
   let user = findUserByEmail(norm);
 
   if (user) {
-    if (user.passwordHash && user.passwordHash !== pwHash) {
+    if (user.passwordHash && !constantTimeHashEqual(user.passwordHash, pwHash)) {
       throw new Error('An account with this email already exists. Please sign in.');
     }
     user.passwordHash = pwHash;
@@ -326,7 +401,8 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
       passwordHash: pwHash,
       isGuest: false,
       createdAt: Date.now(),
-      lastLoginAt: Date.now()
+      lastLoginAt: Date.now(),
+      trustedDevices: []
     };
     db.users[id] = user;
     const defaultUsername = norm.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase();
@@ -362,21 +438,44 @@ export function resetUserPassword(email: string, newPassword: string, guestIdToM
   return user;
 }
 
-export function loginUser(email: string, password: string, guestIdToMigrate?: string): UserRow {
+export function verifyUserCredentials(email: string, password: string): {
+  valid: boolean;
+  reason?: 'unknown_email' | 'wrong_password';
+  user?: UserRow;
+} {
   const norm = email.toLowerCase().trim();
   const pwHash = hashPassword(password);
   const user = findUserByEmail(norm);
 
   if (!user) {
-    throw new Error('No account found with that email. Please sign up first.');
+    // Still run constant-time comparison against dummy hash to prevent timing enumeration
+    constantTimeHashEqual(pwHash, hashPassword('dummy_constant_time_check_password'));
+    return { valid: false, reason: 'unknown_email' };
   }
 
-  if (user.passwordHash && user.passwordHash !== pwHash) {
-    throw new Error('Incorrect password. Please try again.');
+  if (user.passwordHash && !constantTimeHashEqual(user.passwordHash, pwHash)) {
+    return { valid: false, reason: 'wrong_password', user };
   }
 
+  return { valid: true, user };
+}
+
+export function loginUser(email: string, password: string, guestIdToMigrate?: string): UserRow {
+  const check = verifyUserCredentials(email, password);
+  if (!check.valid || !check.user) {
+    if (check.reason === 'unknown_email') {
+      const err: any = new Error('No account found with that email. Please sign up first.');
+      err.reason = 'unknown_email';
+      throw err;
+    }
+    const err: any = new Error('Incorrect password. Please try again.');
+    err.reason = 'wrong_password';
+    throw err;
+  }
+
+  const user = check.user;
   if (!user.passwordHash) {
-    user.passwordHash = pwHash;
+    user.passwordHash = hashPassword(password);
   }
   user.lastLoginAt = Date.now();
 
@@ -1379,7 +1478,7 @@ export function verifyUserPassword(userId: string, password: string): boolean {
   const user = db.users[userId];
   if (!user) return false;
   if (user.isGuest || !user.passwordHash) return true;
-  return user.passwordHash === hashPassword(password);
+  return constantTimeHashEqual(user.passwordHash, hashPassword(password));
 }
 
 export function changeUserPassword(userId: string, currentPassword: string, newPassword: string): void {
@@ -1387,7 +1486,7 @@ export function changeUserPassword(userId: string, currentPassword: string, newP
   if (!user || user.isGuest) {
     throw new Error('Only registered accounts can change their password.');
   }
-  if (user.passwordHash && user.passwordHash !== hashPassword(currentPassword)) {
+  if (user.passwordHash && !constantTimeHashEqual(user.passwordHash, hashPassword(currentPassword))) {
     throw new Error('Current password is incorrect.');
   }
   user.passwordHash = hashPassword(newPassword);
@@ -1736,3 +1835,720 @@ export function importUserBackupData(userId: string, migratedData: any): { resto
     }
   };
 }
+
+// ------------------- TRUSTED DEVICES, SESSIONS & SECURITY EVENTS -------------------
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+const MAX_TRUSTED_DEVICES = 5;
+
+export function parseDeviceLabelFromUserAgent(userAgent = ''): string {
+  const ua = userAgent.toLowerCase();
+  if (ua.includes('iphone')) return 'iPhone Safari';
+  if (ua.includes('ipad')) return 'iPad Safari';
+  if (ua.includes('android')) return 'Android Chrome';
+  if (ua.includes('macintosh') && ua.includes('safari') && !ua.includes('chrome')) return 'macOS Safari';
+  if (ua.includes('firefox')) return 'Desktop Firefox';
+  if (ua.includes('edg/')) return 'Desktop Edge';
+  if (ua.includes('chrome')) return 'Desktop Chrome';
+  return 'Web Browser';
+}
+
+export function computeServerDeviceFingerprint(
+  userAgent: string,
+  meta?: {
+    screenSize?: string;
+    timezone?: string;
+    language?: string;
+    platform?: string;
+  }
+): {
+  fingerprintHash: string;
+  rawFingerprint: string;
+  deviceName: string;
+} {
+  const cleanUa = String(userAgent || 'Unknown').trim();
+  const screenSize = String(meta?.screenSize || '0x0').trim();
+  const timezone = String(meta?.timezone || 'UTC').trim();
+  const language = String(meta?.language || 'en').trim();
+  const platform = String(meta?.platform || 'Web').trim();
+  const rawFingerprint = `${cleanUa} | screen:${screenSize} | tz:${timezone} | lang:${language} | platform:${platform}`;
+  const fingerprintHash = crypto
+    .createHash('sha256')
+    .update(`${cleanUa}|${screenSize}|${timezone}|${language}|${platform}`)
+    .digest('hex');
+  const deviceName = parseDeviceLabelFromUserAgent(cleanUa);
+  return { fingerprintHash, rawFingerprint, deviceName };
+}
+
+export function isTrustedDeviceForUser(userId: string, fingerprintHash: string): boolean {
+  const user = db.users[userId];
+  if (!user || !Array.isArray(user.trustedDevices)) return false;
+  const now = Date.now();
+  // Prune expired trusted devices (> 30 days)
+  user.trustedDevices = user.trustedDevices.filter((d) => now - d.trustedAt <= THIRTY_DAYS_MS);
+  const match = user.trustedDevices.find((d) => constantTimeHashEqual(d.fingerprintHash, fingerprintHash));
+  if (match) {
+    match.lastUsedAt = now;
+    saveDb();
+    return true;
+  }
+  return false;
+}
+
+export function trustDeviceForUser(
+  userId: string,
+  device: {
+    fingerprintHash: string;
+    rawFingerprint: string;
+    deviceName: string;
+    userAgent: string;
+    ip: string;
+    city: string;
+  }
+): void {
+  const user = db.users[userId];
+  if (!user) return;
+  const now = Date.now();
+  const current = (user.trustedDevices || []).filter((d) => now - d.trustedAt <= THIRTY_DAYS_MS);
+  const existingIdx = current.findIndex((d) =>
+    constantTimeHashEqual(d.fingerprintHash, device.fingerprintHash)
+  );
+  if (existingIdx !== -1) {
+    current[existingIdx] = {
+      ...current[existingIdx],
+      ...device,
+      trustedAt: now,
+      lastUsedAt: now
+    };
+  } else {
+    current.push({
+      ...device,
+      trustedAt: now,
+      lastUsedAt: now
+    });
+  }
+  // Track up to 5 trusted devices per account; oldest falls off when a 6th is added
+  current.sort((a, b) => a.trustedAt - b.trustedAt);
+  while (current.length > MAX_TRUSTED_DEVICES) {
+    current.shift();
+  }
+  user.trustedDevices = current;
+  saveDb();
+}
+
+export function getTrustedDevicesCount(userId: string): number {
+  const user = db.users[userId];
+  if (!user || !Array.isArray(user.trustedDevices)) return 0;
+  const now = Date.now();
+  return user.trustedDevices.filter((d) => now - d.trustedAt <= THIRTY_DAYS_MS).length;
+}
+
+export function checkAndTouchUserSessionActivity(userId: string): {
+  valid: boolean;
+  expired: boolean;
+} {
+  const user = db.users[userId];
+  if (!user) return { valid: false, expired: false };
+  if (user.isGuest) return { valid: true, expired: false };
+
+  const now = Date.now();
+  const userSessions = userSessionsStore.filter((s) => s.userId === userId);
+  if (userSessions.length === 0) {
+    // Check user.lastLoginAt for 30-day inactivity
+    if (user.lastLoginAt && now - user.lastLoginAt > THIRTY_DAYS_MS) {
+      return { valid: false, expired: true };
+    }
+    return { valid: true, expired: false };
+  }
+
+  const activeSessions = userSessions.filter((s) => now - s.lastActiveAt <= THIRTY_DAYS_MS);
+  if (activeSessions.length === 0) {
+    userSessionsStore = userSessionsStore.filter((s) => s.userId !== userId);
+    return { valid: false, expired: true };
+  }
+
+  activeSessions[0].lastActiveAt = now;
+  return { valid: true, expired: false };
+}
+
+// IP Geolocation & VPN/Datacenter Detection
+const ipGeoCache = new Map<
+  string,
+  { city: string; country: string; org: string; isVpnOrDatacenter: boolean; cachedAt: number }
+>();
+
+const DATACENTER_OR_VPN_KEYWORDS = [
+  'digitalocean',
+  'amazon',
+  'aws',
+  'ec2',
+  'linode',
+  'akamai',
+  'vultr',
+  'choopa',
+  'hetzner',
+  'ovh',
+  'm247',
+  'datacamp',
+  'nordvpn',
+  'expressvpn',
+  'mullvad',
+  'protonvpn',
+  'surfshark',
+  'cyberghost',
+  'private internet access',
+  'leaseweb',
+  'scaleway',
+  'contabo',
+  'google cloud',
+  'microsoft corporation',
+  'azure',
+  'cloudflare',
+  'tor exit',
+  'hosting',
+  'datacenter',
+  'vpn'
+];
+
+export function detectVpnOrDatacenterFromIpOrOrg(ip: string, org = ''): boolean {
+  const lowerOrg = org.toLowerCase();
+  if (DATACENTER_OR_VPN_KEYWORDS.some((kw) => lowerOrg.includes(kw))) {
+    return true;
+  }
+  // Common known datacenter / cloud public IP prefixes (e.g. DigitalOcean, AWS, Vultr, M247)
+  if (
+    /^(104\.248\.|134\.209\.|159\.65\.|159\.89\.|167\.71\.|167\.99\.|178\.128\.|185\.220\.|45\.32\.|45\.76\.|45\.77\.|185\.156\.)/.test(
+      ip
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export async function resolveIpGeo(
+  ip: string,
+  headers: Record<string, any> = {}
+): Promise<{
+  city: string;
+  country: string;
+  org: string;
+  isVpnOrDatacenter: boolean;
+}> {
+  const cleanIp = String(ip || '127.0.0.1').trim();
+  const headerCity =
+    headers['cf-ipcity'] ||
+    headers['x-vercel-ip-city'] ||
+    headers['x-appengine-city'] ||
+    headers['x-geo-city'];
+  const headerCountry =
+    headers['cf-ipcountry'] ||
+    headers['x-vercel-ip-country'] ||
+    headers['x-appengine-country'] ||
+    headers['x-geo-country'];
+  const headerOrg = headers['x-asn-org'] || headers['cf-Connecting-org'] || '';
+
+  if (headerCity || headerCountry) {
+    const city = String(headerCity || 'Unknown City');
+    const country = String(headerCountry || 'Unknown Country');
+    const org = String(headerOrg || '');
+    return {
+      city,
+      country,
+      org,
+      isVpnOrDatacenter: detectVpnOrDatacenterFromIpOrOrg(cleanIp, org)
+    };
+  }
+
+  if (
+    cleanIp === '127.0.0.1' ||
+    cleanIp === '::1' ||
+    cleanIp.startsWith('192.168.') ||
+    cleanIp.startsWith('10.') ||
+    cleanIp.startsWith('172.')
+  ) {
+    return {
+      city: 'Localhost',
+      country: 'Local',
+      org: 'Local Network',
+      isVpnOrDatacenter: false
+    };
+  }
+
+  const cached = ipGeoCache.get(cleanIp);
+  if (cached && Date.now() - cached.cachedAt < 6 * 60 * 60 * 1000) {
+    return {
+      city: cached.city,
+      country: cached.country,
+      org: cached.org,
+      isVpnOrDatacenter: cached.isVpnOrDatacenter
+    };
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1800);
+    const resp = await fetch(`https://ipapi.co/${encodeURIComponent(cleanIp)}/json/`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Caloriq-Security-Inspector/1.0' }
+    });
+    clearTimeout(timeout);
+    if (resp.ok) {
+      const data: any = await resp.json();
+      const city = String(data.city || 'Unknown');
+      const country = String(data.country_name || data.country || 'Unknown');
+      const org = String(data.org || data.asn || '');
+      const isVpn = detectVpnOrDatacenterFromIpOrOrg(cleanIp, org);
+      ipGeoCache.set(cleanIp, {
+        city,
+        country,
+        org,
+        isVpnOrDatacenter: isVpn,
+        cachedAt: Date.now()
+      });
+      return { city, country, org, isVpnOrDatacenter: isVpn };
+    }
+  } catch {
+    // Ignore external geo lookup failures
+  }
+
+  const isVpnFallback = detectVpnOrDatacenterFromIpOrOrg(cleanIp, '');
+  return {
+    city: 'Unknown',
+    country: 'Unknown',
+    org: '',
+    isVpnOrDatacenter: isVpnFallback
+  };
+}
+
+export function pruneOldSecurityEvents(): void {
+  if (!Array.isArray(db.securityEvents)) {
+    db.securityEvents = [];
+    return;
+  }
+  const cutoff = Date.now() - NINETY_DAYS_MS;
+  const before = db.securityEvents.length;
+  db.securityEvents = db.securityEvents.filter((ev) => ev.createdAt >= cutoff);
+  if (db.securityEvents.length !== before) {
+    saveDb();
+  }
+}
+
+export async function logSecurityEvent(params: {
+  eventType: SecurityEventType;
+  userEmail?: string;
+  ip: string;
+  headers?: Record<string, any>;
+  deviceFingerprint: string;
+  deviceName?: string;
+  userAgent: string;
+  requestPath: string;
+  summary: string;
+  metadata?: Record<string, any>;
+}): Promise<SecurityEventRecord> {
+  pruneOldSecurityEvents();
+  const geo = await resolveIpGeo(params.ip, params.headers || {});
+  const now = Date.now();
+  const record: SecurityEventRecord = {
+    id: `sec_${crypto.randomUUID()}`,
+    timestamp: new Date(now).toISOString(),
+    createdAt: now,
+    eventType: params.eventType,
+    userEmail: String(params.userEmail || '').toLowerCase().trim(),
+    ip: String(params.ip || '127.0.0.1').trim(),
+    city: geo.city,
+    country: geo.country,
+    ispOrOrg: geo.org || undefined,
+    isVpnOrDatacenter: geo.isVpnOrDatacenter,
+    deviceFingerprint: params.deviceFingerprint || 'Unknown',
+    deviceName: params.deviceName || parseDeviceLabelFromUserAgent(params.userAgent),
+    userAgent: String(params.userAgent || '').slice(0, 500),
+    requestPath: String(params.requestPath || '/'),
+    summary: String(params.summary || ''),
+    metadata: params.metadata
+  };
+
+  if (!Array.isArray(db.securityEvents)) {
+    db.securityEvents = [];
+  }
+  db.securityEvents.unshift(record);
+  if (db.securityEvents.length > 5000) {
+    db.securityEvents.length = 5000;
+  }
+  saveDb();
+  return record;
+}
+
+export interface SuspiciousPatternAlert {
+  id: string;
+  patternType: 'ip_many_emails' | 'email_many_ips' | 'many_failed_logins' | 'vpn_datacenter_signup';
+  title: string;
+  detail: string;
+  matchingEventIds: string[];
+}
+
+export function analyzeSuspiciousPatterns(events: SecurityEventRecord[]): {
+  alerts: SuspiciousPatternAlert[];
+  flaggedEventIds: Record<string, string[]>;
+} {
+  const alerts: SuspiciousPatternAlert[] = [];
+  const flaggedEventIds: Record<string, string[]> = {};
+
+  const markEvent = (eventId: string, label: string) => {
+    if (!flaggedEventIds[eventId]) flaggedEventIds[eventId] = [];
+    if (!flaggedEventIds[eventId].includes(label)) {
+      flaggedEventIds[eventId].push(label);
+    }
+  };
+
+  // 1. Same IP hitting many emails in a short window (15 mins, >= 3 distinct emails)
+  const ipEventsMap = new Map<string, SecurityEventRecord[]>();
+  for (const ev of events) {
+    if (!ev.ip || !ev.userEmail) continue;
+    const list = ipEventsMap.get(ev.ip) || [];
+    list.push(ev);
+    ipEventsMap.set(ev.ip, list);
+  }
+  for (const [ip, list] of ipEventsMap.entries()) {
+    const sorted = [...list].sort((a, b) => a.createdAt - b.createdAt);
+    const matchedEmails = new Set<string>();
+    const matchedIds = new Set<string>();
+    for (let i = 0; i < sorted.length; i++) {
+      const windowEmails = new Set<string>([sorted[i].userEmail]);
+      const windowIds = [sorted[i].id];
+      for (let j = i + 1; j < sorted.length; j++) {
+        if (sorted[j].createdAt - sorted[i].createdAt <= 15 * 60 * 1000) {
+          windowEmails.add(sorted[j].userEmail);
+          windowIds.push(sorted[j].id);
+        } else {
+          break;
+        }
+      }
+      if (windowEmails.size >= 3) {
+        windowEmails.forEach((e) => matchedEmails.add(e));
+        windowIds.forEach((id) => matchedIds.add(id));
+      }
+    }
+    if (matchedEmails.size >= 3) {
+      const idList = Array.from(matchedIds);
+      idList.forEach((id) => markEvent(id, 'IP hitting multiple emails'));
+      alerts.push({
+        id: `pat_ip_${ip}`,
+        patternType: 'ip_many_emails',
+        title: 'Same IP hitting many emails in a short window',
+        detail: `IP ${ip} targeted ${matchedEmails.size} distinct emails (${Array.from(matchedEmails).slice(0, 4).join(', ')}) within 15 minutes.`,
+        matchingEventIds: idList
+      });
+    }
+  }
+
+  // 2. Same email from many IPs (>= 3 distinct IPs)
+  const emailIpsMap = new Map<string, { ips: Set<string>; eventIds: string[] }>();
+  for (const ev of events) {
+    if (!ev.userEmail || !ev.ip) continue;
+    const entry = emailIpsMap.get(ev.userEmail) || { ips: new Set<string>(), eventIds: [] };
+    entry.ips.add(ev.ip);
+    entry.eventIds.push(ev.id);
+    emailIpsMap.set(ev.userEmail, entry);
+  }
+  for (const [email, info] of emailIpsMap.entries()) {
+    if (info.ips.size >= 3) {
+      info.eventIds.forEach((id) => markEvent(id, 'Email accessed from many IPs'));
+      alerts.push({
+        id: `pat_email_ips_${email}`,
+        patternType: 'email_many_ips',
+        title: 'Same email from many IPs',
+        detail: `${email} was seen from ${info.ips.size} distinct IP addresses (${Array.from(info.ips).slice(0, 4).join(', ')}).`,
+        matchingEventIds: info.eventIds
+      });
+    }
+  }
+
+  // 3. Many failed logins for one email (>= 3 failed logins)
+  const failedByEmail = new Map<string, string[]>();
+  for (const ev of events) {
+    if (ev.eventType === 'failed_login' && ev.userEmail) {
+      const list = failedByEmail.get(ev.userEmail) || [];
+      list.push(ev.id);
+      failedByEmail.set(ev.userEmail, list);
+    }
+  }
+  for (const [email, ids] of failedByEmail.entries()) {
+    if (ids.length >= 3) {
+      ids.forEach((id) => markEvent(id, 'Repeated failed logins'));
+      alerts.push({
+        id: `pat_failed_${email}`,
+        patternType: 'many_failed_logins',
+        title: 'Many failed logins for one email',
+        detail: `${ids.length} failed login attempts recorded for ${email}.`,
+        matchingEventIds: ids
+      });
+    }
+  }
+
+  // 4. Signups from a known VPN or datacenter IP range
+  const vpnSignupEvents = events.filter(
+    (ev) => ev.eventType === 'signup_attempt' && ev.isVpnOrDatacenter
+  );
+  if (vpnSignupEvents.length > 0) {
+    const ids = vpnSignupEvents.map((e) => e.id);
+    ids.forEach((id) => markEvent(id, 'VPN / Datacenter IP signup'));
+    alerts.push({
+      id: 'pat_vpn_signup',
+      patternType: 'vpn_datacenter_signup',
+      title: 'Signups from a known VPN or datacenter IP range',
+      detail: `${vpnSignupEvents.length} signup attempt(s) detected from VPN or datacenter IP ranges (${vpnSignupEvents.map((e) => e.ip).slice(0, 4).join(', ')}).`,
+      matchingEventIds: ids
+    });
+  }
+
+  return { alerts, flaggedEventIds };
+}
+
+export function getSecurityEvents(filters?: {
+  search?: string;
+  eventType?: string;
+  limit?: number;
+}): {
+  events: SecurityEventRecord[];
+  alerts: SuspiciousPatternAlert[];
+  flaggedEventIds: Record<string, string[]>;
+} {
+  pruneOldSecurityEvents();
+  const all = [...(db.securityEvents || [])].sort((a, b) => b.createdAt - a.createdAt);
+  const { alerts, flaggedEventIds } = analyzeSuspiciousPatterns(all);
+
+  let filtered = all;
+  if (filters?.eventType && filters.eventType !== 'all') {
+    filtered = filtered.filter((e) => e.eventType === filters.eventType);
+  }
+  if (filters?.search && filters.search.trim()) {
+    const q = filters.search.trim().toLowerCase();
+    filtered = filtered.filter(
+      (e) =>
+        (e.userEmail && e.userEmail.toLowerCase().includes(q)) ||
+        (e.ip && e.ip.toLowerCase().includes(q)) ||
+        (e.city && e.city.toLowerCase().includes(q)) ||
+        (e.summary && e.summary.toLowerCase().includes(q))
+    );
+  }
+
+  const max = filters?.limit || 500;
+  return {
+    events: filtered.slice(0, max),
+    alerts,
+    flaggedEventIds
+  };
+}
+
+// Recent Backend Errors (Last 50, newest first)
+export function logBackendError(endpoint: string, errorMessage: string, userEmail = ''): void {
+  if (!Array.isArray(db.recentErrors)) {
+    db.recentErrors = [];
+  }
+  const now = Date.now();
+  const rec: BackendErrorRecord = {
+    id: `err_${crypto.randomUUID()}`,
+    timestamp: new Date(now).toISOString(),
+    createdAt: now,
+    endpoint: String(endpoint || '/'),
+    errorMessage: String(errorMessage || 'Unknown error').slice(0, 600),
+    userEmail: String(userEmail || '').toLowerCase().trim()
+  };
+  db.recentErrors.unshift(rec);
+  if (db.recentErrors.length > 50) {
+    db.recentErrors.length = 50;
+  }
+  saveDb();
+}
+
+export function getRecentBackendErrors(): BackendErrorRecord[] {
+  if (!Array.isArray(db.recentErrors)) return [];
+  return db.recentErrors.slice(0, 50);
+}
+
+// Dev Tools: Account Inspector
+export function inspectAccountByEmail(rawEmail: string) {
+  const email = String(rawEmail || '').toLowerCase().trim();
+  const user = findUserByEmail(email);
+  if (!user) {
+    return null;
+  }
+  const profile = db.profiles[user.id];
+  const stats = getUserStats(user.id);
+  const userMeals = db.diaryEntries.filter((e) => e.userId === user.id);
+  const daysLoggedSet = new Set(userMeals.map((e) => e.date));
+  const userWeights = db.weightEntries.filter((w) => w.userId === user.id);
+  const hasProfile = Boolean(
+    profile &&
+      profile.age > 0 &&
+      profile.heightCm > 0 &&
+      profile.currentWeightKg > 0 &&
+      profile.goalWeightKg > 0 &&
+      profile.dailyActivity &&
+      profile.goalSpeed
+  );
+
+  return {
+    userId: user.id,
+    email: user.email || email,
+    displayName: profile?.name || 'No display name',
+    createdDate: new Date(user.createdAt).toISOString(),
+    lastSignIn: new Date(user.lastLoginAt).toISOString(),
+    trustedDevicesCount: getTrustedDevicesCount(user.id),
+    daysLogged: daysLoggedSet.size,
+    mealsLogged: userMeals.length,
+    weightEntries: userWeights.length,
+    hasProfile,
+    currentStreak: stats.foodStreak,
+    totalXp: stats.xp,
+    badgesEarned: stats.badges
+  };
+}
+
+// Dev Tools: Seed demo account with 1 full week (7 days) of food, water, weight, and exercise
+export function seedFullWeekDemoAccount(): {
+  userId: string;
+  email: string;
+  daysSeeded: number;
+  mealsSeeded: number;
+  waterDaysSeeded: number;
+  weightEntriesSeeded: number;
+  exerciseEntriesSeeded: number;
+} {
+  const shortTag = crypto.randomBytes(2).toString('hex');
+  const email = `demo.${shortTag}@caloriq.app`;
+  const id = `usr_demo_${crypto.randomUUID()}`;
+  const now = Date.now();
+
+  const user: UserRow = {
+    id,
+    email,
+    passwordHash: hashPassword('DemoWeek2026!'),
+    isGuest: false,
+    createdAt: now - 7 * 86400000,
+    lastLoginAt: now,
+    trustedDevices: []
+  };
+  db.users[id] = user;
+  db.profiles[id] = {
+    ...createEmptyProfile(`Jordan Demo (${shortTag})`, `jordan_${shortTag}`),
+    age: 29,
+    gender: 'female',
+    heightCm: 169,
+    fitnessLevel: 'intermediate',
+    currentWeightKg: 72.4,
+    goalWeightKg: 66.0,
+    dailyActivity: 'moderate',
+    goalSpeed: 'lose_normal',
+    pinnedWhy: 'Consistent protein intake and sustainable weekly progress.'
+  };
+
+  let mealsCount = 0;
+  let waterDaysCount = 0;
+  let weightCount = 0;
+  let exerciseCount = 0;
+
+  const dailyMenus = [
+    {
+      b: { name: 'Greek Yogurt Bowl with Oats & Berries', cal: 360, c: 44, f: 7, p: 28 },
+      l: { name: 'Grilled Chicken Quinoa Salad', cal: 540, c: 48, f: 16, p: 46 },
+      d: { name: 'Baked Salmon with Roasted Asparagus & Rice', cal: 610, c: 52, f: 22, p: 45 },
+      s: { name: 'Apple Slices & Almond Butter', cal: 190, c: 22, f: 11, p: 4 }
+    },
+    {
+      b: { name: '2 Poached Eggs on Sourdough Toast', cal: 340, c: 30, f: 14, p: 20 },
+      l: { name: 'Turkey & Avocado Wholegrain Wrap', cal: 510, c: 46, f: 18, p: 38 },
+      d: { name: 'Lean Beef Stir-Fry with Broccoli & Jasmine Rice', cal: 630, c: 58, f: 19, p: 48 },
+      s: { name: 'Cottage Cheese with Pineapple', cal: 175, c: 16, f: 4, p: 20 }
+    },
+    {
+      b: { name: 'High-Protein Overnight Oats with Chia', cal: 390, c: 48, f: 9, p: 30 },
+      l: { name: 'Tuna & White Bean Mediterranean Salad', cal: 490, c: 40, f: 14, p: 44 },
+      d: { name: 'Roast Chicken Breast, Sweet Potato & Greens', cal: 580, c: 50, f: 15, p: 52 },
+      s: { name: 'Whey Protein Shake & Banana', cal: 230, c: 27, f: 2, p: 26 }
+    }
+  ];
+
+  for (let i = 6; i >= 0; i--) {
+    const dateStr = new Date(now - i * 86400000).toISOString().split('T')[0];
+    const menu = dailyMenus[i % dailyMenus.length];
+
+    addDiaryEntry(id, {
+      date: dateStr,
+      mealType: 'breakfast',
+      name: menu.b.name,
+      calories: menu.b.cal,
+      carbs: menu.b.c,
+      fat: menu.b.f,
+      protein: menu.b.p,
+      serving: '1 serving',
+      source: 'manual'
+    });
+    addDiaryEntry(id, {
+      date: dateStr,
+      mealType: 'lunch',
+      name: menu.l.name,
+      calories: menu.l.cal,
+      carbs: menu.l.c,
+      fat: menu.l.f,
+      protein: menu.l.p,
+      serving: '1 plate',
+      source: 'manual'
+    });
+    addDiaryEntry(id, {
+      date: dateStr,
+      mealType: 'dinner',
+      name: menu.d.name,
+      calories: menu.d.cal,
+      carbs: menu.d.c,
+      fat: menu.d.f,
+      protein: menu.d.p,
+      serving: '1 plate',
+      source: 'manual'
+    });
+    addDiaryEntry(id, {
+      date: dateStr,
+      mealType: 'snack',
+      name: menu.s.name,
+      calories: menu.s.cal,
+      carbs: menu.s.c,
+      fat: menu.s.f,
+      protein: menu.s.p,
+      serving: '1 portion',
+      source: 'manual'
+    });
+    mealsCount += 4;
+
+    setWaterGlasses(id, dateStr, 7 + (i % 2));
+    waterDaysCount += 1;
+
+    const weightVal = Math.round((73.0 - (6 - i) * 0.1) * 10) / 10;
+    addWeightEntry(id, dateStr, weightVal);
+    weightCount += 1;
+
+    if (i % 2 === 0) {
+      addExerciseEntry(id, {
+        date: dateStr,
+        activityName: i === 0 ? 'Upper Body Dumbbell Session' : 'Brisk Incline Walk & Core',
+        met: 5.5,
+        minutes: 40,
+        caloriesBurned: 265,
+        intensity: 'Moderate'
+      });
+      exerciseCount += 1;
+    }
+  }
+
+  saveDb();
+  return {
+    userId: id,
+    email,
+    daysSeeded: 7,
+    mealsSeeded: mealsCount,
+    waterDaysSeeded: waterDaysCount,
+    weightEntriesSeeded: weightCount,
+    exerciseEntriesSeeded: exerciseCount
+  };
+}
+

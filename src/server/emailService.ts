@@ -11,6 +11,7 @@ interface VerificationEntry {
   lastSentAt: number;
   attempts: number;
   locked: boolean;
+  verifiedForReset?: boolean;
 }
 
 interface PasswordResetEntry {
@@ -22,21 +23,46 @@ interface PasswordResetEntry {
 
 const verificationStore = new Map<string, VerificationEntry>();
 const passwordResetStore = new Map<string, PasswordResetEntry>();
+const codeRequestsPerHourStore = new Map<string, number[]>();
 
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const MAX_VERIFY_ATTEMPTS = 5;
-const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // #51 Forgotten password link expires in 1 hour
+const MAX_CODES_PER_HOUR = 5;
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
-async function sendResendEmail(payload: {
+export function constantTimeStringEqual(a: string, b: string): boolean {
+  const hashA = crypto.createHash('sha256').update(String(a)).digest();
+  const hashB = crypto.createHash('sha256').update(String(b)).digest();
+  const digestsMatch = crypto.timingSafeEqual(hashA, hashB);
+  return digestsMatch && a.length === b.length;
+}
+
+export interface ResendDetailedResult {
+  ok: boolean;
+  messageId?: string;
+  statusCode?: number;
+  response?: any;
+  error?: any;
+}
+
+export async function sendResendEmailDetailed(payload: {
   to: string;
   subject: string;
   text: string;
   html: string;
-}): Promise<boolean> {
+}): Promise<ResendDetailedResult> {
   const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    return false;
+  if (!apiKey || apiKey === 'MY_RESEND_API_KEY') {
+    return {
+      ok: false,
+      statusCode: 401,
+      error: {
+        name: 'missing_api_key',
+        message: 'RESEND_API_KEY is not configured on the backend.'
+      }
+    };
   }
 
   try {
@@ -54,15 +80,65 @@ async function sendResendEmail(payload: {
         html: payload.html
       })
     });
-    return response.ok;
-  } catch {
-    return false;
+
+    const data = await response.json().catch(() => null);
+    if (response.ok) {
+      return {
+        ok: true,
+        messageId: data?.id,
+        statusCode: response.status,
+        response: data
+      };
+    }
+
+    return {
+      ok: false,
+      statusCode: response.status,
+      error: data || { status: response.status, statusText: response.statusText },
+      response: data
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      statusCode: 500,
+      error: {
+        name: err?.name || 'fetch_error',
+        message: err?.message || 'Failed to reach Resend API'
+      }
+    };
   }
 }
 
-export async function createAndSendVerificationCode(rawEmail: string): Promise<{
+async function sendResendEmail(payload: {
+  to: string;
+  subject: string;
+  text: string;
+  html: string;
+}): Promise<boolean> {
+  const res = await sendResendEmailDetailed(payload);
+  return res.ok;
+}
+
+function checkAndRecordHourlyCodeRequest(email: string, now: number): boolean {
+  const timestamps = (codeRequestsPerHourStore.get(email) || []).filter(
+    (ts) => now - ts < ONE_HOUR_MS
+  );
+  if (timestamps.length >= MAX_CODES_PER_HOUR) {
+    codeRequestsPerHourStore.set(email, timestamps);
+    return false;
+  }
+  timestamps.push(now);
+  codeRequestsPerHourStore.set(email, timestamps);
+  return true;
+}
+
+export async function createAndSendVerificationCode(
+  rawEmail: string,
+  purpose: 'signup' | 'new_device' | 'password_reset' | 'manual_dev' = 'signup'
+): Promise<{
   sent: boolean;
   resendCooldownSeconds: number;
+  messageId?: string;
 }> {
   const email = rawEmail.toLowerCase().trim();
   const now = Date.now();
@@ -72,16 +148,31 @@ export async function createAndSendVerificationCode(rawEmail: string): Promise<{
     const waitSec = Math.ceil((RESEND_COOLDOWN_MS - (now - existing.lastSentAt)) / 1000);
     const err: any = new Error(`Please wait ${waitSec}s before tapping Resend.`);
     err.retryAfterSeconds = waitSec;
+    err.reason = 'cooldown';
+    err.status = 429;
+    throw err;
+  }
+
+  if (!checkAndRecordHourlyCodeRequest(email, now)) {
+    const err: any = new Error('Too many verification codes requested. Try again in an hour.');
+    err.reason = 'code_rate_limit';
     err.status = 429;
     throw err;
   }
 
   const code = crypto.randomInt(100000, 1000000).toString();
 
-  const text = `Your Caloriq verification code is: ${code}\n\nThis code expires in 10 minutes.`;
+  const purposeTitle =
+    purpose === 'password_reset'
+      ? 'Your Caloriq password reset code'
+      : purpose === 'new_device'
+      ? 'Verify your new device on Caloriq'
+      : 'Your Caloriq verification code';
+
+  const text = `${purposeTitle}: ${code}\n\nThis code expires in 10 minutes.`;
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
-      <p style="font-size: 14px; color: #a1a1aa; margin: 0 0 12px 0;">Your Caloriq verification code</p>
+      <p style="font-size: 14px; color: #a1a1aa; margin: 0 0 12px 0;">${purposeTitle}</p>
       <div style="font-family: monospace; font-size: 28px; font-weight: 700; letter-spacing: 6px; color: #2dd4bf; background-color: #18181b; padding: 14px 18px; border-radius: 12px; text-align: center; border: 1px solid #27272a; margin-bottom: 16px;">
         ${code}
       </div>
@@ -89,12 +180,20 @@ export async function createAndSendVerificationCode(rawEmail: string): Promise<{
     </div>
   `.trim();
 
-  await sendResendEmail({
+  const sendResult = await sendResendEmailDetailed({
     to: email,
-    subject: 'Your Caloriq verification code',
+    subject: purposeTitle,
     text,
     html
   });
+
+  if (!sendResult.ok) {
+    const sendErr: any = new Error("Couldn't send the code. Try again in a minute.");
+    sendErr.reason = 'resend_failed';
+    sendErr.resendError = sendResult.error;
+    sendErr.status = 502;
+    throw sendErr;
+  }
 
   verificationStore.set(email, {
     email,
@@ -102,16 +201,22 @@ export async function createAndSendVerificationCode(rawEmail: string): Promise<{
     expiresAt: now + CODE_TTL_MS,
     lastSentAt: now,
     attempts: 0,
-    locked: false
+    locked: false,
+    verifiedForReset: false
   });
 
   return {
     sent: true,
-    resendCooldownSeconds: 30
+    resendCooldownSeconds: 30,
+    messageId: sendResult.messageId
   };
 }
 
-export function validateVerificationCode(rawEmail: string, submittedCode: string): void {
+export function validateVerificationCode(
+  rawEmail: string,
+  submittedCode: string,
+  consume: boolean = true
+): void {
   const email = rawEmail.toLowerCase().trim();
   const cleanCode = String(submittedCode || '').trim();
   const entry = verificationStore.get(email);
@@ -126,6 +231,7 @@ export function validateVerificationCode(rawEmail: string, submittedCode: string
     const err: any = new Error('Too many attempts. This code is locked. Tap Resend for a new code.');
     err.reason = 'locked';
     err.locked = true;
+    err.attemptNumber = entry.attempts;
     err.attemptsRemaining = 0;
     throw err;
   }
@@ -137,7 +243,7 @@ export function validateVerificationCode(rawEmail: string, submittedCode: string
     throw err;
   }
 
-  if (entry.code !== cleanCode) {
+  if (!constantTimeStringEqual(entry.code, cleanCode)) {
     entry.attempts += 1;
     if (entry.attempts >= MAX_VERIFY_ATTEMPTS) {
       entry.locked = true;
@@ -145,6 +251,7 @@ export function validateVerificationCode(rawEmail: string, submittedCode: string
       const lockErr: any = new Error('Too many attempts. This code is locked. Tap Resend for a new code.');
       lockErr.reason = 'locked';
       lockErr.locked = true;
+      lockErr.attemptNumber = entry.attempts;
       lockErr.attemptsRemaining = 0;
       throw lockErr;
     }
@@ -152,11 +259,18 @@ export function validateVerificationCode(rawEmail: string, submittedCode: string
     verificationStore.set(email, entry);
     const wrongErr: any = new Error("That code isn't right. Check your email and try again.");
     wrongErr.reason = 'invalid_code';
+    wrongErr.attemptNumber = entry.attempts;
     wrongErr.attemptsRemaining = MAX_VERIFY_ATTEMPTS - entry.attempts;
     throw wrongErr;
   }
 
-  verificationStore.delete(email);
+  if (consume) {
+    verificationStore.delete(email);
+  } else {
+    entry.verifiedForReset = true;
+    entry.expiresAt = Date.now() + CODE_TTL_MS;
+    verificationStore.set(email, entry);
+  }
 }
 
 export async function sendWelcomeEmail(rawEmail: string): Promise<void> {
@@ -174,6 +288,104 @@ export async function sendWelcomeEmail(rawEmail: string): Promise<void> {
     text: line,
     html
   });
+}
+
+export async function sendSuspiciousLoginAlertEmail(rawEmail: string): Promise<ResendDetailedResult> {
+  const email = rawEmail.toLowerCase().trim();
+  const line = "Someone tried to sign in to your Caloriq account. If this wasn't you, reset your password.";
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+      <p style="font-size: 14px; color: #f4f4f5; line-height: 1.6; margin: 0;">${line}</p>
+    </div>
+  `.trim();
+
+  return sendResendEmailDetailed({
+    to: email,
+    subject: 'Security Alert: Sign-in attempts on your Caloriq account',
+    text: line,
+    html
+  });
+}
+
+export async function sendDevTestEmail(
+  rawEmail: string,
+  templateType: 'verification_code' | 'password_reset' | 'welcome' | 'weekly_recap' | 'suspicious_login'
+): Promise<ResendDetailedResult> {
+  const email = rawEmail.toLowerCase().trim();
+  if (templateType === 'verification_code') {
+    const sampleCode = crypto.randomInt(100000, 1000000).toString();
+    const text = `Your Caloriq verification code is: ${sampleCode}\n\nThis code expires in 10 minutes.`;
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+        <p style="font-size: 14px; color: #a1a1aa; margin: 0 0 12px 0;">Your Caloriq verification code (Test)</p>
+        <div style="font-family: monospace; font-size: 28px; font-weight: 700; letter-spacing: 6px; color: #2dd4bf; background-color: #18181b; padding: 14px 18px; border-radius: 12px; text-align: center; border: 1px solid #27272a; margin-bottom: 16px;">
+          ${sampleCode}
+        </div>
+        <p style="font-size: 13px; color: #a1a1aa; margin: 0;">This code expires in 10 minutes.</p>
+      </div>
+    `.trim();
+    return sendResendEmailDetailed({
+      to: email,
+      subject: '[Test] Your Caloriq verification code',
+      text,
+      html
+    });
+  }
+
+  if (templateType === 'password_reset') {
+    const sampleCode = crypto.randomInt(100000, 1000000).toString();
+    const text = `Your Caloriq password reset code is: ${sampleCode}\n\nThis code expires in 10 minutes.`;
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+        <p style="font-size: 14px; color: #a1a1aa; margin: 0 0 12px 0;">Reset your Caloriq password (Test)</p>
+        <div style="font-family: monospace; font-size: 28px; font-weight: 700; letter-spacing: 6px; color: #2dd4bf; background-color: #18181b; padding: 14px 18px; border-radius: 12px; text-align: center; border: 1px solid #27272a; margin-bottom: 16px;">
+          ${sampleCode}
+        </div>
+        <p style="font-size: 13px; color: #a1a1aa; margin: 0;">This code expires in 10 minutes.</p>
+      </div>
+    `.trim();
+    return sendResendEmailDetailed({
+      to: email,
+      subject: '[Test] Reset your Caloriq password',
+      text,
+      html
+    });
+  }
+
+  if (templateType === 'welcome') {
+    const line = 'Welcome to Caloriq. Log your first meal to start your streak.';
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+        <p style="font-size: 14px; color: #f4f4f5; line-height: 1.6; margin: 0;">${line}</p>
+      </div>
+    `.trim();
+    return sendResendEmailDetailed({
+      to: email,
+      subject: '[Test] Welcome to Caloriq',
+      text: line,
+      html
+    });
+  }
+
+  if (templateType === 'weekly_recap') {
+    const text = 'Caloriq Weekly Recap (Test)\nDays Logged: 6/7\nAverage Daily Intake: 1,920 kcal\nAverage Protein: 148g/day';
+    const html = `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+        <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #2dd4bf; margin: 0 0 6px 0;">Caloriq Weekly Recap (Test)</p>
+        <h2 style="margin: 0 0 12px 0; font-size: 18px; color: #f4f4f5;">Weekly Nutrition Summary</h2>
+        <p style="font-size: 13px; color: #e4e4e7; margin: 0;">Days Logged: 6/7 · Avg Intake: 1,920 kcal · Avg Protein: 148g/day</p>
+      </div>
+    `.trim();
+    return sendResendEmailDetailed({
+      to: email,
+      subject: '[Test] Your Caloriq Weekly Recap',
+      text,
+      html
+    });
+  }
+
+  // suspicious_login
+  return sendSuspiciousLoginAlertEmail(email);
 }
 
 export async function createAndSendPasswordResetEmail(
@@ -227,7 +439,7 @@ export function validateAndConsumePasswordResetToken(rawEmail: string, submitted
     throw new Error('That reset link has expired (links are valid for 1 hour). Request a new one.');
   }
 
-  if (entry.token !== cleanToken) {
+  if (!constantTimeStringEqual(entry.token, cleanToken)) {
     throw new Error('Invalid password reset link. Request a new one.');
   }
 

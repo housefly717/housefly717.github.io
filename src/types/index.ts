@@ -215,7 +215,8 @@ export interface UserProfile {
   currentWeightKg: number;
   goalWeightKg: number;
   dailyActivity: 'sedentary' | 'light' | 'moderate' | 'active' | 'athlete' | '';
-  goalSpeed: 'lose_slow' | 'lose_normal' | 'lose_fast' | 'maintain' | 'gain_slow' | 'gain_normal' | '';
+  goalSpeed: 'lose_slow' | 'lose_normal' | 'lose_fast' | 'lose_aggressive' | 'maintain' | 'gain_slow' | 'gain_normal' | '';
+  goalSpeedOverriddenAt?: number;
   unitSystem: 'metric' | 'imperial';
   pinnedWhy?: string;
   themeMode?: 'dark' | 'light' | 'auto';
