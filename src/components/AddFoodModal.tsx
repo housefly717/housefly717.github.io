@@ -15,13 +15,25 @@ import {
   Camera,
   Utensils,
   Ruler,
-  AlertTriangle
+  AlertTriangle,
+  Pencil
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
+import { trackEventOnce } from '../utils/analytics.js';
 import { BarcodeScannerModal } from './BarcodeScannerModal.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
+import { SwipeableItem } from './SwipeableItem.js';
+import { SafeImage } from './SafeImage.js';
 import { decipherFoodText, recalculateDecipheredFoodWithGrams } from '../utils/localAiEngine.js';
-import type { MealType, SavedFood } from '../types/index.js';
+import {
+  useDebounce,
+  validateSingleFoodCalories,
+  validateSingleFoodWeightGrams,
+  validateSingleFoodWeightText,
+  findRecentDuplicateFood
+} from '../utils/validation.js';
+import type { MealType, SavedFood, SavedRecipe } from '../types/index.js';
 
 interface AddFoodModalProps {
   isOpen: boolean;
@@ -50,36 +62,98 @@ interface IngredientRow {
 export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, defaultMeal }) => {
   const {
     activeDate,
+    diaryItems,
+    allDiaryItems,
     addFoodItem,
     macroTarget,
+    lastSelectedMeal,
+    setLastSelectedMeal,
     isGuest,
     openGuestLock,
     guestAiUsed,
     consumeGuestAiCall,
     isOnline
   } = useApp();
-  const [mealType, setMealType] = useState<MealType>(defaultMeal);
+  const [mealType, setMealType] = useState<MealType>(defaultMeal || lastSelectedMeal);
   const [activeTab, setActiveTab] = useState<ModeTab>('smart');
+  const [isSavingSmart, setIsSavingSmart] = useState(false);
 
-  // Smart Food Decipherer State (In-Code AI)
-  const [smartFoodText, setSmartFoodText] = useState('');
+  // #11 Duplicate food confirmation state
+  const [pendingDuplicatePayload, setPendingDuplicatePayload] = useState<{
+    name: string;
+    calories: number;
+    carbs: number;
+    fat: number;
+    protein: number;
+    fiber?: number;
+    sugar?: number;
+    sodium?: number;
+    serving?: string;
+    note?: string;
+    unusualQuantity?: boolean;
+    source: 'manual' | 'recipe' | 'usda' | 'saved' | 'voice' | 'photo' | 'restaurant';
+    closeAfter?: boolean;
+  } | null>(null);
+
+  // #25 Last 5 foods logged by this user for one-tap re-adding
+  const recentFiveFoods = useMemo(() => {
+    const seen = new Set<string>();
+    const sorted = [...allDiaryItems].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const list: Array<{
+      id: string;
+      name: string;
+      calories: number;
+      carbs: number;
+      fat: number;
+      protein: number;
+      serving: string;
+    }> = [];
+    for (const item of sorted) {
+      const key = `${item.name.toLowerCase().trim()}_${item.calories}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push({
+        id: item.id,
+        name: item.name,
+        calories: item.calories,
+        carbs: item.carbs,
+        fat: item.fat,
+        protein: item.protein,
+        serving: item.serving || '1 portion'
+      });
+      if (list.length >= 5) break;
+    }
+    return list;
+  }, [allDiaryItems]);
+
+  // Smart Food Decipherer State (In-Code AI) — #16 Draft save for AI logs + #15 Debounce
+  const [smartFoodText, setSmartFoodText] = useState(() => {
+    return localStorage.getItem('caloriq_draft_smart_food') || '';
+  });
+  const debouncedSmartFoodText = useDebounce(smartFoodText, 400);
   const [gramOverrides, setGramOverrides] = useState<Record<number, number>>({});
+  const [editingWeightIndices, setEditingWeightIndices] = useState<Record<number, boolean>>({});
   const [confirmedOver5kgIndices, setConfirmedOver5kgIndices] = useState<Record<number, number>>({});
   const [confirmedOver5000Kcal, setConfirmedOver5000Kcal] = useState<boolean>(false);
 
   useEffect(() => {
-    setGramOverrides({});
-    setConfirmedOver5kgIndices({});
-    setConfirmedOver5000Kcal(false);
+    localStorage.setItem('caloriq_draft_smart_food', smartFoodText);
   }, [smartFoodText]);
 
+  useEffect(() => {
+    setGramOverrides({});
+    setEditingWeightIndices({});
+    setConfirmedOver5kgIndices({});
+    setConfirmedOver5000Kcal(false);
+  }, [debouncedSmartFoodText]);
+
   const baseDecipheredFood = useMemo(
-    () => decipherFoodText(smartFoodText, macroTarget.calories),
-    [smartFoodText, macroTarget.calories]
+    () => decipherFoodText(debouncedSmartFoodText, macroTarget.calories, mealType),
+    [debouncedSmartFoodText, macroTarget.calories, mealType]
   );
   const decipheredFood = useMemo(
-    () => recalculateDecipheredFoodWithGrams(baseDecipheredFood, gramOverrides, macroTarget.calories),
-    [baseDecipheredFood, gramOverrides, macroTarget.calories]
+    () => recalculateDecipheredFoodWithGrams(baseDecipheredFood, gramOverrides, macroTarget.calories, mealType),
+    [baseDecipheredFood, gramOverrides, macroTarget.calories, mealType]
   );
 
   const hasUnconfirmedOver5kg = decipheredFood.items.some(
@@ -93,6 +167,54 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   const needsSanityConfirmation = hasUnconfirmedOver5kg || hasUnconfirmedOver5000Kcal;
   const isUnusualQuantityConfirmed =
     hasConfirmedAnyOver5kg || (decipheredFood.isOver5000Kcal && confirmedOver5000Kcal);
+
+  const submitFoodWithDuplicateCheck = async (
+    payload: {
+      name: string;
+      calories: number;
+      carbs: number;
+      fat: number;
+      protein: number;
+      fiber?: number;
+      sugar?: number;
+      sodium?: number;
+      serving?: string;
+      note?: string;
+      unusualQuantity?: boolean;
+      source: 'manual' | 'recipe' | 'usda' | 'saved' | 'voice' | 'photo' | 'restaurant';
+      closeAfter?: boolean;
+    },
+    forceDuplicate = false
+  ) => {
+    if (!forceDuplicate) {
+      const dup = findRecentDuplicateFood(diaryItems, payload.name, payload.calories);
+      if (dup) {
+        setPendingDuplicatePayload(payload);
+        return false;
+      }
+    }
+    setPendingDuplicatePayload(null);
+    await addFoodItem({
+      date: activeDate,
+      mealType,
+      name: payload.name,
+      calories: payload.calories,
+      carbs: payload.carbs,
+      fat: payload.fat,
+      protein: payload.protein,
+      fiber: payload.fiber,
+      sugar: payload.sugar,
+      sodium: payload.sodium,
+      serving: payload.serving || '1 portion',
+      note: payload.note,
+      unusualQuantity: payload.unusualQuantity,
+      source: payload.source
+    });
+    if (payload.closeAfter !== false) {
+      onClose();
+    }
+    return true;
+  };
 
   const handleSaveSmartFood = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,30 +234,36 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       }
     }
 
-    await addFoodItem({
-      date: activeDate,
-      mealType,
-      name: decipheredFood.mealSummaryName,
-      calories: decipheredFood.totalCalories,
-      carbs: decipheredFood.totalCarbs,
-      fat: decipheredFood.totalFat,
-      protein: decipheredFood.totalProtein,
-      fiber: decipheredFood.totalFiber,
-      sugar: decipheredFood.totalSugar,
-      sodium: decipheredFood.totalSodiumMg,
-      serving: `${Math.round(decipheredFood.items.reduce((s, i) => s + i.grams, 0) * 10) / 10}g total`,
-      note: isUnusualQuantityConfirmed
-        ? `Unusual quantity · Health Rating: ${decipheredFood.healthRating}/10`
-        : `Health Rating: ${decipheredFood.healthRating}/10`,
-      unusualQuantity: isUnusualQuantityConfirmed,
-      source: 'manual'
-    });
+    setIsSavingSmart(true);
+    try {
+      const saved = await submitFoodWithDuplicateCheck({
+        name: decipheredFood.mealSummaryName,
+        calories: decipheredFood.totalCalories,
+        carbs: decipheredFood.totalCarbs,
+        fat: decipheredFood.totalFat,
+        protein: decipheredFood.totalProtein,
+        fiber: decipheredFood.totalFiber,
+        sugar: decipheredFood.totalSugar,
+        sodium: decipheredFood.totalSodiumMg,
+        serving: `${Math.round(decipheredFood.items.reduce((s, i) => s + i.grams, 0) * 10) / 10}g total`,
+        note: isUnusualQuantityConfirmed
+          ? `Unusual quantity · Health Rating: ${decipheredFood.healthRating}/10`
+          : `Health Rating: ${decipheredFood.healthRating}/10`,
+        unusualQuantity: isUnusualQuantityConfirmed,
+        source: 'manual',
+        closeAfter: true
+      });
 
-    setSmartFoodText('');
-    setGramOverrides({});
-    setConfirmedOver5kgIndices({});
-    setConfirmedOver5000Kcal(false);
-    onClose();
+      if (saved) {
+        setSmartFoodText('');
+        localStorage.removeItem('caloriq_draft_smart_food');
+        setGramOverrides({});
+        setConfirmedOver5kgIndices({});
+        setConfirmedOver5000Kcal(false);
+      }
+    } finally {
+      setIsSavingSmart(false);
+    }
   };
 
   // Manual Form State
@@ -146,13 +274,20 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   const [manualProtein, setManualProtein] = useState('');
   const [manualServing, setManualServing] = useState('1 serving');
   const [manualNote, setManualNote] = useState('');
+  const [manualError, setManualError] = useState<string | null>(null);
+  const debouncedManualCalories = useDebounce(manualCalories, 400);
+  const debouncedManualServing = useDebounce(manualServing, 400);
 
   // Recipe Form State
   const [recipeName, setRecipeName] = useState('');
+  const debouncedRecipeName = useDebounce(recipeName, 400);
   const [ingredients, setIngredients] = useState<IngredientRow[]>([
     { id: '1', raw: '', name: '', amount: 0, unit: '', calories: 0, carbs: 0, fat: 0, protein: 0, isVague: false, isParsed: false }
   ]);
   const [isParsingRow, setIsParsingRow] = useState<string | null>(null);
+  const [savedRecipes, setSavedRecipes] = useState<SavedRecipe[]>([]);
+  const [recipeToDelete, setRecipeToDelete] = useState<SavedRecipe | null>(null);
+  const [recipeError, setRecipeError] = useState<string | null>(null);
 
   // Packaged Search State
   const [packagedQuery, setPackagedQuery] = useState('');
@@ -165,6 +300,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   // Saved Foods State
   const [savedFoods, setSavedFoods] = useState<SavedFood[]>([]);
   const [savedFoodSearch, setSavedFoodSearch] = useState('');
+  const debouncedSavedFoodSearch = useDebounce(savedFoodSearch, 400);
   const [showSavedList, setShowSavedList] = useState(false);
 
   // Phase 4 AI Tools State (#3 Voice, #9 Plate Photo, #12 Restaurant Mode, #17 Portion Estimator)
@@ -172,10 +308,16 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   const [isAiBusy, setIsAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
 
-  // #3 Voice Log
-  const [voiceTranscript, setVoiceTranscript] = useState('');
+  // #3 Voice Log (#16 draft save)
+  const [voiceTranscript, setVoiceTranscript] = useState(() => {
+    return localStorage.getItem('caloriq_draft_voice_food') || '';
+  });
   const [isListening, setIsListening] = useState(false);
   const [voiceResult, setVoiceResult] = useState<any | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('caloriq_draft_voice_food', voiceTranscript);
+  }, [voiceTranscript]);
 
   // #9 Plate Photo
   const [platePreview, setPlatePreview] = useState<string | null>(null);
@@ -192,12 +334,14 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
   const [portionResult, setPortionResult] = useState<any | null>(null);
 
   useEffect(() => {
-    setMealType(defaultMeal);
-  }, [defaultMeal]);
+    setMealType(defaultMeal || lastSelectedMeal);
+  }, [defaultMeal, lastSelectedMeal]);
 
   useEffect(() => {
     if (isOpen) {
       loadSavedFoods();
+      loadSavedRecipes();
+      setPendingDuplicatePayload(null);
     }
   }, [isOpen]);
 
@@ -210,31 +354,45 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
     }
   };
 
-  const handleRecipeNameChange = async (name: string) => {
-    setRecipeName(name);
-    if (name.trim().length >= 3) {
-      try {
-        const res = await api.searchRecipe(name.trim());
-        if (res.recipe) {
-          const loadedRows: IngredientRow[] = res.recipe.ingredients.map((ing, idx) => ({
-            id: String(idx + 1),
-            raw: ing.raw || `${ing.amount}${ing.unit} ${ing.name}`,
-            name: ing.name,
-            amount: ing.amount,
-            unit: ing.unit,
-            calories: ing.calories,
-            carbs: ing.carbs,
-            fat: ing.fat,
-            protein: ing.protein,
-            isVague: false,
-            isParsed: true
-          }));
-          setIngredients(loadedRows);
-        }
-      } catch {
-        // ignore
-      }
+  const loadSavedRecipes = async () => {
+    try {
+      const res = await api.getRecipes();
+      setSavedRecipes(res.recipes || []);
+    } catch {
+      // ignore
     }
+  };
+
+  // #15 Debounced recipe search on name typing
+  useEffect(() => {
+    if (debouncedRecipeName.trim().length >= 3) {
+      api
+        .searchRecipe(debouncedRecipeName.trim())
+        .then((res) => {
+          if (res.recipe) {
+            const loadedRows: IngredientRow[] = res.recipe.ingredients.map((ing, idx) => ({
+              id: String(idx + 1),
+              raw: ing.raw || `${ing.amount}${ing.unit} ${ing.name}`,
+              name: ing.name,
+              amount: ing.amount,
+              unit: ing.unit,
+              calories: ing.calories,
+              carbs: ing.carbs,
+              fat: ing.fat,
+              protein: ing.protein,
+              isVague: false,
+              isParsed: true
+            }));
+            setIngredients(loadedRows);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [debouncedRecipeName]);
+
+  const handleRecipeNameChange = (name: string) => {
+    setRecipeName(name);
+    setRecipeError(null);
   };
 
   const handleIngredientBlur = async (id: string, text: string) => {
@@ -339,11 +497,22 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
 
   const handleSaveManual = async (e: React.FormEvent) => {
     e.preventDefault();
+    setManualError(null);
     if (!manualName.trim() || !manualCalories) return;
 
-    await addFoodItem({
-      date: activeDate,
-      mealType,
+    const kcalErr = validateSingleFoodCalories(manualCalories);
+    if (kcalErr) {
+      setManualError(kcalErr);
+      return;
+    }
+
+    const weightErr = validateSingleFoodWeightText(manualServing);
+    if (weightErr) {
+      setManualError(weightErr);
+      return;
+    }
+
+    await submitFoodWithDuplicateCheck({
       name: manualName.trim(),
       calories: Math.round(Number(manualCalories)),
       carbs: Number(manualCarbs) || 0,
@@ -351,15 +520,35 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       protein: Number(manualProtein) || 0,
       serving: manualServing || '1 serving',
       note: manualNote.trim() || undefined,
-      source: 'manual'
+      source: 'manual',
+      closeAfter: true
     });
-
-    onClose();
   };
 
   const handleSaveRecipe = async (e: React.FormEvent) => {
     e.preventDefault();
+    setRecipeError(null);
     if (!recipeName.trim() || totalRecipeCalories === 0) return;
+
+    // #8 & #9 Sanity checks on recipe ingredients
+    for (const ing of ingredients) {
+      const kcalErr = validateSingleFoodCalories(ing.calories);
+      if (kcalErr) {
+        setRecipeError(kcalErr);
+        return;
+      }
+      const grams =
+        ing.unit.toLowerCase() === 'kg'
+          ? ing.amount * 1000
+          : ing.unit.toLowerCase() === 'g'
+            ? ing.amount
+            : 0;
+      const wErr = validateSingleFoodWeightGrams(grams);
+      if (wErr) {
+        setRecipeError(wErr);
+        return;
+      }
+    }
 
     await api.saveRecipe({
       name: recipeName.trim(),
@@ -378,20 +567,18 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       totalFat: totalRecipeFat,
       totalProtein: totalRecipeProtein
     });
+    await loadSavedRecipes();
 
-    await addFoodItem({
-      date: activeDate,
-      mealType,
+    await submitFoodWithDuplicateCheck({
       name: recipeName.trim(),
       calories: totalRecipeCalories,
       carbs: totalRecipeCarbs,
       fat: totalRecipeFat,
       protein: totalRecipeProtein,
       serving: '1 recipe portion',
-      source: 'recipe'
+      source: 'recipe',
+      closeAfter: true
     });
-
-    onClose();
   };
 
   // #3 Voice Log Handlers
@@ -428,6 +615,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
     if (!voiceTranscript.trim()) return;
     setIsAiBusy(true);
     setAiError(null);
+    trackEventOnce('first_ai_call');
     try {
       const res = await api.parseVoiceMeal(voiceTranscript.trim());
       setVoiceResult(res);
@@ -506,36 +694,57 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
     serving?: string;
     source: 'voice' | 'photo' | 'restaurant' | 'manual';
   }) => {
-    await addFoodItem({
-      date: activeDate,
-      mealType,
+    const kcalErr = validateSingleFoodCalories(payload.calories);
+    if (kcalErr) {
+      setAiError(kcalErr);
+      return;
+    }
+    const saved = await submitFoodWithDuplicateCheck({
       name: payload.name,
       calories: Math.round(payload.calories || 0),
       carbs: Math.round(payload.carbs || 0),
       fat: Math.round(payload.fat || 0),
       protein: Math.round(payload.protein || 0),
       serving: payload.serving || '1 portion',
-      source: payload.source
+      source: payload.source,
+      closeAfter: true
     });
-    onClose();
+    if (saved && payload.source === 'voice') {
+      setVoiceTranscript('');
+      localStorage.removeItem('caloriq_draft_voice_food');
+    }
   };
 
   if (!isOpen) return null;
 
   const filteredSavedFoods = savedFoods.filter(f =>
-    f.name.toLowerCase().includes(savedFoodSearch.toLowerCase())
+    f.name.toLowerCase().includes(debouncedSavedFoodSearch.toLowerCase())
   );
+
+  const inlineManualCalorieError = debouncedManualCalories
+    ? validateSingleFoodCalories(debouncedManualCalories)
+    : null;
+  const inlineManualWeightError = debouncedManualServing
+    ? validateSingleFoodWeightText(debouncedManualServing)
+    : null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
       <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full max-h-[92vh] flex flex-col shadow-2xl relative overflow-hidden">
         {/* Header */}
+        <div role="status" aria-live="polite" className="sr-only">
+          {aiError ? `Error: ${aiError}` : isAiBusy ? 'Calculating nutrition estimates...' : ''}
+        </div>
         <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="text-sm font-semibold text-zinc-100">Add to</span>
             <select
               value={mealType}
-              onChange={(e) => setMealType(e.target.value as MealType)}
+              onChange={(e) => {
+                const nextMeal = e.target.value as MealType;
+                setMealType(nextMeal);
+                setLastSelectedMeal(nextMeal);
+              }}
               aria-label="Select meal slot"
               className="bg-zinc-800 border border-zinc-700 text-teal-400 font-semibold text-xs rounded-lg px-2.5 py-1 focus:outline-none focus:border-teal-500 capitalize"
             >
@@ -637,6 +846,75 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
             </div>
           )}
 
+          {/* #11 Duplicate food within 5 minutes confirmation */}
+          {pendingDuplicatePayload && (
+            <div className="p-3 rounded-xl bg-amber-950/80 border border-amber-500/50 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="text-xs text-amber-100 font-medium">
+                  You just logged this. Add another?
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setPendingDuplicatePayload(null)}
+                  className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => submitFoodWithDuplicateCheck(pendingDuplicatePayload, true)}
+                  className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold rounded-lg text-xs"
+                >
+                  Add another
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* #25 Recent foods shortcut — last 5 foods logged by this user for one-tap re-adding */}
+          <div className="bg-zinc-950/70 border border-zinc-800 rounded-xl p-2.5 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-teal-400">
+                Recent Foods (One-Tap Re-Add)
+              </span>
+              <span className="text-[10px] text-zinc-500 font-mono">Last 5</span>
+            </div>
+            {recentFiveFoods.length === 0 ? (
+              <p className="text-[11px] text-zinc-500 py-1">
+                No recent foods logged yet. Your last 5 logged foods will appear here.
+              </p>
+            ) : (
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                {recentFiveFoods.map((rf) => (
+                  <button
+                    key={rf.id}
+                    type="button"
+                    onClick={() =>
+                      submitFoodWithDuplicateCheck({
+                        name: rf.name,
+                        calories: rf.calories,
+                        carbs: rf.carbs,
+                        fat: rf.fat,
+                        protein: rf.protein,
+                        serving: rf.serving,
+                        source: 'saved',
+                        closeAfter: true
+                      })
+                    }
+                    className="px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-teal-950/50 border border-zinc-800 hover:border-teal-500/40 text-left shrink-0 flex items-center gap-1.5 transition-colors"
+                  >
+                    <Plus className="w-3 h-3 text-teal-400 shrink-0" />
+                    <span className="text-xs text-zinc-200 font-medium truncate max-w-[120px]">{rf.name}</span>
+                    <span className="text-[10px] font-mono text-teal-400 shrink-0">{rf.calories} kcal</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Quick Saved Foods Drawer Toggle */}
           <div className="flex items-center justify-between bg-zinc-950/60 border border-zinc-800 rounded-xl p-2.5">
             <div className="flex items-center gap-2 text-xs text-zinc-300">
@@ -674,23 +952,39 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
               <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
                 {savedFoods.length === 0 ? (
                   <p className="text-[11px] text-zinc-500 py-2 text-center">
-                    Foods you log will appear here for one-tap re-adding.
+                    No saved foods yet. Foods you log will appear here for one-tap re-adding.
                   </p>
                 ) : filteredSavedFoods.length === 0 ? (
-                  <p className="text-[11px] text-zinc-500 py-2 text-center">No saved foods found.</p>
+                  <p className="text-[11px] text-zinc-500 py-2 text-center">No saved foods match your search.</p>
                 ) : (
                   filteredSavedFoods.map((f) => (
-                    <button
+                    <SwipeableItem
                       key={f.id}
-                      onClick={() => selectSavedFood(f)}
-                      className="w-full text-left p-2 rounded-lg bg-zinc-900/60 hover:bg-zinc-850 border border-zinc-800 text-xs flex items-center justify-between transition-colors"
+                      onDelete={() => setSavedFoods(prev => prev.filter(item => item.id !== f.id))}
+                      options={[
+                        {
+                          label: 'Use this saved food',
+                          onClick: () => selectSavedFood(f)
+                        },
+                        {
+                          label: 'Remove from list',
+                          onClick: () => setSavedFoods(prev => prev.filter(item => item.id !== f.id)),
+                          destructive: true
+                        }
+                      ]}
                     >
-                      <div className="truncate pr-2">
-                        <span className="font-medium text-zinc-200 block truncate">{f.name}</span>
-                        <span className="text-[10px] text-zinc-500">{f.serving}</span>
-                      </div>
-                      <span className="text-teal-400 font-semibold text-xs shrink-0">{f.calories} kcal</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => selectSavedFood(f)}
+                        className="w-full text-left p-2 rounded-lg bg-zinc-900/60 hover:bg-zinc-850 border border-zinc-800 text-xs flex items-center justify-between transition-colors"
+                      >
+                        <div className="truncate pr-2">
+                          <span className="font-medium text-zinc-200 block truncate">{f.name}</span>
+                          <span className="text-[10px] text-zinc-500">{f.serving}</span>
+                        </div>
+                        <span className="text-teal-400 font-semibold text-xs shrink-0">{f.calories} kcal</span>
+                      </button>
+                    </SwipeableItem>
                   ))
                 )}
               </div>
@@ -763,17 +1057,19 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                   <div className="pt-2.5 border-t border-zinc-800/80 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-[10px] uppercase tracking-wider font-semibold text-teal-400">
-                        Confirm weights
+                        {decipheredFood.needsWeightConfirmation ? 'Confirm weights' : 'Ingredients & weights'}
                       </span>
-                      <span className="text-[10px] text-zinc-500">
-                        Tap grams to adjust before saving
+                      <span className="text-[10px] text-zinc-400">
+                        {decipheredFood.needsWeightConfirmation
+                          ? 'Enter missing weight below'
+                          : 'Tap pencil to edit weight'}
                       </span>
                     </div>
 
                     {decipheredFood.needsWeightConfirmation && (
                       <div className="p-2 rounded-lg bg-amber-950/40 border border-amber-500/40 text-[11px] text-amber-300 flex items-center gap-1.5">
                         <HelpCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                        <span>Please confirm the gram weight for items marked 0g before saving.</span>
+                        <span>How much? Enter weight in grams for items without a known portion.</span>
                       </div>
                     )}
 
@@ -880,47 +1176,90 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
 
                     <div className="space-y-1.5">
                       {decipheredFood.items.map((item, idx) => {
-                        const currentGrams = Object.prototype.hasOwnProperty.call(gramOverrides, idx)
-                          ? gramOverrides[idx]
-                          : item.grams;
-                        const isUnconfirmed = item.grams <= 0 || item.needsWeightConfirmation;
+                        const hasUserOverride = Object.prototype.hasOwnProperty.call(gramOverrides, idx);
+                        const currentGrams = hasUserOverride ? gramOverrides[idx] : item.grams;
+                        const isUnconfirmed = Boolean(item.needsWeightConfirmation);
+                        const isEditing = isUnconfirmed || Boolean(editingWeightIndices[idx]);
                         return (
                           <div
                             key={idx}
-                            className={`flex items-center justify-between gap-2 text-[11px] bg-zinc-900/60 px-2.5 py-2 rounded-lg border ${
+                            className={`space-y-1 bg-zinc-900/60 px-2.5 py-2 rounded-lg border ${
                               isUnconfirmed ? 'border-amber-500/60 bg-amber-950/20' : 'border-zinc-800/60'
                             }`}
                           >
-                            <div className="min-w-0 flex-1">
-                              <span className="text-zinc-200 font-medium block truncate">{item.name}</span>
-                              <span className="text-zinc-500 font-mono text-[10px] block truncate">
-                                {item.servingLabel} — {item.calories} kcal ({item.carbs}c · {item.fat}f · {item.protein}p)
-                              </span>
+                            <div className="flex items-center justify-between gap-2 text-[11px]">
+                              <div className="min-w-0 flex-1">
+                                <span className="text-zinc-200 font-medium block truncate">{item.name}</span>
+                                <span className="text-zinc-400 font-mono text-[10px] block truncate">
+                                  {item.servingLabel} — {item.calories} kcal ({item.carbs}c · {item.fat}f · {item.protein}p)
+                                </span>
+                                {item.notes && (
+                                  <span className="text-amber-300/90 text-[10px] block mt-0.5">
+                                    {item.notes}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {isEditing ? (
+                                  <div className="flex items-center gap-1">
+                                    {isUnconfirmed && (
+                                      <span className="text-[10px] text-amber-300 font-medium mr-0.5">
+                                        How much?
+                                      </span>
+                                    )}
+                                    <input
+                                      type="number"
+                                      min="0"
+                                      step="any"
+                                      aria-label={`Grams for ${item.name}`}
+                                      value={currentGrams === 0 && isUnconfirmed && !hasUserOverride ? '' : currentGrams}
+                                      placeholder="g"
+                                      onChange={(e) => {
+                                        const rawVal = e.target.value;
+                                        const numVal = rawVal === '' ? 0 : Math.max(0, parseFloat(rawVal) || 0);
+                                        setGramOverrides((prev) => ({
+                                          ...prev,
+                                          [idx]: numVal
+                                        }));
+                                      }}
+                                      className={`w-16 bg-zinc-950 border rounded-md px-2 py-1 text-right font-mono text-xs text-zinc-100 focus:outline-none ${
+                                        isUnconfirmed
+                                          ? 'border-amber-500/80 focus:border-amber-400'
+                                          : 'border-zinc-700 focus:border-teal-500'
+                                      }`}
+                                    />
+                                    <span className="text-[11px] font-mono text-zinc-400">g</span>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setEditingWeightIndices((prev) => ({ ...prev, [idx]: true }))
+                                    }
+                                    aria-label={`Edit weight for ${item.name}`}
+                                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-zinc-950/80 hover:bg-zinc-800 border border-zinc-800 text-[11px] font-mono text-zinc-200 transition-colors"
+                                  >
+                                    <span>
+                                      {item.isEstimatedWeight
+                                        ? `${currentGrams}g (estimated)`
+                                        : `${currentGrams}g`}
+                                    </span>
+                                    <Pencil className="w-3 h-3 text-teal-400" />
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <input
-                                type="number"
-                                min="0"
-                                step="any"
-                                aria-label={`Grams for ${item.name}`}
-                                value={currentGrams === 0 && isUnconfirmed && !Object.prototype.hasOwnProperty.call(gramOverrides, idx) ? '' : currentGrams}
-                                placeholder="0"
-                                onChange={(e) => {
-                                  const rawVal = e.target.value;
-                                  const numVal = rawVal === '' ? 0 : Math.max(0, parseFloat(rawVal) || 0);
-                                  setGramOverrides((prev) => ({
-                                    ...prev,
-                                    [idx]: numVal
-                                  }));
-                                }}
-                                className={`w-16 bg-zinc-950 border rounded-md px-2 py-1 text-right font-mono text-xs text-zinc-100 focus:outline-none ${
-                                  isUnconfirmed
-                                    ? 'border-amber-500/80 focus:border-amber-400'
-                                    : 'border-zinc-700 focus:border-teal-500'
-                                }`}
-                              />
-                              <span className="text-[11px] font-mono text-zinc-400">g</span>
-                            </div>
+                            {/* #8 & #9 single item sanity feedback */}
+                            {item.calories > 5000 && (
+                              <p className="text-[10px] text-rose-400 font-medium">
+                                This item is over 5,000 kcal. Check the quantity.
+                              </p>
+                            )}
+                            {currentGrams > 5000 && (
+                              <p className="text-[10px] text-rose-400 font-medium">
+                                That&apos;s over 5 kg of one item. Did you mean grams?
+                              </p>
+                            )}
                           </div>
                         );
                       })}
@@ -995,6 +1334,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
               <button
                 type="submit"
                 disabled={
+                  isSavingSmart ||
                   !smartFoodText.trim() ||
                   decipheredFood.items.length === 0 ||
                   decipheredFood.needsWeightConfirmation ||
@@ -1003,11 +1343,13 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                 className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
               >
                 <Check className="w-4 h-4" />
-                {decipheredFood.needsWeightConfirmation
-                  ? 'Confirm Item Weights Above to Save'
-                  : needsSanityConfirmation
-                  ? 'Confirm Unusual Quantity Above to Save'
-                  : 'Save Food'}
+                {isSavingSmart
+                  ? 'Calculating...'
+                  : decipheredFood.needsWeightConfirmation
+                    ? 'Confirm Item Weights Above to Save'
+                    : needsSanityConfirmation
+                      ? 'Confirm Unusual Quantity Above to Save'
+                      : 'Save Food'}
               </button>
             </form>
           )}
@@ -1116,6 +1458,12 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                 />
               </div>
 
+              {(manualError || inlineManualCalorieError || inlineManualWeightError) && (
+                <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300">
+                  {manualError || inlineManualCalorieError || inlineManualWeightError}
+                </div>
+              )}
+
               <button
                 type="submit"
                 className="w-full bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20 mt-2"
@@ -1189,10 +1537,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                     </div>
 
                     {isParsingRow === row.id && (
-                      <div className="flex items-center gap-1.5 text-[11px] text-zinc-400">
-                        <RefreshCw className="w-3 h-3 animate-spin text-teal-400" />
-                        <span>Parsing nutrition data...</span>
-                      </div>
+                      <div className="h-6 w-full bg-zinc-900 rounded-lg animate-pulse" />
                     )}
 
                     {row.isVague && (
@@ -1248,14 +1593,94 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                 </div>
               </div>
 
+              {recipeError && (
+                <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300">
+                  {recipeError}
+                </div>
+              )}
+
               <button
                 type="submit"
-                disabled={totalRecipeCalories === 0 || hasVagueIngredient}
+                disabled={isParsingRow !== null || totalRecipeCalories === 0 || hasVagueIngredient}
                 className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
               >
                 <Check className="w-4 h-4" />
-                {hasVagueIngredient ? 'Specify Vague Ingredients Above' : 'Save & Log Recipe'}
+                {isParsingRow !== null
+                  ? 'Calculating...'
+                  : hasVagueIngredient
+                    ? 'Specify Vague Ingredients Above'
+                    : 'Save & Log Recipe'}
               </button>
+
+              {/* #27 & #18 Saved Recipes List with Empty State, SwipeableItem, and 2-Step Delete Confirmation */}
+              <div className="pt-3 border-t border-zinc-800 space-y-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 block">
+                  Saved Recipes ({savedRecipes.length})
+                </span>
+                {savedRecipes.length === 0 ? (
+                  <div className="py-3 px-3 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                    No saved recipes yet. Create a recipe above to save it for future meals.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                    {savedRecipes.map((rec) => (
+                      <SwipeableItem
+                        key={rec.id}
+                        onDelete={() => setRecipeToDelete(rec)}
+                        options={[
+                          {
+                            label: 'Load recipe into builder',
+                            onClick: () => handleRecipeNameChange(rec.name)
+                          },
+                          {
+                            label: 'Delete saved recipe',
+                            onClick: () => setRecipeToDelete(rec),
+                            destructive: true
+                          }
+                        ]}
+                      >
+                        <div className="p-2.5 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between text-xs">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setRecipeName(rec.name);
+                              setIngredients(
+                                rec.ingredients.map((ing, idx) => ({
+                                  id: String(idx + 1),
+                                  raw: ing.raw || `${ing.amount}${ing.unit} ${ing.name}`,
+                                  name: ing.name,
+                                  amount: ing.amount,
+                                  unit: ing.unit,
+                                  calories: ing.calories,
+                                  carbs: ing.carbs,
+                                  fat: ing.fat,
+                                  protein: ing.protein,
+                                  isVague: false,
+                                  isParsed: true
+                                }))
+                              );
+                            }}
+                            className="text-left flex-1 truncate pr-2"
+                          >
+                            <span className="font-semibold text-zinc-200 block truncate">{rec.name}</span>
+                            <span className="text-[10px] font-mono text-teal-400">
+                              {rec.totalCalories} kcal · {rec.totalCarbs}c · {rec.totalFat}f · {rec.totalProtein}p
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRecipeToDelete(rec)}
+                            className="p-1.5 text-zinc-500 hover:text-rose-400 rounded-lg"
+                            aria-label={`Delete recipe ${rec.name}`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </SwipeableItem>
+                    ))}
+                  </div>
+                )}
+              </div>
             </form>
           )}
 
@@ -1295,14 +1720,28 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                     disabled={isSearchingPackaged || !packagedQuery.trim()}
                     className="px-4 py-1.5 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold text-xs rounded-xl flex items-center gap-1 transition-colors"
                   >
-                    {isSearchingPackaged ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : 'Search'}
+                    {isSearchingPackaged ? 'Calculating...' : 'Search'}
                   </button>
                 </div>
               </form>
 
-              {usdaStatusMsg && (
+              {isSearchingPackaged && (
+                <div className="space-y-2 animate-pulse">
+                  <div className="h-14 bg-zinc-950 border border-zinc-800 rounded-xl" />
+                  <div className="h-14 bg-zinc-950 border border-zinc-800 rounded-xl" />
+                  <div className="h-14 bg-zinc-950 border border-zinc-800 rounded-xl" />
+                </div>
+              )}
+
+              {!isSearchingPackaged && usdaStatusMsg && (
                 <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-400 text-center">
                   {usdaStatusMsg}
+                </div>
+              )}
+
+              {!isSearchingPackaged && !usdaStatusMsg && packagedResults.length === 0 && (
+                <div className="py-6 px-4 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                  Search by brand or food name above, or tap Scan to use your camera barcode scanner.
                 </div>
               )}
 
@@ -1416,11 +1855,19 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                     onClick={handleParseVoice}
                     className="w-full py-2 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5"
                   >
-                    {isAiBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-                    Parse Spoken Meal
+                    <Sparkles className="w-3.5 h-3.5" />
+                    {isAiBusy ? 'Calculating...' : 'Parse Spoken Meal'}
                   </button>
 
-                  {voiceResult && (
+                  {isAiBusy && (
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2 animate-pulse">
+                      <div className="h-4 w-2/3 bg-zinc-800 rounded" />
+                      <div className="h-3 w-1/2 bg-zinc-800 rounded" />
+                      <div className="h-8 w-full bg-zinc-900 rounded-lg" />
+                    </div>
+                  )}
+
+                  {!isAiBusy && voiceResult && (
                     <div className="p-3 bg-zinc-950 border border-teal-500/30 rounded-xl space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-zinc-100">{voiceResult.mealName}</span>
@@ -1462,17 +1909,24 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                   </label>
 
                   {platePreview && (
-                    <img src={platePreview} alt="Plate preview" className="w-full h-36 object-cover rounded-xl border border-zinc-800" />
+                    <SafeImage
+                      src={platePreview}
+                      alt="Plate preview"
+                      className="w-full h-36 object-cover rounded-xl border border-zinc-800"
+                      fallbackClassName="w-full h-36 rounded-xl"
+                    />
                   )}
 
                   {isAiBusy && (
-                    <div className="flex items-center justify-center gap-2 text-xs text-teal-400 py-2">
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Estimating plate ingredients and calories...</span>
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2 animate-pulse">
+                      <div className="h-4 w-1/2 bg-zinc-800 rounded" />
+                      <div className="h-3 w-full bg-zinc-900 rounded" />
+                      <div className="h-3 w-4/5 bg-zinc-900 rounded" />
+                      <div className="h-8 w-full bg-zinc-900 rounded-lg" />
                     </div>
                   )}
 
-                  {plateResult && (
+                  {!isAiBusy && plateResult && (
                     <div className="p-3 bg-zinc-950 border border-teal-500/30 rounded-xl space-y-2.5">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-zinc-100">{plateResult.mealName}</span>
@@ -1530,13 +1984,21 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                   <button
                     type="submit"
                     disabled={isAiBusy}
-                    className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5"
+                    className="w-full py-2 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5"
                   >
-                    {isAiBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Utensils className="w-3.5 h-3.5" />}
-                    Estimate Typical Portion
+                    <Utensils className="w-3.5 h-3.5" />
+                    {isAiBusy ? 'Calculating...' : 'Estimate Typical Portion'}
                   </button>
 
-                  {restaurantResult && (
+                  {isAiBusy && (
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2 animate-pulse">
+                      <div className="h-4 w-2/3 bg-zinc-800 rounded" />
+                      <div className="h-3 w-1/2 bg-zinc-900 rounded" />
+                      <div className="h-8 w-full bg-zinc-900 rounded-lg" />
+                    </div>
+                  )}
+
+                  {!isAiBusy && restaurantResult && (
                     <div className="p-3 bg-zinc-950 border border-teal-500/30 rounded-xl space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-zinc-100">{restaurantResult.name}</span>
@@ -1591,10 +2053,10 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                     <button
                       type="submit"
                       disabled={isAiBusy || !portionFood.trim()}
-                      className="flex-1 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs flex items-center justify-center gap-1"
+                      className="flex-1 py-2 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold rounded-xl text-xs flex items-center justify-center gap-1"
                     >
-                      {isAiBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Ruler className="w-3.5 h-3.5" />}
-                      Estimate Grams
+                      <Ruler className="w-3.5 h-3.5" />
+                      {isAiBusy ? 'Calculating...' : 'Estimate Grams'}
                     </button>
                     <label className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-teal-400 rounded-xl text-xs font-medium cursor-pointer flex items-center gap-1">
                       <Camera className="w-3.5 h-3.5" />
@@ -1620,7 +2082,15 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                     </label>
                   </div>
 
-                  {portionResult && (
+                  {isAiBusy && (
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2 animate-pulse">
+                      <div className="h-4 w-2/3 bg-zinc-800 rounded" />
+                      <div className="h-3 w-full bg-zinc-900 rounded" />
+                      <div className="h-8 w-full bg-zinc-900 rounded-lg" />
+                    </div>
+                  )}
+
+                  {!isAiBusy && portionResult && (
                     <div className="p-3 bg-zinc-950 border border-teal-500/30 rounded-xl space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-bold text-zinc-100">
@@ -1655,6 +2125,24 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={recipeToDelete !== null}
+        title="Delete Saved Recipe"
+        description={
+          recipeToDelete
+            ? `Are you sure you want to delete "${recipeToDelete.name}" from your saved recipes?`
+            : ''
+        }
+        confirmLabel="Delete Recipe"
+        secondStepLabel="Confirm Permanent Delete"
+        onClose={() => setRecipeToDelete(null)}
+        onConfirm={async () => {
+          if (!recipeToDelete) return;
+          await api.deleteSavedRecipe(recipeToDelete.id);
+          await loadSavedRecipes();
+        }}
+      />
 
       <BarcodeScannerModal
         isOpen={isScannerOpen}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Mail, Lock, ArrowRight, ArrowLeft, X, RefreshCw, Shield, LogOut, Check } from 'lucide-react';
+import { Mail, Lock, ArrowRight, ArrowLeft, X, RefreshCw, Shield, LogOut, Check, Eye, EyeOff } from 'lucide-react';
 import { api } from '../services/api.js';
+import { trackEvent } from '../utils/analytics.js';
 import { useApp } from '../context/AppContext.js';
 import {
   hasCompleteProfileStats,
@@ -10,6 +11,15 @@ import {
   calculateMacroTargets,
   calculateProjectedGoalDate
 } from '../utils/nutritionMath.js';
+import {
+  useDebounce,
+  validateEmail,
+  validateAge,
+  validateHeightCm,
+  validateHeightImperial,
+  validateWeight,
+  getPasswordStrength
+} from '../utils/validation.js';
 import type { UserProfile } from '../types/index.js';
 
 interface AuthModalProps {
@@ -76,7 +86,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const [mode, setMode] = useState<'signup' | 'login'>('signup');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [honeypot, setHoneypot] = useState('');
+  const [confirmedAgeGate, setConfirmedAgeGate] = useState(false);
+  const [isGoogleInputOpen, setIsGoogleInputOpen] = useState(false);
+  const [googleEmailInput, setGoogleEmailInput] = useState('');
   const [referralCode, setReferralCode] = useState('');
+  const [draft, setDraft] = useState<SignupDraft>(EMPTY_DRAFT);
+  const debouncedEmail = useDebounce(email, 400);
+  const debouncedDraft = useDebounce(draft, 400);
   const [rememberMe, setRememberMe] = useState<boolean>(() => {
     const saved = localStorage.getItem('caloriq_remember_me');
     return saved !== null ? saved === 'true' : true;
@@ -95,7 +113,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   // Multi-step signup state
   const [flowStage, setFlowStage] = useState<SignupFlowStage>('credentials');
   const [questionStep, setQuestionStep] = useState<number>(1);
-  const [draft, setDraft] = useState<SignupDraft>(EMPTY_DRAFT);
   const [savedMidFlowNotice, setSavedMidFlowNotice] = useState<string | null>(null);
   const [showClosePrompt, setShowClosePrompt] = useState(false);
 
@@ -268,13 +285,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = email.trim();
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setErrorMsg('Please enter a valid email address.');
+    const emailErr = validateEmail(cleanEmail);
+    if (emailErr) {
+      setErrorMsg(emailErr);
       return;
     }
     if (!password || password.length < 6) {
       setErrorMsg('Password must be at least 6 characters.');
       return;
+    }
+    if (mode === 'signup') {
+      if (!confirmedAgeGate) {
+        setErrorMsg('Please confirm that you are 13 years of age or older.');
+        return;
+      }
+      if (getPasswordStrength(password).score < 2) {
+        setErrorMsg('Password must be at least Fair strength.');
+        return;
+      }
     }
 
     localStorage.setItem('caloriq_remember_me', String(rememberMe));
@@ -283,7 +311,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
     try {
       if (mode === 'signup') {
-        const res = await api.sendSignupVerificationCode(cleanEmail, password);
+        const res = await api.sendSignupVerificationCode(cleanEmail, password, honeypot);
         setVerificationCode('');
         setIsCodeLocked(false);
         setResendCooldown(res.resendCooldownSeconds || 30);
@@ -390,8 +418,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const handleSendPasswordReset = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = email.trim();
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setErrorMsg('Please enter a valid email address.');
+    const emailErr = validateEmail(cleanEmail);
+    if (emailErr) {
+      setErrorMsg(emailErr);
       return;
     }
     setErrorMsg('');
@@ -435,14 +464,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   };
 
   // Check if current question step has a valid answer
+  const getStepValidationError = (): string | null => {
+    switch (questionStep) {
+      case 2:
+        return draft.age !== '' ? validateAge(draft.age) : 'Enter an age between 13 and 120.';
+      case 4:
+        if (draft.heightUnit === 'metric') {
+          return draft.heightCm !== '' ? validateHeightCm(draft.heightCm) : "That height doesn't look right.";
+        }
+        return draft.heightFt !== ''
+          ? validateHeightImperial(draft.heightFt, draft.heightIn || '0')
+          : "That height doesn't look right.";
+      case 5:
+        return draft.currentWeight !== ''
+          ? validateWeight(draft.currentWeight, draft.weightUnit)
+          : 'Enter a weight between 20 and 500 kg.';
+      case 6:
+        return draft.goalWeight !== ''
+          ? validateWeight(draft.goalWeight, draft.weightUnit)
+          : 'Enter a weight between 20 and 500 kg.';
+      default:
+        return null;
+    }
+  };
+
   const isCurrentStepValid = (): boolean => {
     switch (questionStep) {
       case 1:
         return draft.name.trim().length > 0;
-      case 2: {
-        const n = Number(draft.age);
-        return Number.isInteger(n) && n >= 13 && n <= 120;
-      }
+      case 2:
+        return validateAge(draft.age) === null;
       case 3:
         return (
           draft.gender === 'female' ||
@@ -450,11 +501,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
           draft.gender === 'prefer_not_to_say'
         );
       case 4:
-        return computedHeightCm >= 80 && computedHeightCm <= 270;
+        return draft.heightUnit === 'metric'
+          ? validateHeightCm(draft.heightCm) === null
+          : validateHeightImperial(draft.heightFt, draft.heightIn || '0') === null;
       case 5:
-        return computedCurrentWeightKg >= 20 && computedCurrentWeightKg <= 400;
+        return validateWeight(draft.currentWeight, draft.weightUnit) === null;
       case 6:
-        return computedGoalWeightKg >= 20 && computedGoalWeightKg <= 400;
+        return validateWeight(draft.goalWeight, draft.weightUnit) === null;
       case 7:
         return Boolean(draft.dailyActivity);
       case 8:
@@ -467,7 +520,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const handleNextQuestion = () => {
     setErrorMsg('');
     if (!isCurrentStepValid()) {
-      setErrorMsg('Please answer this question to continue.');
+      const stepErr = getStepValidationError();
+      setErrorMsg(stepErr || 'Please answer this question to continue.');
       return;
     }
     setSavedMidFlowNotice(null);
@@ -546,6 +600,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
       setShowClosePrompt(false);
       setSavedMidFlowNotice(null);
+      trackEvent('signup');
       closeAuthModal();
 
       if (typeof window !== 'undefined') {
@@ -752,7 +807,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                   required
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                 />
-                {draft.age !== '' && Number(draft.age) > 0 && Number(draft.age) < 18 && (
+                {debouncedDraft.age !== '' && validateAge(debouncedDraft.age) && (
+                  <p className="text-xs text-rose-400">{validateAge(debouncedDraft.age)}</p>
+                )}
+                {draft.age !== '' && Number(draft.age) >= 13 && Number(draft.age) < 18 && (
                   <div className="p-2.5 bg-amber-950/40 border border-amber-800/50 rounded-xl text-xs text-amber-300">
                     Use Caloriq with a parent or guardian.
                   </div>
@@ -842,56 +900,69 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 </div>
 
                 {draft.heightUnit === 'metric' ? (
-                  <div className="relative">
-                    <input
-                      type="number"
-                      min={80}
-                      max={270}
-                      step="any"
-                      value={draft.heightCm}
-                      onChange={(e) => saveDraftState({ ...draft, heightCm: e.target.value })}
-                      placeholder="Height in cm"
-                      autoFocus
-                      required
-                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 pr-12 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
-                    />
-                    <span className="absolute right-3.5 top-2.5 text-xs font-mono text-zinc-500">
-                      cm
-                    </span>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
                     <div className="relative">
                       <input
                         type="number"
-                        min={3}
-                        max={8}
-                        value={draft.heightFt}
-                        onChange={(e) => saveDraftState({ ...draft, heightFt: e.target.value })}
-                        placeholder="Feet"
+                        min={50}
+                        max={250}
+                        step="any"
+                        value={draft.heightCm}
+                        onChange={(e) => saveDraftState({ ...draft, heightCm: e.target.value })}
+                        placeholder="Height in cm (50–250)"
                         autoFocus
                         required
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 pr-10 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 pr-12 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                       />
                       <span className="absolute right-3.5 top-2.5 text-xs font-mono text-zinc-500">
-                        ft
+                        cm
                       </span>
                     </div>
-                    <div className="relative">
-                      <input
-                        type="number"
-                        min={0}
-                        max={11}
-                        value={draft.heightIn}
-                        onChange={(e) => saveDraftState({ ...draft, heightIn: e.target.value })}
-                        placeholder="Inches"
-                        required
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 pr-10 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
-                      />
-                      <span className="absolute right-3.5 top-2.5 text-xs font-mono text-zinc-500">
-                        in
-                      </span>
+                    {debouncedDraft.heightCm !== '' && validateHeightCm(debouncedDraft.heightCm) && (
+                      <p className="text-xs text-rose-400">{validateHeightCm(debouncedDraft.heightCm)}</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="relative">
+                        <input
+                          type="number"
+                          min={1}
+                          max={8}
+                          value={draft.heightFt}
+                          onChange={(e) => saveDraftState({ ...draft, heightFt: e.target.value })}
+                          placeholder="Feet"
+                          autoFocus
+                          required
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 pr-10 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                        />
+                        <span className="absolute right-3.5 top-2.5 text-xs font-mono text-zinc-500">
+                          ft
+                        </span>
+                      </div>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          min={0}
+                          max={11}
+                          value={draft.heightIn}
+                          onChange={(e) => saveDraftState({ ...draft, heightIn: e.target.value })}
+                          placeholder="Inches"
+                          required
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 pr-10 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                        />
+                        <span className="absolute right-3.5 top-2.5 text-xs font-mono text-zinc-500">
+                          in
+                        </span>
+                      </div>
                     </div>
+                    {debouncedDraft.heightFt !== '' &&
+                      validateHeightImperial(debouncedDraft.heightFt, debouncedDraft.heightIn || '0') && (
+                        <p className="text-xs text-rose-400">
+                          {validateHeightImperial(debouncedDraft.heightFt, debouncedDraft.heightIn || '0')}
+                        </p>
+                      )}
                   </div>
                 )}
               </div>
@@ -938,8 +1009,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 <div className="relative">
                   <input
                     type="number"
-                    min={20}
-                    max={900}
+                    min={draft.weightUnit === 'metric' ? 20 : 44}
+                    max={draft.weightUnit === 'metric' ? 500 : 1100}
                     step="0.1"
                     value={draft.currentWeight}
                     onChange={(e) => saveDraftState({ ...draft, currentWeight: e.target.value })}
@@ -952,6 +1023,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                     {draft.weightUnit === 'metric' ? 'kg' : 'lb'}
                   </span>
                 </div>
+                {debouncedDraft.currentWeight !== '' &&
+                  validateWeight(debouncedDraft.currentWeight, debouncedDraft.weightUnit) && (
+                    <p className="text-xs text-rose-400">
+                      {validateWeight(debouncedDraft.currentWeight, debouncedDraft.weightUnit)}
+                    </p>
+                  )}
               </div>
             )}
 
@@ -996,8 +1073,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 <div className="relative">
                   <input
                     type="number"
-                    min={20}
-                    max={900}
+                    min={draft.weightUnit === 'metric' ? 20 : 44}
+                    max={draft.weightUnit === 'metric' ? 500 : 1100}
                     step="0.1"
                     value={draft.goalWeight}
                     onChange={(e) => saveDraftState({ ...draft, goalWeight: e.target.value })}
@@ -1010,6 +1087,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                     {draft.weightUnit === 'metric' ? 'kg' : 'lb'}
                   </span>
                 </div>
+                {debouncedDraft.goalWeight !== '' &&
+                  validateWeight(debouncedDraft.goalWeight, debouncedDraft.weightUnit) && (
+                    <p className="text-xs text-rose-400">
+                      {validateWeight(debouncedDraft.goalWeight, debouncedDraft.weightUnit)}
+                    </p>
+                  )}
 
                 <p className="text-[11px] text-zinc-500">
                   If you&apos;re not sure yet, you can enter your current weight ({draft.currentWeight || '—'}{' '}
@@ -1374,8 +1457,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
             )}
 
             {resetSentSuccess ? (
-              <div className="p-3 bg-teal-950/40 border border-teal-500/40 rounded-xl text-xs text-teal-200 space-y-2">
-                <p>Password reset link sent to {email}. Check your inbox.</p>
+              <div role="status" aria-live="polite" className="p-3 bg-teal-950/40 border border-teal-500/40 rounded-xl text-xs text-teal-200 space-y-2">
+                <p>We sent a reset link to {email}. It expires in 1 hour.</p>
               </div>
             ) : (
               <form onSubmit={handleSendPasswordReset} className="space-y-4">
@@ -1442,15 +1525,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 <div className="relative">
                   <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
                   <input
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     value={newResetPassword}
                     onChange={(e) => setNewResetPassword(e.target.value)}
                     placeholder="At least 6 characters"
                     minLength={6}
                     required
                     autoFocus
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-200"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
@@ -1537,12 +1628,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 </div>
 
                 {errorMsg && (
-                  <div className="mb-4 p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+                  <div role="alert" aria-live="polite" className="mb-4 p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
                     {errorMsg}
                   </div>
                 )}
 
                 <form onSubmit={handleCredentialsSubmit} className="space-y-4">
+                  {/* #32 Hidden Honeypot Field */}
+                  <div className="sr-only" aria-hidden="true">
+                    <label htmlFor="caloriq-company-hp">Leave this field blank</label>
+                    <input
+                      id="caloriq-company-hp"
+                      type="text"
+                      name="company_website_hp"
+                      tabIndex={-1}
+                      autoComplete="off"
+                      value={honeypot}
+                      onChange={(e) => setHoneypot(e.target.value)}
+                    />
+                  </div>
                   <div>
                     <label className="block text-xs font-medium text-zinc-400 mb-1.5">
                       Email Address
@@ -1558,6 +1662,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                       />
                     </div>
+                    {debouncedEmail.trim() !== '' && validateEmail(debouncedEmail) && (
+                      <p className="text-[11px] text-rose-400 mt-1">
+                        {validateEmail(debouncedEmail)}
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -1582,15 +1691,75 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                     <div className="relative">
                       <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
                       <input
-                        type="password"
+                        type={showPassword ? 'text' : 'password'}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="At least 6 characters"
                         minLength={6}
                         required
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                       />
+                      {/* #23 Show/hide password toggle */}
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-200"
+                      >
+                        {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
                     </div>
+                    {/* #22 Password strength meter on signup */}
+                    {mode === 'signup' && password.length > 0 && (() => {
+                      const { strength, score } = getPasswordStrength(password);
+                      return (
+                        <div className="mt-2 space-y-1">
+                          <div className="grid grid-cols-3 gap-1.5 h-1.5">
+                            <div
+                              className={`rounded-full transition-colors ${
+                                score >= 1
+                                  ? score === 1
+                                    ? 'bg-rose-500'
+                                    : score === 2
+                                    ? 'bg-amber-400'
+                                    : 'bg-teal-400'
+                                  : 'bg-zinc-800'
+                              }`}
+                            />
+                            <div
+                              className={`rounded-full transition-colors ${
+                                score >= 2
+                                  ? score === 2
+                                    ? 'bg-amber-400'
+                                    : 'bg-teal-400'
+                                  : 'bg-zinc-800'
+                              }`}
+                            />
+                            <div
+                              className={`rounded-full transition-colors ${
+                                score >= 3 ? 'bg-teal-400' : 'bg-zinc-800'
+                              }`}
+                            />
+                          </div>
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span
+                              className={`font-mono font-semibold ${
+                                score === 1
+                                  ? 'text-rose-400'
+                                  : score === 2
+                                  ? 'text-amber-300'
+                                  : 'text-teal-400'
+                              }`}
+                            >
+                              {strength}
+                            </span>
+                            {score < 2 && (
+                              <span className="text-zinc-500">Minimum: Fair</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {mode === 'signup' && (
@@ -1608,6 +1777,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                     </div>
                   )}
 
+                  {mode === 'signup' && (
+                    <label className="flex items-start gap-2.5 p-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-300 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={confirmedAgeGate}
+                        onChange={(e) => setConfirmedAgeGate(e.target.checked)}
+                        aria-label="Are you 13 or older?"
+                        className="mt-0.5 accent-teal-500 rounded w-3.5 h-3.5 shrink-0"
+                      />
+                      <span>
+                        Are you 13 or older? I confirm I am at least 13 years of age (if under 18, use Caloriq with a parent or guardian).
+                      </span>
+                    </label>
+                  )}
+
                   <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer select-none">
                     <input
                       type="checkbox"
@@ -1620,7 +1804,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
                   <button
                     type="submit"
-                    disabled={isLoading}
+                    disabled={
+                      isLoading ||
+                      (mode === 'signup' && (getPasswordStrength(password).score < 2 || !confirmedAgeGate))
+                    }
                     className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
                   >
                     {isLoading ? (
@@ -1635,6 +1822,78 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                       </>
                     )}
                   </button>
+
+                  {/* #54 Google Sign-In alongside email/password */}
+                  <div className="pt-2 space-y-2">
+                    <div className="relative flex items-center justify-center">
+                      <div className="border-t border-zinc-800 w-full" />
+                      <span className="bg-zinc-900 px-2.5 text-[10px] font-mono uppercase text-zinc-400">
+                        or
+                      </span>
+                      <div className="border-t border-zinc-800 w-full" />
+                    </div>
+
+                    {!isGoogleInputOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (mode === 'signup' && !confirmedAgeGate) {
+                            setErrorMsg('Please confirm you are 13 or older first.');
+                            return;
+                          }
+                          setIsGoogleInputOpen(true);
+                        }}
+                        aria-label="Continue with Google"
+                        className="w-full py-2.5 px-3 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 rounded-xl text-xs font-semibold text-zinc-200 flex items-center justify-center gap-2 transition-colors"
+                      >
+                        <span className="w-4 h-4 rounded-full bg-teal-500/20 text-teal-300 font-bold text-[10px] flex items-center justify-center">
+                          G
+                        </span>
+                        <span>Continue with Google</span>
+                      </button>
+                    ) : (
+                      <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2">
+                        <label className="block text-[11px] font-medium text-zinc-300">
+                          Enter your Google email address
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="email"
+                            value={googleEmailInput}
+                            onChange={(e) => setGoogleEmailInput(e.target.value)}
+                            placeholder="you@gmail.com"
+                            aria-label="Google email address"
+                            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
+                          />
+                          <button
+                            type="button"
+                            disabled={isLoading || !googleEmailInput.includes('@')}
+                            onClick={async () => {
+                              setErrorMsg('');
+                              setIsLoading(true);
+                              try {
+                                const cleanG = googleEmailInput.trim().toLowerCase();
+                                const res = await api.googleSignIn(cleanG, cleanG.split('@')[0]);
+                                if (res.isNewUser) {
+                                  trackEvent('signup');
+                                }
+                                await onAuthSuccess();
+                                closeAuthModal();
+                                if (onAuthComplete) onAuthComplete();
+                              } catch (e: any) {
+                                setErrorMsg(e?.message || 'Google sign-in failed');
+                              } finally {
+                                setIsLoading(false);
+                              }
+                            }}
+                            className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-bold rounded-lg text-xs"
+                          >
+                            Continue
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </form>
               </>
             )}

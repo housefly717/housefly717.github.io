@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { t } from '../utils/i18n.js';
+import { getDateBounds } from '../utils/validation.js';
 
 export type TabType = 'diary' | 'fitness' | 'plan' | 'reports' | 'me';
 
@@ -30,29 +31,33 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
     openAuthModal,
     openGuestLock,
     isOnline,
-    fastingStartedAt,
-    fastingRemainingSec,
-    fastingPreset,
+    isSyncing,
+    saveStatus,
     language
   } = useApp();
 
-  const formatFastingCountdown = (sec: number) => {
-    const h = Math.floor(sec / 3600);
-    const m = Math.floor((sec % 3600) / 60);
-    const s = sec % 60;
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-  };
+  const { minDate, maxDate } = getDateBounds();
+  const isAtMaxDate = activeDate >= maxDate;
+  const isAtMinDate = activeDate <= minDate;
 
   const handlePrevDay = () => {
-    const d = new Date(activeDate);
+    if (isAtMinDate) return;
+    const d = new Date(activeDate + 'T00:00:00');
     d.setDate(d.getDate() - 1);
-    setActiveDate(d.toISOString().split('T')[0]);
+    const nextStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (nextStr >= minDate) {
+      setActiveDate(nextStr);
+    }
   };
 
   const handleNextDay = () => {
-    const d = new Date(activeDate);
+    if (isAtMaxDate) return;
+    const d = new Date(activeDate + 'T00:00:00');
     d.setDate(d.getDate() + 1);
-    setActiveDate(d.toISOString().split('T')[0]);
+    const nextStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (nextStr <= maxDate) {
+      setActiveDate(nextStr);
+    }
   };
 
   const formatDateDisplay = (dateStr: string) => {
@@ -85,6 +90,8 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
     onTabChange(tab);
   };
 
+  const effectiveSaveStatus = isSyncing && saveStatus !== 'error' ? 'saving' : saveStatus;
+
   return (
     <>
       {/* Top Header */}
@@ -100,19 +107,38 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
               <span className="w-2 h-2 rounded-full bg-teal-400 inline-block"></span>
               <span>Caloriq</span>
             </button>
-            {!isOnline && !isGuest && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-950/60 border border-amber-800/60 text-[10px] font-mono text-amber-300">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400"></span>
-                <span>{t('offlineWillSync', language)}</span>
-              </span>
-            )}
+            {/* #19 Auto-save indicator dot */}
+            <span
+              title={
+                effectiveSaveStatus === 'saving'
+                  ? 'Saving...'
+                  : effectiveSaveStatus === 'error'
+                  ? 'Save failed'
+                  : 'All changes saved'
+              }
+              aria-label={
+                effectiveSaveStatus === 'saving'
+                  ? 'Saving in progress'
+                  : effectiveSaveStatus === 'error'
+                  ? 'Save failed'
+                  : 'All changes saved'
+              }
+              className={`w-2 h-2 rounded-full inline-block transition-colors ${
+                effectiveSaveStatus === 'saving'
+                  ? 'bg-teal-400 animate-pulse'
+                  : effectiveSaveStatus === 'error'
+                  ? 'bg-red-500'
+                  : 'bg-zinc-500'
+              }`}
+            />
           </div>
 
           {/* Date Selector */}
           <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl px-1.5 py-1">
             <button
               onClick={handlePrevDay}
-              className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition-colors"
+              disabled={isAtMinDate}
+              className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:pointer-events-none rounded-lg transition-colors"
               aria-label="Previous day"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
@@ -124,6 +150,8 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
               <input
                 type="date"
                 aria-label="Select date"
+                min={minDate}
+                max={maxDate}
                 value={activeDate}
                 onChange={(e) => e.target.value && setActiveDate(e.target.value)}
                 className="absolute inset-0 opacity-0 cursor-pointer w-full"
@@ -132,7 +160,8 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
 
             <button
               onClick={handleNextDay}
-              className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition-colors"
+              disabled={isAtMaxDate}
+              className="p-1.5 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 disabled:opacity-30 disabled:pointer-events-none rounded-lg transition-colors"
               aria-label="Next day"
             >
               <ChevronRight className="w-3.5 h-3.5" />

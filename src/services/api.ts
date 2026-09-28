@@ -96,12 +96,29 @@ class ApiService {
   private token: string | null = null;
   private sse: EventSource | null = null;
   private syncListeners: Array<() => void> = [];
+  private saveStatusListeners: Array<(status: 'saved' | 'saving' | 'error') => void> = [];
+  private conflictListeners: Array<(date?: string) => void> = [];
+  private activeSaves = 0;
+  private lastLocalMutationAt = 0;
+  private tabId = `tab_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
   constructor() {
     this.token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
         this.flushOfflineQueue();
+      });
+      window.addEventListener('storage', (e) => {
+        if (e.key === 'caloriq_last_mutation' && e.newValue) {
+          try {
+            const parsed = JSON.parse(e.newValue);
+            if (parsed.tabId !== this.tabId && parsed.token && parsed.token === this.token) {
+              this.notifyConflict(parsed.date);
+            }
+          } catch {
+            // ignore
+          }
+        }
       });
     }
   }
@@ -140,6 +157,10 @@ class ApiService {
       this.sse.close();
       this.sse = null;
     }
+  }
+
+  logout() {
+    this.clearToken();
   }
 
   getOfflineQueue(): QueuedRequest[] {
@@ -196,6 +217,32 @@ class ApiService {
     };
   }
 
+  onSaveStatusChange(listener: (status: 'saved' | 'saving' | 'error') => void): () => void {
+    this.saveStatusListeners.push(listener);
+    return () => {
+      this.saveStatusListeners = this.saveStatusListeners.filter(l => l !== listener);
+    };
+  }
+
+  private notifySaveStatus(status: 'saved' | 'saving' | 'error') {
+    for (const listener of this.saveStatusListeners) {
+      listener(status);
+    }
+  }
+
+  onSyncConflict(listener: (date?: string) => void): () => void {
+    this.conflictListeners.push(listener);
+    return () => {
+      this.conflictListeners = this.conflictListeners.filter(l => l !== listener);
+    };
+  }
+
+  private notifyConflict(date?: string) {
+    for (const listener of this.conflictListeners) {
+      listener(date);
+    }
+  }
+
   private triggerSync() {
     for (const listener of this.syncListeners) {
       listener();
@@ -216,6 +263,10 @@ class ApiService {
         try {
           const data = JSON.parse(event.data);
           if (data.type === 'sync') {
+            if (Date.now() - this.lastLocalMutationAt > 1500) {
+              const conflictDate = data.payload?.date || data.payload?.targetDate;
+              this.notifyConflict(conflictDate);
+            }
             this.triggerSync();
           }
         } catch (e) {
@@ -231,6 +282,20 @@ class ApiService {
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}, skipQueue: boolean = false): Promise<T> {
+    const method = (options.method || 'GET').toUpperCase();
+    const isSaveMutation =
+      (method === 'POST' || method === 'PUT' || method === 'DELETE') &&
+      !endpoint.startsWith('/api/auth/') &&
+      !endpoint.startsWith('/api/ai/') &&
+      !endpoint.startsWith('/api/usda/') &&
+      !endpoint.startsWith('/api/recipes/parse-line');
+
+    if (isSaveMutation) {
+      this.lastLocalMutationAt = Date.now();
+      this.activeSaves++;
+      this.notifySaveStatus('saving');
+    }
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>)
@@ -247,14 +312,19 @@ class ApiService {
         headers
       });
     } catch (networkErr: any) {
+      if (isSaveMutation) {
+        this.activeSaves = Math.max(0, this.activeSaves - 1);
+      }
       if (endpoint.startsWith('/api/ai/')) {
         throw new Error('The AI is busy. Try again in a minute, or use Manual entry.');
       }
       // Offline mode fallback for POST/PUT/DELETE mutations (excluding auth)
-      const method = (options.method || 'GET').toUpperCase();
       if (!skipQueue && !endpoint.startsWith('/api/auth/') && (method === 'POST' || method === 'PUT' || method === 'DELETE')) {
         const parsedBody = options.body ? JSON.parse(String(options.body)) : undefined;
         this.enqueueOffline(endpoint, method, parsedBody);
+        if (isSaveMutation && this.activeSaves === 0) {
+          this.notifySaveStatus('saved');
+        }
         return {
           ...parsedBody,
           id: `offline_${Date.now()}`,
@@ -264,12 +334,19 @@ class ApiService {
           success: true
         } as unknown as T;
       }
+      if (isSaveMutation) {
+        this.notifySaveStatus('error');
+      }
       throw new Error(
         "Can't reach the server right now. Your data is saved on this device and will sync when you're back online."
       );
     }
 
     if (!res.ok) {
+      if (isSaveMutation) {
+        this.activeSaves = Math.max(0, this.activeSaves - 1);
+        this.notifySaveStatus('error');
+      }
       if (endpoint.startsWith('/api/ai/')) {
         throw new Error('The AI is busy. Try again in a minute, or use Manual entry.');
       }
@@ -281,7 +358,28 @@ class ApiService {
       throw customErr;
     }
 
-    return await res.json();
+    const result = await res.json();
+    if (isSaveMutation) {
+      this.activeSaves = Math.max(0, this.activeSaves - 1);
+      if (this.activeSaves === 0) {
+        this.notifySaveStatus('saved');
+      }
+      try {
+        const parsedBody = options.body ? JSON.parse(String(options.body)) : undefined;
+        localStorage.setItem(
+          'caloriq_last_mutation',
+          JSON.stringify({
+            tabId: this.tabId,
+            token: this.token,
+            date: parsedBody?.date,
+            ts: Date.now()
+          })
+        );
+      } catch {
+        // ignore
+      }
+    }
+    return result;
   }
 
   // Auth
@@ -368,15 +466,19 @@ class ApiService {
 
   async sendSignupVerificationCode(
     email: string,
-    password: string
+    password: string,
+    honeypot?: string
   ): Promise<{ sent: boolean; resendCooldownSeconds: number }> {
     const cleanEmail = email.trim().toLowerCase();
+    if (honeypot) {
+      throw new Error('Unable to process request.');
+    }
     let res: Response;
     try {
       res = await fetch('/api/auth/send-verification-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password })
+        body: JSON.stringify({ email: cleanEmail, password, honeypot })
       });
     } catch {
       throw new Error("Couldn't send the email. Try again in a minute.");
@@ -618,6 +720,7 @@ class ApiService {
     }
 
     localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
     this.setToken(existing.userId, false, rememberMe);
     return {
       userId: existing.userId,
@@ -950,6 +1053,10 @@ class ApiService {
     return this.request('/api/recipes');
   }
 
+  async getRecipes(): Promise<{ recipes: SavedRecipe[] }> {
+    return this.getSavedRecipes();
+  }
+
   async searchRecipe(name: string): Promise<{ recipe?: SavedRecipe }> {
     return this.request(`/api/recipes/search?name=${encodeURIComponent(name)}`);
   }
@@ -958,6 +1065,12 @@ class ApiService {
     return this.request('/api/recipes', {
       method: 'POST',
       body: JSON.stringify(recipe)
+    });
+  }
+
+  async deleteSavedRecipe(id: string): Promise<{ success: boolean }> {
+    return this.request(`/api/recipes/${id}`, {
+      method: 'DELETE'
     });
   }
 
@@ -990,6 +1103,18 @@ class ApiService {
   async deleteTemplate(id: string): Promise<{ success: boolean }> {
     return this.request(`/api/meal-templates/${id}`, {
       method: 'DELETE'
+    });
+  }
+
+  async restoreTemplate(
+    nameOrTemplate: string | MealTemplate,
+    items?: MealTemplate['items']
+  ): Promise<MealTemplate> {
+    const name = typeof nameOrTemplate === 'string' ? nameOrTemplate : nameOrTemplate.name;
+    const resolvedItems = typeof nameOrTemplate === 'string' ? (items || []) : nameOrTemplate.items;
+    return this.request('/api/meal-templates/restore', {
+      method: 'POST',
+      body: JSON.stringify({ name, items: resolvedItems })
     });
   }
 
@@ -1056,6 +1181,165 @@ class ApiService {
     return this.request('/api/clear', {
       method: 'POST'
     });
+  }
+
+  async deleteAccount(password?: string): Promise<{ success: boolean; message: string }> {
+    return this.request('/api/delete-account', {
+      method: 'POST',
+      body: JSON.stringify({ password })
+    });
+  }
+
+  // #54 Google Sign-In alternative
+  async loginWithGoogle(email: string, name: string, rememberMe = true): Promise<AuthResponse> {
+    const guestId = localStorage.getItem(GUEST_KEY);
+    const data = await this.request<AuthResponse>('/api/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ email, name, guestId })
+    });
+    this.setToken(data.token, rememberMe);
+    localStorage.removeItem(GUEST_KEY);
+    if (data.email) {
+      localStorage.setItem('caloriq_user_email', data.email);
+      localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+    }
+    return data;
+  }
+
+  // #58 Demo Mode on landing page
+  async startDemoMode(): Promise<AuthResponse> {
+    const data = await this.request<AuthResponse>('/api/auth/demo', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    this.setToken(data.token, false);
+    return data;
+  }
+
+  // #52 & #31 Sessions & Sign out all devices
+  async getSessions(): Promise<{
+    sessions: Array<{
+      id: string;
+      userId: string;
+      deviceName: string;
+      city: string;
+      createdAt: number;
+      lastActiveAt: number;
+    }>;
+  }> {
+    return this.request('/api/auth/sessions');
+  }
+
+  async revokeSession(sessionId: string): Promise<{ success: boolean }> {
+    return this.request(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE'
+    });
+  }
+
+  async signOutAllDevices(): Promise<{ success: boolean; revokedCount: number }> {
+    return this.request('/api/auth/signout-all', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+
+  // #49 Email change flow
+  async changeEmail(oldEmail: string, newEmail: string, password?: string): Promise<{ success: boolean; email: string }> {
+    const res = await this.request<{ success: boolean; email: string }>('/api/auth/change-email', {
+      method: 'POST',
+      body: JSON.stringify({ oldEmail, newEmail, password })
+    });
+    if (res.email) {
+      localStorage.setItem('caloriq_user_email', res.email);
+    }
+    return res;
+  }
+
+  // #50 Password change flow
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+    confirmNewPassword: string
+  ): Promise<{ success: boolean; message: string }> {
+    return this.request('/api/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ currentPassword, newPassword, confirmNewPassword })
+    });
+  }
+
+  // #79 & #80 Restore from backup JSON
+  async restoreFromBackup(migratedPayload: any): Promise<{
+    success: boolean;
+    restoredCounts: { diary: number; exercises: number; weights: number };
+  }> {
+    return this.request('/api/import', {
+      method: 'POST',
+      body: JSON.stringify(migratedPayload)
+    });
+  }
+
+  // #34 Cookie consent logging with timestamp & IP
+  async logCookieConsent(choice: 'accepted' | 'declined'): Promise<{ success: boolean; timestamp: string }> {
+    return this.request('/api/compliance/cookie-consent', {
+      method: 'POST',
+      body: JSON.stringify({ choice })
+    });
+  }
+
+  // #46 Contact page submission
+  async submitContactForm(payload: {
+    name: string;
+    email: string;
+    subject: string;
+    message: string;
+  }): Promise<{ success: boolean; id: string; emailed: boolean }> {
+    return this.request('/api/contact', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  }
+
+  // #47 Report a bug submission
+  async submitBugReport(payload: {
+    whatHappened: string;
+    whatExpected: string;
+  }): Promise<{ success: boolean; id: string }> {
+    return this.request('/api/bug-report', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+  }
+
+  // #75 & #77 Version & maintenance check
+  async getSystemVersion(): Promise<{
+    version: string;
+    buildId: string;
+    maintenance: { enabled: boolean; message: string };
+  }> {
+    return this.request('/api/version');
+  }
+
+  // #44 Admin analytics summary
+  async getAdminAnalytics(password: string): Promise<any> {
+    const res = await fetch(`/api/admin/analytics?password=${encodeURIComponent(password)}`, {
+      headers: { 'x-admin-password': password }
+    });
+    if (!res.ok) throw new Error('Unauthorized');
+    return res.json();
+  }
+
+  async setAdminMaintenance(
+    password: string,
+    enabled: boolean,
+    message: string
+  ): Promise<{ success: boolean; maintenance: { enabled: boolean; message: string } }> {
+    const res = await fetch('/api/admin/maintenance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, enabled, message })
+    });
+    if (!res.ok) throw new Error('Failed to update maintenance status');
+    return res.json();
   }
 
   // USDA

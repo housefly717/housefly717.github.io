@@ -21,9 +21,13 @@ import {
 } from 'lucide-react';
 
 interface DescriptionPageProps {
-  onOpenApp: (initialAction?: 'guest' | 'login' | 'program', programSlug?: string) => void;
+  onOpenApp: (initialAction?: 'guest' | 'login' | 'program' | 'demo', programSlug?: string) => void;
   onOpenPrivacy?: () => void;
   onOpenTerms?: () => void;
+  onOpenCookies?: () => void;
+  onOpenFaq?: () => void;
+  onOpenContact?: () => void;
+  onOpenPress?: () => void;
 }
 
 const STEPS = [
@@ -224,10 +228,15 @@ const FAQ = [
 export const DescriptionPage: React.FC<DescriptionPageProps> = ({
   onOpenApp,
   onOpenPrivacy,
-  onOpenTerms
+  onOpenTerms,
+  onOpenCookies,
+  onOpenFaq,
+  onOpenContact,
+  onOpenPress
 }) => {
   const [selectedGoal, setSelectedGoal] = useState<string>('all');
   const [openFaq, setOpenFaq] = useState<string | null>(null);
+  const [isLoadingDemo, setIsLoadingDemo] = useState(false);
 
   const filteredCatalog = CATALOG.filter((item) => {
     if (selectedGoal === 'all') return true;
@@ -241,6 +250,9 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
 
   return (
     <div className="min-h-screen bg-[var(--background)] text-[var(--foreground)] selection:bg-[var(--chart-1)]/20 selection:text-[var(--chart-1)]">
+      <a href="#main-content" className="skip-to-content">
+        Skip to main content
+      </a>
       {/* Radial ambient background glow */}
       <div
         aria-hidden="true"
@@ -296,7 +308,7 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
         </header>
 
         {/* Hero Section */}
-        <section className="grid items-center gap-12 py-12 lg:grid-cols-[1.05fr_0.95fr] lg:py-20">
+        <section id="main-content" className="grid items-center gap-12 py-12 lg:grid-cols-[1.05fr_0.95fr] lg:py-20">
           <div>
             <span className="eyebrow">
               <span className="size-1.5 rounded-full bg-teal-400" />
@@ -307,12 +319,13 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
               Weight management, properly measured.
             </h1>
 
-            <p className="mt-6 max-w-xl text-[15px] leading-relaxed text-zinc-400">
+            <p className="mt-6 max-w-xl text-[15px] leading-relaxed text-zinc-300">
               Precise calorie and macro tracking, calculated from your own body. Lose, maintain or gain weight on targets you can check yourself — then watch the trend hold, week after week, over numbers rather than a stranger&apos;s guess.
             </p>
 
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <button
+                type="button"
                 onClick={() => onOpenApp('guest')}
                 className="flex h-12 items-center gap-2 rounded-xl bg-teal-500 px-6 font-medium text-zinc-950 shadow-lg shadow-teal-500/25 transition-all hover:bg-teal-400 active:scale-95"
               >
@@ -320,15 +333,28 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
                 <ArrowRight className="size-4" />
               </button>
 
+              <button
+                type="button"
+                disabled={isLoadingDemo}
+                onClick={() => {
+                  setIsLoadingDemo(true);
+                  onOpenApp('demo');
+                }}
+                aria-label="Try interactive demo with 7 days of sample data"
+                className="flex h-12 items-center gap-2 rounded-xl border border-teal-500/40 bg-teal-500/10 px-5 text-sm font-semibold text-teal-300 transition-colors hover:bg-teal-500/20"
+              >
+                <span>{isLoadingDemo ? 'Loading demo...' : 'Try Demo (7 days sample data)'}</span>
+              </button>
+
               <a
                 href="#programs"
-                className="flex h-12 items-center rounded-xl border border-zinc-700/80 bg-zinc-900/60 px-6 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-800/80"
+                className="flex h-12 items-center rounded-xl border border-zinc-700/80 bg-zinc-900/60 px-5 text-sm font-medium text-zinc-200 transition-colors hover:border-zinc-500 hover:bg-zinc-800/80"
               >
                 Browse the programs
               </a>
             </div>
 
-            <div className="mt-8 grid gap-2.5 text-xs text-zinc-400">
+            <div className="mt-8 grid gap-2.5 text-xs text-zinc-300">
               <span className="flex items-center gap-2">
                 <Calculator className="size-3.5 text-teal-400" />
                 Self-guided — you set your targets, the app does the maths.
@@ -336,6 +362,10 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
               <span className="flex items-center gap-2">
                 <Lock className="size-3.5 text-teal-400" />
                 Everything is free. No card, no trial, nothing that renews.
+              </span>
+              <span className="flex items-center gap-2 text-teal-300 font-medium">
+                <ShieldCheck className="size-3.5 text-teal-400" />
+                Built by someone who lost 8 kg using this exact system.
               </span>
             </div>
           </div>
@@ -799,7 +829,7 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
               <span className="text-zinc-300">Caloriq — calorie and macro tracking.</span>
             </div>
 
-            <div className="flex items-center gap-2 text-zinc-400">
+            <div className="flex flex-wrap items-center gap-2 text-zinc-400">
               <a
                 href="/privacy"
                 onClick={(e) => {
@@ -827,7 +857,52 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
               </a>
               <span>·</span>
               <a
-                href="mailto:housefly@mail2world.com"
+                href="/cookies"
+                onClick={(e) => {
+                  if (onOpenCookies) {
+                    e.preventDefault();
+                    onOpenCookies();
+                  }
+                }}
+                className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
+              >
+                Cookies
+              </a>
+              <span>·</span>
+              <a
+                href="/faq"
+                onClick={(e) => {
+                  if (onOpenFaq) {
+                    e.preventDefault();
+                    onOpenFaq();
+                  }
+                }}
+                className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
+              >
+                FAQ
+              </a>
+              <span>·</span>
+              <a
+                href="/press"
+                onClick={(e) => {
+                  if (onOpenPress) {
+                    e.preventDefault();
+                    onOpenPress();
+                  }
+                }}
+                className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
+              >
+                Press
+              </a>
+              <span>·</span>
+              <a
+                href="/contact"
+                onClick={(e) => {
+                  if (onOpenContact) {
+                    e.preventDefault();
+                    onOpenContact();
+                  }
+                }}
                 className="text-teal-400 underline underline-offset-4 transition-colors hover:text-teal-300"
               >
                 Contact

@@ -21,7 +21,7 @@ export interface FoodItem {
   unusualQuantity?: boolean;
   loggedHour?: number; // 0-23
   costEstimate?: number;
-  source?: 'manual' | 'recipe' | 'packaged' | 'saved' | 'plan' | 'voice' | 'photo' | 'restaurant';
+  source?: 'manual' | 'recipe' | 'packaged' | 'usda' | 'saved' | 'plan' | 'voice' | 'photo' | 'restaurant';
   createdAt: number;
 }
 

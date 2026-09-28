@@ -24,7 +24,9 @@ export interface DecipheredFoodItem {
   rawText: string;
   name: string;
   grams: number;
+  isEstimatedWeight?: boolean;
   needsWeightConfirmation?: boolean;
+  notes?: string;
   isOver5kg?: boolean;
   kgAmount?: number;
   suggestedGrams?: number;
@@ -46,6 +48,8 @@ export interface DecipheredFoodItem {
   sodiumMgPer100g: number;
   category: 'produce' | 'protein' | 'dairy' | 'grain' | 'fat' | 'seasoning' | 'processed' | 'beverage';
 }
+
+export type MealContextType = 'breakfast' | 'lunch' | 'dinner' | 'snack';
 
 export interface DecipheredFoodResult {
   mealSummaryName: string;
@@ -551,6 +555,20 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     defaultUnitLabel: '1 wedge',
     category: 'produce'
   },
+  {
+    name: 'Dried Prunes',
+    keywords: ['dried prunes', 'prunes', 'prune', 'dried plums', 'plum', 'plums'],
+    caloriesPer100g: 135,
+    proteinPer100g: 2.2,
+    carbsPer100g: 31.0,
+    fatPer100g: 0.4,
+    fiberPer100g: 7.1,
+    sugarPer100g: 18.0,
+    sodiumMgPer100g: 2,
+    defaultGrams: 60,
+    defaultUnitLabel: '60g (estimated)',
+    category: 'produce'
+  },
 
   // Yogurt & Dairy (including common typos like "yougurt", "yoghurt", "yogart")
   {
@@ -639,16 +657,16 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
   },
   {
     name: 'Milk',
-    keywords: ['milk', 'whole milk', 'cow milk', 'semi skimmed milk'],
-    caloriesPer100g: 61,
-    proteinPer100g: 3.2,
-    carbsPer100g: 4.8,
-    fatPer100g: 3.3,
+    keywords: ['milk', 'whole milk', 'cow milk', 'semi skimmed milk', 'low fat milk', 'skim milk'],
+    caloriesPer100g: 42,
+    proteinPer100g: 3.4,
+    carbsPer100g: 5.0,
+    fatPer100g: 1.0,
     fiberPer100g: 0,
     sugarPer100g: 5.0,
-    sodiumMgPer100g: 43,
-    defaultGrams: 240,
-    defaultUnitLabel: '1 cup (240ml)',
+    sodiumMgPer100g: 44,
+    defaultGrams: 200,
+    defaultUnitLabel: '200g (estimated)',
     category: 'dairy'
   },
   {
@@ -938,8 +956,22 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
 
   // Grains, Breads, Legumes
   {
-    name: 'Rolled Oats / Oatmeal',
-    keywords: ['oats', 'oatmeal', 'oatmel', 'rolled oats', 'porridge', 'overnight oats'],
+    name: 'Oatmeal',
+    keywords: ['oatmeal', 'oatmel', 'cooked oatmeal', 'porridge', 'cooked oats', 'overnight oats'],
+    caloriesPer100g: 78,
+    proteinPer100g: 2.8,
+    carbsPer100g: 13.5,
+    fatPer100g: 1.5,
+    fiberPer100g: 2.1,
+    sugarPer100g: 0.5,
+    sodiumMgPer100g: 4,
+    defaultGrams: 150,
+    defaultUnitLabel: '150g (estimated)',
+    category: 'grain'
+  },
+  {
+    name: 'Rolled Oats',
+    keywords: ['oats', 'rolled oats', 'dry oats', 'raw oats'],
     caloriesPer100g: 389,
     proteinPer100g: 16.9,
     carbsPer100g: 66.3,
@@ -948,7 +980,7 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     sugarPer100g: 0.9,
     sodiumMgPer100g: 2,
     defaultGrams: 50,
-    defaultUnitLabel: '50g dry',
+    defaultUnitLabel: '50g (estimated)',
     category: 'grain'
   },
   {
@@ -1404,34 +1436,68 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
   let amount = 1;
   let unit = '';
   let foodPhrase = raw;
+  let hasUserExplicitWeight = false;
 
-  const explicitUnitMatch = raw.match(
+  const parseQtyToken = (rawQty: string): number => {
+    const q = (rawQty || '1').toLowerCase().trim();
+    if (q.includes('/')) {
+      const [n, d] = q.split('/');
+      return parseFloat(n) / (parseFloat(d) || 1);
+    }
+    return WORD_NUMBERS[q] ?? (parseFloat(q.replace(',', '.')) || 1);
+  };
+
+  // 1. Check quantity + unit at START: e.g. "60g dried prunes", "200ml milk", "2 slices bread"
+  const leadingUnitMatch = raw.match(
     /^(?:(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|half|quarter|\d+(?:[.,/]\d+)?)\s*)?(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|slices?)\b\s*(?:of\s+)?(.+)$/i
   );
 
-  if (explicitUnitMatch && explicitUnitMatch[3]) {
-    const rawQty = (explicitUnitMatch[1] || '1').toLowerCase();
-    if (rawQty.includes('/')) {
-      const [n, d] = rawQty.split('/');
-      amount = parseFloat(n) / (parseFloat(d) || 1);
-    } else {
-      amount = WORD_NUMBERS[rawQty] ?? (parseFloat(rawQty.replace(',', '.')) || 1);
-    }
-    unit = explicitUnitMatch[2].toLowerCase();
-    foodPhrase = explicitUnitMatch[3].trim();
+  // 2. Check quantity + unit at END or in parens: e.g. "oatmeal 150g", "milk 200g", "milk (200ml)", "oatmeal - 150g"
+  const trailingUnitMatch = !leadingUnitMatch
+    ? raw.match(
+        /^(.+?)[,\s\-–(]+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|half|quarter|\d+(?:[.,/]\d+)?)\s*(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|slices?)\)?$/i
+      )
+    : null;
+
+  // 3. Check quantity + unit in MIDDLE: e.g. "oatmeal 150g cooked"
+  const middleUnitMatch = !leadingUnitMatch && !trailingUnitMatch
+    ? raw.match(
+        /^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?)\b\s+(.+)$/i
+      )
+    : null;
+
+  if (leadingUnitMatch && leadingUnitMatch[3]) {
+    amount = parseQtyToken(leadingUnitMatch[1] || '1');
+    unit = leadingUnitMatch[2].toLowerCase();
+    foodPhrase = leadingUnitMatch[3].trim();
+    hasUserExplicitWeight = true;
+  } else if (trailingUnitMatch && trailingUnitMatch[1]) {
+    foodPhrase = trailingUnitMatch[1].trim();
+    amount = parseQtyToken(trailingUnitMatch[2] || '1');
+    unit = trailingUnitMatch[3].toLowerCase();
+    hasUserExplicitWeight = true;
+  } else if (middleUnitMatch && middleUnitMatch[1]) {
+    foodPhrase = `${middleUnitMatch[1]} ${middleUnitMatch[4]}`.trim();
+    amount = parseQtyToken(middleUnitMatch[2] || '1');
+    unit = middleUnitMatch[3].toLowerCase();
+    hasUserExplicitWeight = true;
   } else {
-    // Check leading number/word without unit, e.g. "3 raspberries", "2 eggs", "half an avocado"
-    const countMatch = raw.match(/^(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|forty|fifty|half|quarter|\d+(?:[.,/]\d+)?)\s+(?:of\s+|an?\s+)?(.+)$/i);
-    if (countMatch) {
-      const rawQty = countMatch[1].toLowerCase();
-      if (rawQty.includes('/')) {
-        const [n, d] = rawQty.split('/');
-        amount = parseFloat(n) / (parseFloat(d) || 1);
-      } else {
-        amount = WORD_NUMBERS[rawQty] ?? (parseFloat(rawQty.replace(',', '.')) || 1);
-      }
+    // Check leading or trailing bare number without unit, e.g. "3 raspberries", "2 eggs", "eggs 2"
+    const leadingCountMatch = raw.match(
+      /^(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|forty|fifty|half|quarter|\d+(?:[.,/]\d+)?)\s+(?:of\s+|an?\s+)?(.+)$/i
+    );
+    const trailingCountMatch = !leadingCountMatch
+      ? raw.match(/^(.+?)\s*[x×\-]?\s*(\d+(?:[.,]\d+)?)$/i)
+      : null;
+
+    if (leadingCountMatch) {
+      amount = parseQtyToken(leadingCountMatch[1]);
       unit = 'piece';
-      foodPhrase = countMatch[2].trim();
+      foodPhrase = leadingCountMatch[2].trim();
+    } else if (trailingCountMatch) {
+      foodPhrase = trailingCountMatch[1].trim();
+      amount = parseQtyToken(trailingCountMatch[2]);
+      unit = 'piece';
     } else {
       amount = 1;
       unit = 'piece';
@@ -1440,12 +1506,13 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
   }
 
   const matched = findBestFoodMatch(foodPhrase);
-  // Always log the food name the user actually typed (e.g. "Raspberries", "Honey")
   const displayName = formatTypedFoodName(foodPhrase);
 
   let grams = 0;
+  let isEstimatedWeight = false;
   let needsWeightConfirmation = false;
   let servingLabel = '';
+  let notes: string | undefined;
 
   if (unit === 'g' || unit === 'gram' || unit === 'grams') {
     grams = amount;
@@ -1472,20 +1539,26 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     grams = Math.round(amount * 5);
     servingLabel = `${amount} tsp (${grams}g)`;
   } else {
-    // Count or bare item: check the explicit known per-item weight table
+    // Count or bare item: check the known per-item weight table OR real-food database defaultGrams
     const knownPieceGrams = getKnownPerItemWeight(foodPhrase, unit);
     if (knownPieceGrams !== null) {
       grams = Math.round(amount * knownPieceGrams * 10) / 10;
-      if (unit === 'slice' || unit === 'slices') {
-        servingLabel = `${amount} slice${amount > 1 ? 's' : ''} (${grams}g)`;
-      } else {
-        servingLabel = `${amount} × ${displayName} (${grams}g)`;
-      }
+      isEstimatedWeight = !hasUserExplicitWeight;
+      servingLabel = isEstimatedWeight
+        ? `${grams}g (estimated)`
+        : `${amount} slice${amount > 1 ? 's' : ''} (${grams}g)`;
+    } else if (matched && matched.defaultGrams > 0) {
+      grams = Math.round(amount * matched.defaultGrams * 10) / 10;
+      isEstimatedWeight = true;
+      needsWeightConfirmation = false;
+      servingLabel = `${grams}g (estimated)`;
     } else {
-      // Never assume a default of 100g per item. Return grams: 0 and ask the user to confirm.
+      // Only show confirm weight when the user gave NO weight AND the AI could not estimate one
       grams = 0;
+      isEstimatedWeight = false;
       needsWeightConfirmation = true;
-      servingLabel = 'Confirm weight (g)';
+      servingLabel = 'How much?';
+      notes = `Could not estimate weight for "${displayName}" automatically — please enter weight in grams.`;
     }
   }
 
@@ -1503,7 +1576,9 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
       rawText: raw,
       name: displayName,
       grams: roundedGrams,
+      isEstimatedWeight,
       needsWeightConfirmation,
+      notes,
       isOver5kg,
       kgAmount,
       suggestedGrams,
@@ -1527,12 +1602,17 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     };
   }
 
-  // Fallback for unrecognized custom items (never default to 100g if weight wasn't provided)
+  if (!notes) {
+    notes = `Unrecognized item "${displayName}" — estimated using standard mixed-food macros (135 kcal/100g).`;
+  }
+
   return {
     rawText: raw,
     name: displayName,
     grams: roundedGrams,
+    isEstimatedWeight,
     needsWeightConfirmation,
+    notes,
     isOver5kg,
     kgAmount,
     suggestedGrams,
@@ -1556,9 +1636,79 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
   };
 }
 
+const MEAL_PROTEIN_PHRASES: Record<MealContextType, string[]> = {
+  breakfast: [
+    'Add a breakfast protein like 150g Greek yogurt, 2 eggs, or cottage cheese to turn this into a filling morning meal.',
+    'Boost morning protein with a scoop of protein powder, scrambled eggs, or Greek yogurt to steady energy until lunch.',
+    'Pair this with cottage cheese, smoked salmon, or a tofu scramble to reach 20–25g of breakfast protein.',
+    'Round out your breakfast with 2 poached eggs or 150g skyr/Greek yogurt for stronger satiety.',
+    'Stir in a scoop of protein powder or add a side of Greek yogurt and eggs so breakfast keeps you full longer.',
+    'Include smoked salmon, cottage cheese, or tofu scramble alongside this to hit a solid morning protein target.',
+    'Top with Greek yogurt or serve with 2 boiled eggs to balance morning carbohydrates with protein.'
+  ],
+  lunch: [
+    'Add 120g grilled chicken, fish, tofu, or lentils to bring lunch up to 25–30g of protein.',
+    'Pair this with lean beef, tempeh, or black beans so your midday meal sustains afternoon focus.',
+    'Include a hearty protein source like baked fish, chicken breast, or spiced lentils to make lunch more filling.',
+    'Round out lunch with 120g tofu, tempeh, or grilled chicken to improve protein density.',
+    'Toss in chickpeas, beans, or flaked tuna/salmon to anchor this lunch with steady protein.',
+    'Add a serving of lean beef, fish, or lentils alongside this to support muscle maintenance through the afternoon.',
+    'Balance your lunch macros by adding grilled chicken, firm tofu, or a scoop of cooked beans.'
+  ],
+  dinner: [
+    'Add 140g salmon, chicken, lean beef, or tempeh to anchor dinner with 25–35g of protein.',
+    'Pair this evening meal with baked white fish, tofu, or lentils for overnight recovery and satiety.',
+    'Include a main protein like grilled chicken, lean steak, or beans and lentils to complete dinner.',
+    'Round out dinner with seared tofu, tempeh, or fish so the meal is balanced and satisfying.',
+    'Add 130g lean beef, poultry, or a hearty lentil-bean mix to hit your evening protein target.',
+    'Serve alongside baked fish, chicken breast, or crispy tofu to boost dinner protein density.',
+    'Strengthen this dinner with tempeh, beans, or lean meat so you don’t get late-night hunger.'
+  ],
+  snack: [
+    'Pair this snack with Greek yogurt, cottage cheese, or a hard boiled egg to keep hunger at bay.',
+    'Add a handful of nuts, hummus, or beef/turkey jerky for a more satisfying, protein-rich snack.',
+    'Include 100g cottage cheese, a boiled egg, or Greek yogurt so this snack holds you over.',
+    'Combine with a spoonful of hummus, a small handful of almonds, or jerky to slow digestion.',
+    'Make this snack more filling by adding Greek yogurt, hard boiled eggs, or a few walnuts.',
+    'Boost snack protein with cottage cheese, jerky, or nuts and seeds for steadier afternoon energy.'
+  ]
+};
+
+const HEALTHY_FAT_PHRASES = [
+  'Add 10–15g of healthy fats (chia seeds, flaxseeds, or crushed walnuts) to slow digestion and help absorb fat-soluble vitamins.',
+  'Sprinkle 1 tbsp of hemp seeds, chia, or sliced almonds on top for omega-3s and steadier energy.',
+  'Include a small handful of nuts or a drizzle of olive/avocado oil to round out essential fatty acids.',
+  'Top with pumpkin seeds, flax, or a spoonful of nut butter to add healthy unsaturated fats.',
+  'Pair with ¼ avocado or 12g of mixed seeds so the meal digests more gradually.',
+  'Add crushed almonds, walnuts, or chia seeds to bring healthy fats into balance.'
+];
+
+const PRODUCE_FIBER_PHRASES = [
+  'Add 80–100g of fresh berries, sliced fruit, or leafy greens for extra fiber and micronutrients.',
+  'Pair with a handful of spinach, broccoli, or fresh berries to boost volume and dietary fiber.',
+  'Include a side of colourful vegetables or whole fruit to increase antioxidants and gut-friendly fiber.',
+  'Toss in berries, sliced apple, or steamed greens to add natural fiber and potassium.',
+  'Round out the plate with 100g of fresh produce to lift fiber above 4g for the meal.',
+  'Add a serving of fruit or crisp vegetables to improve micronutrient density and fullness.'
+];
+
+const BALANCED_ADD_PHRASES = [
+  'A glass of water alongside this meal — your protein, fiber, and whole-food balance already look solid.',
+  'Fresh herbs, lemon zest, or cinnamon for extra antioxidants — your macro split is already well balanced.',
+  'Nothing major needed — pair with water or green tea; protein and fiber are right on track.',
+  'A sprinkle of seeds or fresh herbs if you like — this meal already hits a strong macro balance.',
+  'Just a glass of water — your meal size, protein density, and fiber are well proportioned.'
+];
+
+function pickPhrase(phrases: string[], seed: number): string {
+  const idx = Math.abs(seed) % phrases.length;
+  return phrases[idx];
+}
+
 export function buildDecipheredFoodSummary(
   items: DecipheredFoodItem[],
-  dailyCalorieGoal?: number
+  dailyCalorieGoal?: number,
+  mealType: MealContextType = 'breakfast'
 ): DecipheredFoodResult {
   const hasKnownGoal = typeof dailyCalorieGoal === 'number' && dailyCalorieGoal > 0;
   const referenceDailyGoal = hasKnownGoal ? dailyCalorieGoal : 2000;
@@ -1595,7 +1745,7 @@ export function buildDecipheredFoodSummary(
   const totalFiber = Math.round(items.reduce((s, i) => s + i.fiber, 0) * 10) / 10;
   const totalSugar = Math.round(items.reduce((s, i) => s + i.sugar, 0) * 10) / 10;
   const totalSodiumMg = items.reduce((s, i) => s + i.sodiumMg, 0);
-  const needsWeightConfirmation = items.some(i => i.grams <= 0 || i.needsWeightConfirmation);
+  const needsWeightConfirmation = items.some(i => Boolean(i.needsWeightConfirmation));
 
   const hasItemOver5kg = items.some(i => i.grams > 5000);
   const hasItemOver2000Kcal = items.some(i => i.calories > 2000);
@@ -1613,40 +1763,56 @@ export function buildDecipheredFoodSummary(
       ? mainNames.join(' & ')
       : `${mainNames.slice(0, 2).join(', ')} + ${mainNames.length - 2} more`;
 
-  let score = 6.5;
+  const phraseSeed =
+    mealSummaryName.split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0) +
+    Math.round(totalCalories) +
+    items.length * 17;
 
+  // Health rating considers meal size, protein density, and fiber (not just ingredient list in abstract)
   const hasProduce = items.some(i => i.category === 'produce');
+  const hasWholeGrainOrDairy = items.some(i => i.category === 'grain' || i.category === 'dairy');
   const hasProcessed = items.some(i => i.category === 'processed' || i.category === 'beverage');
   const hasAddedSalt = items.some(i => /salt|soy sauce/i.test(i.name));
-  const yogurtItem = items.find(i => /yogurt/i.test(i.name));
+  const proteinDensityPct = totalCalories > 0 ? (totalProtein * 4 * 100) / totalCalories : 0;
+  const isLightMeal = totalCalories > 0 && totalCalories < 220;
 
-  if (hasProduce) score += 1.2;
-  if (totalFiber >= 3) score += 0.8;
-  else if (totalFiber >= 1.2) score += 0.4;
+  let score = 6.2;
 
-  if (totalProtein >= 20) score += 1.2;
-  else if (totalProtein >= 10) score += 0.6;
-  else if (totalProtein < 4 && totalCalories > 30) score -= 0.7;
+  // Fiber contribution
+  if (totalFiber >= 5) score += 1.0;
+  else if (totalFiber >= 3) score += 0.6;
+  else if (totalFiber >= 1.5) score += 0.3;
 
-  if (hasProcessed) score -= 2.0;
+  // Whole-food foundation
+  if (hasProduce || hasWholeGrainOrDairy) score += 0.5;
+
+  // Protein density & absolute protein
+  if (totalProtein >= 25 || (totalProtein >= 18 && proteinDensityPct >= 20)) {
+    score += 1.5;
+  } else if (totalProtein >= 12 || proteinDensityPct >= 16) {
+    score += 0.9;
+  } else if (isLightMeal && !hasProcessed) {
+    // Light whole-food meal with low protein (e.g., 81 kcal dried prunes or fruit/oatmeal starter) -> roughly 6.5
+    score = 6.5;
+  } else if (totalProtein < 5 && totalCalories >= 220) {
+    score -= 0.8;
+  }
+
+  if (hasProcessed) score -= 1.8;
   if (totalSodiumMg > 800) score -= 1.2;
-  else if (hasAddedSalt && totalCalories < 150) score -= 0.4;
+  else if (hasAddedSalt && totalCalories < 150) score -= 0.3;
 
-  if (totalSugar > 25 && !hasProduce) score -= 1.5;
+  if (totalSugar > 25 && !hasProduce) score -= 1.4;
   if (totalFat > 30 && totalProtein < 15) score -= 0.8;
 
   score = Math.max(1, Math.min(10, score));
 
-  // Apply total & per-item calorie rules:
-  // - If any single item exceeds 2,000 kcal, the rating drops by 3 points.
   if (hasItemOver2000Kcal) {
     score -= 3;
   }
-  // - If total calories exceed 2× the user's daily goal, the rating is capped at 2 out of 10. Hard cap.
   if (exceeds2xDailyGoal) {
     score = Math.min(score, 2);
   }
-  // - If the total exceeds 5,000 kcal, the rating is 1 out of 10. No exceptions.
   if (isOver5000Kcal) {
     score = 1;
   }
@@ -1658,6 +1824,9 @@ export function buildDecipheredFoodSummary(
   const whatToAdd: string[] = [];
   const whatToTakeOut: string[] = [];
   let healthLabel: string;
+
+  const mealDisplayName =
+    mealType === 'snack' ? 'snack' : mealType;
 
   if (isExtremeCalorieMeal) {
     const quantityAdvice = usedFallbackReference
@@ -1676,85 +1845,82 @@ export function buildDecipheredFoodSummary(
       }
     }
   } else {
-    const baseLabel =
-      healthRating >= 8.5
-        ? 'Excellent — Nutrient-Dense & Balanced'
-        : healthRating >= 7.0
-        ? 'Good — Whole-Food Foundation'
-        : healthRating >= 5.5
-        ? 'Moderate — Could Use Macro Balance'
-        : 'Low — High in Sodium, Sugar, or Processed Fats';
+    let baseLabel: string;
+    if (isLightMeal && totalProtein < 10 && !hasProcessed) {
+      baseLabel = `Light meal — add protein to make it a proper ${mealDisplayName}.`;
+    } else if (totalProtein < 5) {
+      baseLabel = `Low protein — add protein to make it a proper ${mealDisplayName}.`;
+    } else if (healthRating >= 8.5) {
+      baseLabel = 'Excellent — Nutrient-Dense & Balanced';
+    } else if (healthRating >= 7.0) {
+      baseLabel = 'Good — Whole-Food Foundation';
+    } else if (healthRating >= 5.5) {
+      baseLabel = 'Moderate — Could Use Macro Balance';
+    } else {
+      baseLabel = 'Low — High in Sodium, Sugar, or Processed Fats';
+    }
 
     healthLabel = usedFallbackReference
       ? `${baseLabel} (Based on a 2,000 kcal reference.)`
       : baseLabel;
 
-    if (totalProtein < 12) {
-      if (yogurtItem && yogurtItem.grams < 80) {
-        whatToAdd.push(
-          `Increase ${yogurtItem.name} from ${yogurtItem.grams}g to 120–150g Greek yogurt (+12g protein) for better satiety and blood sugar balance.`
-        );
-      } else {
-        whatToAdd.push(
-          'Add a lean protein source (e.g. 120g Greek yogurt, 2 eggs, cottage cheese, or 100g chicken/tofu) to reach at least 15–25g protein.'
-        );
-      }
+    const proteinSuggestions = MEAL_PROTEIN_PHRASES[mealType] || MEAL_PROTEIN_PHRASES.breakfast;
+    if (totalProtein < 15) {
+      whatToAdd.push(pickPhrase(proteinSuggestions, phraseSeed));
     }
 
     if (totalFat < 3) {
-      whatToAdd.push(
-        'Add 10–15g of healthy fats & fiber (such as chia seeds, flaxseeds, or crushed almonds/walnuts) to slow carbohydrate digestion and help absorb fat-soluble vitamins.'
-      );
+      whatToAdd.push(pickPhrase(HEALTHY_FAT_PHRASES, phraseSeed + 3));
     }
 
-    if (!hasProduce) {
-      whatToAdd.push(
-        'Add 80–100g of fresh fruit (berries, mango) or leafy greens/vegetables (spinach, broccoli) for fiber, potassium, and antioxidants.'
-      );
-    } else if (totalFiber < 3) {
-      whatToAdd.push(
-        'Add 1 tbsp of chia seeds, oats, or extra berries/greens to boost dietary fiber above 4g.'
-      );
+    if (!hasProduce && totalFiber < 3) {
+      whatToAdd.push(pickPhrase(PRODUCE_FIBER_PHRASES, phraseSeed + 7));
+    } else if (totalFiber < 2.5) {
+      whatToAdd.push(pickPhrase(PRODUCE_FIBER_PHRASES, phraseSeed + 11));
     }
 
     if (whatToAdd.length === 0) {
-      whatToAdd.push('A glass of water or a sprinkle of seeds/herbs — your macro and micronutrient profile is already well balanced.');
+      whatToAdd.push(pickPhrase(BALANCED_ADD_PHRASES, phraseSeed));
     }
 
     const saltItem = items.find(i => /salt|soy sauce/i.test(i.name));
     if (saltItem) {
       whatToTakeOut.push(
-        `Take out or halve the ${saltItem.rawText} (~${saltItem.sodiumMg}mg sodium) — try cinnamon, lime zest, or fresh mint instead for zero-sodium flavor.`
+        `Reduce the ${saltItem.rawText} (~${saltItem.sodiumMg}mg sodium) and swap in cinnamon, citrus zest, or fresh herbs.`
       );
     } else if (totalSodiumMg > 600) {
       whatToTakeOut.push(
-        `Reduce high-sodium items (${totalSodiumMg}mg total sodium) to minimize water retention and support blood pressure.`
+        `Trim high-sodium items (${totalSodiumMg}mg total sodium) to keep daily sodium in check.`
       );
     }
 
     const processedItems = items.filter(i => i.category === 'processed' || i.category === 'beverage');
     if (processedItems.length > 0) {
       whatToTakeOut.push(
-        `Take out or reduce ${processedItems.map(p => p.name).join(' & ')} to cut refined sugars and empty calories.`
+        `Scale back ${processedItems.map(p => p.name).join(' & ')} to cut refined sugars and empty calories.`
       );
     }
 
     const heavyFatItem = items.find(i => i.fat > 18);
     if (heavyFatItem) {
       whatToTakeOut.push(
-        `Trim the portion of ${heavyFatItem.name} by ~30% to save ~${Math.round(heavyFatItem.calories * 0.3)} kcal while keeping flavor.`
+        `Trim the portion of ${heavyFatItem.name} by ~30% to save ~${Math.round(heavyFatItem.calories * 0.3)} kcal.`
       );
     }
 
     if (whatToTakeOut.length === 0) {
-      if (totalSugar > 10 && totalProtein < 8) {
-        whatToTakeOut.push(
-          'Nothing unhealthy to remove (all whole ingredients), or slightly trim the fruit portion by 20g if pairing without extra protein to keep sugar spikes low.'
-        );
+      if (totalProtein < 5) {
+        // Never say "Nothing needs to be taken out" for a meal with under 5g protein
+        whatToTakeOut.push('Add protein to make this a proper meal.');
       } else {
-        whatToTakeOut.push(
-          'Nothing needs to be taken out — these are clean, whole-food ingredients with no excess refined sugars or trans fats.'
-        );
+        const cleanTakeoutPhrases = [
+          'Whole-food ingredients look clean — no excess refined sugars or trans fats to remove.',
+          'Ingredients are clean and unprocessed; focus on portion balance rather than removing items.',
+          'No processed additives or excess sodium detected in these ingredients.',
+          'Solid whole-food choices — nothing unhealthy needs to be cut from this plate.',
+          'Clean ingredient profile with no refined oils or added sugars to strip out.'
+        ];
+        whatToTakeOut.push(pickPhrase(cleanTakeoutPhrases, phraseSeed + 5));
       }
     }
   }
@@ -1786,7 +1952,8 @@ export function buildDecipheredFoodSummary(
 export function recalculateDecipheredFoodWithGrams(
   baseResult: DecipheredFoodResult,
   gramOverrides: Record<number, number>,
-  dailyCalorieGoal?: number
+  dailyCalorieGoal?: number,
+  mealType: MealContextType = 'breakfast'
 ): DecipheredFoodResult {
   const updatedItems = baseResult.items.map((item, idx) => {
     const hasOverride = Object.prototype.hasOwnProperty.call(gramOverrides, idx);
@@ -1799,15 +1966,21 @@ export function recalculateDecipheredFoodWithGrams(
       ? `${kgAmount}kg of ${item.name.toLowerCase()} seems very high. Did you mean ${suggestedGrams}g?`
       : undefined;
     const factor = grams / 100;
+    const stillNeedsConfirmation = hasOverride ? grams <= 0 : Boolean(item.needsWeightConfirmation);
     return {
       ...item,
       grams: roundedGrams,
-      needsWeightConfirmation: grams <= 0,
+      isEstimatedWeight: hasOverride ? false : item.isEstimatedWeight,
+      needsWeightConfirmation: stillNeedsConfirmation,
       isOver5kg,
       kgAmount,
       suggestedGrams,
       over5kgWarning,
-      servingLabel: hasOverride ? `${roundedGrams}g` : item.servingLabel,
+      servingLabel: hasOverride
+        ? `${roundedGrams}g`
+        : stillNeedsConfirmation
+          ? 'How much?'
+          : item.servingLabel,
       calories: Math.round(item.caloriesPer100g * factor),
       protein: Math.round(item.proteinPer100g * factor * 10) / 10,
       carbs: Math.round(item.carbsPer100g * factor * 10) / 10,
@@ -1817,12 +1990,16 @@ export function recalculateDecipheredFoodWithGrams(
       sodiumMg: Math.round(item.sodiumMgPer100g * factor)
     };
   });
-  return buildDecipheredFoodSummary(updatedItems, dailyCalorieGoal);
+  return buildDecipheredFoodSummary(updatedItems, dailyCalorieGoal, mealType);
 }
 
-export function decipherFoodText(rawInput: string, dailyCalorieGoal?: number): DecipheredFoodResult {
+export function decipherFoodText(
+  rawInput: string,
+  dailyCalorieGoal?: number,
+  mealType: MealContextType = 'breakfast'
+): DecipheredFoodResult {
   const parts = rawInput
-    .split(/(?:[,;\n+]+|\b(?:and|with|plus|topped with|on|alongside)\b)/i)
+    .split(/(?:[,;\n+]+|\b(?:and|with|plus|topped with|alongside)\b)/i)
     .map(s => s.trim())
     .filter(Boolean);
 
@@ -1832,5 +2009,5 @@ export function decipherFoodText(rawInput: string, dailyCalorieGoal?: number): D
     if (parsed) items.push(parsed);
   }
 
-  return buildDecipheredFoodSummary(items, dailyCalorieGoal);
+  return buildDecipheredFoodSummary(items, dailyCalorieGoal, mealType);
 }

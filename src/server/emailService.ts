@@ -2,6 +2,7 @@ import crypto from 'crypto';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 const DEFAULT_FROM = 'Caloriq <onboarding@resend.dev>';
+const DEVELOPER_EMAIL = process.env.CONTACT_EMAIL || 'housefly@mail2world.com';
 
 interface VerificationEntry {
   email: string;
@@ -25,22 +26,21 @@ const passwordResetStore = new Map<string, PasswordResetEntry>();
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
 const MAX_VERIFY_ATTEMPTS = 5;
-const RESET_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // #51 Forgotten password link expires in 1 hour
 
 async function sendResendEmail(payload: {
   to: string;
   subject: string;
   text: string;
   html: string;
-}): Promise<void> {
+}): Promise<boolean> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
-    throw new Error("Couldn't send the email. Try again in a minute.");
+    return false;
   }
 
-  let response: Response;
   try {
-    response = await fetch(RESEND_API_URL, {
+    const response = await fetch(RESEND_API_URL, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -54,12 +54,9 @@ async function sendResendEmail(payload: {
         html: payload.html
       })
     });
+    return response.ok;
   } catch {
-    throw new Error("Couldn't send the email. Try again in a minute.");
-  }
-
-  if (!response.ok) {
-    throw new Error("Couldn't send the email. Try again in a minute.");
+    return false;
   }
 }
 
@@ -159,7 +156,6 @@ export function validateVerificationCode(rawEmail: string, submittedCode: string
     throw wrongErr;
   }
 
-  // Validated — remove code so it cannot be reused
   verificationStore.delete(email);
 }
 
@@ -175,7 +171,7 @@ export async function sendWelcomeEmail(rawEmail: string): Promise<void> {
   await sendResendEmail({
     to: email,
     subject: 'Welcome to Caloriq',
-    text: line,
+    text,
     html
   });
 }
@@ -183,14 +179,14 @@ export async function sendWelcomeEmail(rawEmail: string): Promise<void> {
 export async function createAndSendPasswordResetEmail(
   rawEmail: string,
   appOrigin: string
-): Promise<{ sent: boolean }> {
+): Promise<{ sent: boolean; expiresInMinutes: number }> {
   const email = rawEmail.toLowerCase().trim();
   const now = Date.now();
   const token = crypto.randomBytes(24).toString('hex');
   const baseUrl = (process.env.APP_URL || appOrigin || 'http://localhost:3000').replace(/\/+$/, '');
   const resetLink = `${baseUrl}/?resetToken=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
 
-  const text = `Reset your Caloriq password using this link:\n\n${resetLink}\n\nThis link expires in 30 minutes.`;
+  const text = `Reset your Caloriq password using this link:\n\n${resetLink}\n\nThis link expires in 1 hour.`;
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 420px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
       <p style="font-size: 14px; color: #a1a1aa; margin: 0 0 16px 0;">Reset your Caloriq password</p>
@@ -199,8 +195,8 @@ export async function createAndSendPasswordResetEmail(
           Reset password
         </a>
       </div>
-      <p style="font-size: 12px; color: #71717a; word-break: break-all; margin: 0 0 12px 0;">${resetLink}</p>
-      <p style="font-size: 13px; color: #a1a1aa; margin: 0;">This link expires in 30 minutes.</p>
+      <p style="font-size: 12px; color: #a1a1aa; word-break: break-all; margin: 0 0 12px 0;">${resetLink}</p>
+      <p style="font-size: 13px; color: #a1a1aa; margin: 0;">This link expires in 1 hour.</p>
     </div>
   `.trim();
 
@@ -218,7 +214,7 @@ export async function createAndSendPasswordResetEmail(
     lastSentAt: now
   });
 
-  return { sent: true };
+  return { sent: true, expiresInMinutes: 60 };
 }
 
 export function validateAndConsumePasswordResetToken(rawEmail: string, submittedToken: string): void {
@@ -228,7 +224,7 @@ export function validateAndConsumePasswordResetToken(rawEmail: string, submitted
 
   if (!entry || Date.now() > entry.expiresAt) {
     passwordResetStore.delete(email);
-    throw new Error('That reset link has expired. Request a new one.');
+    throw new Error('That reset link has expired (links are valid for 1 hour). Request a new one.');
   }
 
   if (entry.token !== cleanToken) {
@@ -236,4 +232,43 @@ export function validateAndConsumePasswordResetToken(rawEmail: string, submitted
   }
 
   passwordResetStore.delete(email);
+}
+
+// #46 Contact page form emails developer via Resend
+export async function sendContactMessageEmail(payload: {
+  name: string;
+  email: string;
+  subject: string;
+  message: string;
+}): Promise<boolean> {
+  const text = `New Caloriq contact message\nFrom: ${payload.name} (${payload.email})\nSubject: ${payload.subject}\n\n${payload.message}`;
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+      <h3 style="margin: 0 0 12px 0; color: #2dd4bf;">Caloriq Contact Form</h3>
+      <p style="font-size: 13px; color: #a1a1aa; margin: 0 0 8px 0;"><strong>From:</strong> ${payload.name} (${payload.email})</p>
+      <p style="font-size: 13px; color: #a1a1aa; margin: 0 0 16px 0;"><strong>Subject:</strong> ${payload.subject}</p>
+      <div style="padding: 14px; background-color: #18181b; border-radius: 12px; border: 1px solid #27272a; font-size: 13px; line-height: 1.6; color: #f4f4f5;">
+        ${payload.message}
+      </div>
+    </div>
+  `.trim();
+
+  return sendResendEmail({
+    to: DEVELOPER_EMAIL,
+    subject: `[Caloriq Contact] ${payload.subject}`,
+    text,
+    html
+  });
+}
+
+// #74 Uptime alert email via Resend
+export async function sendUptimeAlertEmail(reason: string): Promise<boolean> {
+  const text = `Caloriq Uptime Monitor Alert: ${reason} at ${new Date().toISOString()}`;
+  const html = `<p><strong>Caloriq Uptime Alert:</strong> ${reason}</p><p>Timestamp: ${new Date().toISOString()}</p>`;
+  return sendResendEmail({
+    to: DEVELOPER_EMAIL,
+    subject: '[Caloriq Alert] Service Health Check Warning',
+    text,
+    html
+  });
 }

@@ -17,12 +17,17 @@ import {
   Copy,
   Share2,
   RefreshCw,
-  MessageSquare
+  MessageSquare,
+  Printer
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
+import { trackEventOnce } from '../utils/analytics.js';
 import { formatWeight } from '../utils/nutritionMath.js';
-import type { MealTemplate, SavedFood, FoodItem, MealType } from '../types/index.js';
+import { useDebounce, getDateBounds } from '../utils/validation.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
+import { SwipeableItem } from './SwipeableItem.js';
+import type { MealTemplate, SavedFood, SavedRecipe, FoodItem, MealType } from '../types/index.js';
 
 export const ReportsTab: React.FC = () => {
   const {
@@ -35,16 +40,24 @@ export const ReportsTab: React.FC = () => {
     allHabits,
     cravings,
     diaryItems,
-    addFoodItem
+    addFoodItem,
+    showUndoToast
   } = useApp();
 
+  const { minDate, maxDate } = getDateBounds();
   const [allEntries, setAllEntries] = useState<FoodItem[]>([]);
   const [templates, setTemplates] = useState<MealTemplate[]>([]);
   const [savedFoods, setSavedFoods] = useState<SavedFood[]>([]);
+  const [savedRecipes, setSavedRecipes] = useState<SavedRecipe[]>([]);
+  const [isLoadingReports, setIsLoadingReports] = useState(true);
+  const [templateToDelete, setTemplateToDelete] = useState<MealTemplate | null>(null);
+  const [recipeToDelete, setRecipeToDelete] = useState<SavedRecipe | null>(null);
   const [templateName, setTemplateName] = useState('');
   const [isSavingTemplate, setIsSavingTemplate] = useState(false);
   const [savedSearch, setSavedSearch] = useState('');
+  const debouncedSavedSearch = useDebounce(savedSearch, 400);
   const [reflectionSearch, setReflectionSearch] = useState('');
+  const debouncedReflectionSearch = useDebounce(reflectionSearch, 400);
   const [notification, setNotification] = useState<string | null>(null);
   // #26 & #27 View mode: 7d | 30d | 12m
   const [chartRange, setChartRange] = useState<'7d' | '30d' | '12m'>('7d');
@@ -53,21 +66,26 @@ export const ReportsTab: React.FC = () => {
   const [isLoadingWeekly, setIsLoadingWeekly] = useState(false);
 
   useEffect(() => {
+    trackEventOnce('first_report_viewed');
     loadReportsData();
   }, [diaryItems]);
 
   const loadReportsData = async () => {
     try {
-      const [allRes, tmplRes, savedRes] = await Promise.all([
+      const [allRes, tmplRes, savedRes, recRes] = await Promise.all([
         api.getAllDiary(),
         api.getTemplates(),
-        api.getSavedFoods()
+        api.getSavedFoods(),
+        api.getRecipes()
       ]);
       setAllEntries(allRes.items || []);
       setTemplates(tmplRes.templates || []);
       setSavedFoods(savedRes.foods || []);
+      setSavedRecipes(recRes.recipes || []);
     } catch (e) {
       console.error(e);
+    } finally {
+      setIsLoadingReports(false);
     }
   };
 
@@ -250,7 +268,7 @@ export const ReportsTab: React.FC = () => {
       const dayKcal = dayItems.reduce((s, i) => s + i.calories, 0);
       if (dayKcal <= 0) continue;
       const dayProt = dayItems.reduce((s, i) => s + (i.protein || 0), 0);
-      const hitProtein = macroTarget.protein > 0 && dayProt >= macroTarget.protein;
+      const hitProtein = macroTarget.proteinGrams > 0 && dayProt >= macroTarget.proteinGrams;
       validDays.push({ mood: h.mood, hitProtein });
     }
     if (validDays.length < 14) return null;
@@ -264,7 +282,7 @@ export const ReportsTab: React.FC = () => {
       hitAvg: Math.round(hitAvg * 10) / 10,
       missAvg: Math.round(missAvg * 10) / 10
     };
-  }, [allHabits, allEntries, macroTarget.protein]);
+  }, [allHabits, allEntries, macroTarget.proteinGrams]);
 
   // Distinct days with meals logged
   const totalDistinctMealDays = useMemo(() => {
@@ -279,15 +297,15 @@ export const ReportsTab: React.FC = () => {
   }, [allHabits]);
 
   const filteredReflections = useMemo(() => {
-    const q = reflectionSearch.trim().toLowerCase();
+    const q = debouncedReflectionSearch.trim().toLowerCase();
     if (!q) return reflectionsList;
     return reflectionsList.filter(
       r =>
         (r.journalAnswer || '').toLowerCase().includes(q) ||
-        (r.journalQuestion || '').toLowerCase().includes(q) ||
+        (r.journalPrompt || '').toLowerCase().includes(q) ||
         r.date.includes(q)
     );
-  }, [reflectionsList, reflectionSearch]);
+  }, [reflectionsList, debouncedReflectionSearch]);
 
   // Weekly AI Insights caching & generation
   const getCurrentWeekKey = () => {
@@ -326,7 +344,7 @@ export const ReportsTab: React.FC = () => {
         calories: d.calories,
         calorieTarget: macroTarget.calories,
         protein: d.protein,
-        proteinTarget: macroTarget.protein,
+        proteinTarget: macroTarget.proteinGrams,
         mood: habit?.mood,
         energy: habit?.energy,
         sleepHours: habit?.sleepHours,
@@ -351,7 +369,7 @@ export const ReportsTab: React.FC = () => {
       .map(c => ({
         date: c.date,
         time: c.createdAt ? new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
-        food: c.food,
+        food: c.wantedFood,
         trigger: c.trigger,
         intensity: c.intensity
       }));
@@ -368,7 +386,7 @@ export const ReportsTab: React.FC = () => {
         weights: recentWeights
       });
       const bullets = Array.isArray(res.bullets) ? res.bullets : [];
-      const statusText = res.statusText || (bullets.length === 0 ? 'No clear pattern this week.' : '');
+      const statusText = res.message || (bullets.length === 0 ? 'No clear pattern this week.' : '');
       setWeeklyBullets(bullets);
       setWeeklyStatusText(statusText);
       localStorage.setItem(
@@ -443,9 +461,13 @@ export const ReportsTab: React.FC = () => {
     }
   };
 
-  const handleDeleteTemplate = async (id: string) => {
-    await api.deleteTemplate(id);
-    setTemplates(prev => prev.filter(t => t.id !== id));
+  const handleDeleteTemplateConfirmed = async (tmpl: MealTemplate) => {
+    setTemplates(prev => prev.filter(t => t.id !== tmpl.id));
+    await api.deleteTemplate(tmpl.id);
+    showUndoToast(`Deleted template "${tmpl.name}"`, async () => {
+      const restored = await api.restoreTemplate(tmpl);
+      setTemplates(prev => [...prev, restored]);
+    });
   };
 
   const handleDeleteSavedFood = async (id: string) => {
@@ -454,28 +476,54 @@ export const ReportsTab: React.FC = () => {
   };
 
   const filteredSavedFoods = savedFoods.filter(f =>
-    f.name.toLowerCase().includes(savedSearch.toLowerCase())
+    f.name.toLowerCase().includes(debouncedSavedSearch.toLowerCase())
   );
+
+  if (isLoadingReports) {
+    return (
+      <div className="space-y-4 pb-8 max-w-md mx-auto animate-pulse" aria-label="Loading reports">
+        <div className="h-14 bg-zinc-900/90 border border-zinc-800 rounded-2xl" />
+        <div className="h-36 bg-zinc-900/90 border border-zinc-800 rounded-2xl" />
+        <div className="h-56 bg-zinc-900/90 border border-zinc-800 rounded-2xl" />
+        <div className="h-44 bg-zinc-900/90 border border-zinc-800 rounded-2xl" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5 pb-8 max-w-md mx-auto">
-      {/* Date Picker Search Bar */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl flex items-center justify-between">
+      {/* Date Picker Search Bar & Print Report Button (#75) */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl flex items-center justify-between gap-2 no-print">
         <div className="flex items-center gap-2">
           <Calendar className="w-4 h-4 text-teal-400" />
           <span className="text-xs font-semibold text-zinc-200">Inspect Past Days</span>
         </div>
 
-        <label className="relative cursor-pointer bg-zinc-950 border border-zinc-800 hover:border-zinc-700 px-3 py-1.5 rounded-xl text-xs font-mono text-zinc-300 flex items-center gap-1.5 transition-colors">
-          <span>{activeDate}</span>
-          <ArrowRight className="w-3.5 h-3.5 text-zinc-500" />
-          <input
-            type="date"
-            value={activeDate}
-            onChange={(e) => e.target.value && setActiveDate(e.target.value)}
-            className="absolute inset-0 opacity-0 cursor-pointer w-full"
-          />
-        </label>
+        <div className="flex items-center gap-2">
+          <label className="relative cursor-pointer bg-zinc-950 border border-zinc-800 hover:border-zinc-700 px-3 py-1.5 rounded-xl text-xs font-mono text-zinc-300 flex items-center gap-1.5 transition-colors">
+            <span>{activeDate}</span>
+            <ArrowRight className="w-3.5 h-3.5 text-zinc-500" />
+            <input
+              type="date"
+              aria-label="Inspect past day"
+              min={minDate}
+              max={maxDate}
+              value={activeDate}
+              onChange={(e) => e.target.value && setActiveDate(e.target.value)}
+              className="absolute inset-0 opacity-0 cursor-pointer w-full"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={() => window.print()}
+            aria-label="Print report"
+            title="Print clean report"
+            className="px-2.5 py-1.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-teal-400 flex items-center gap-1.5 transition-colors"
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Print</span>
+          </button>
+        </div>
       </div>
 
       {notification && (
@@ -502,50 +550,66 @@ export const ReportsTab: React.FC = () => {
             const slotKcal = slotItems.reduce((s, i) => s + i.calories, 0);
             const todayIso = new Date().toISOString().split('T')[0];
 
-            return (
-              <div
-                key={mt}
-                className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex flex-col justify-between gap-2"
-              >
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-zinc-200 capitalize">{mt}</span>
-                    <span className="text-[10px] font-mono text-teal-400">{slotKcal} kcal</span>
-                  </div>
-                  <span className="text-[10px] text-zinc-500 block truncate mt-0.5">
-                    {slotItems.length > 0
-                      ? slotItems.map((x) => x.name).join(', ')
-                      : 'No items logged'}
-                  </span>
-                </div>
+            const copySlotToToday = async () => {
+              if (slotItems.length === 0) return;
+              for (const item of slotItems) {
+                await addFoodItem({
+                  date: todayIso,
+                  mealType: mt,
+                  name: item.name,
+                  calories: item.calories,
+                  carbs: item.carbs,
+                  fat: item.fat,
+                  protein: item.protein,
+                  serving: item.serving || '1 portion',
+                  source: 'saved'
+                });
+              }
+              setNotification(`Copied ${mt} (${slotItems.length} item${slotItems.length > 1 ? 's' : ''}) to today`);
+              setTimeout(() => setNotification(null), 3000);
+            };
 
-                <button
-                  type="button"
-                  disabled={slotItems.length === 0}
-                  onClick={async () => {
-                    for (const item of slotItems) {
-                      await addFoodItem({
-                        date: todayIso,
-                        mealType: mt,
-                        name: item.name,
-                        calories: item.calories,
-                        carbs: item.carbs,
-                        fat: item.fat,
-                        protein: item.protein,
-                        serving: item.serving || '1 portion',
-                        source: 'saved'
-                      });
-                    }
-                    setNotification(`Copied ${mt} (${slotItems.length} item${slotItems.length > 1 ? 's' : ''}) to today`);
-                    setTimeout(() => setNotification(null), 3000);
-                  }}
-                  aria-label={`Copy ${mt} from ${activeDate} to today`}
-                  className="w-full py-1.5 px-2 bg-teal-500/15 hover:bg-teal-500/25 disabled:opacity-40 border border-teal-500/30 rounded-lg text-[10px] font-semibold text-teal-300 flex items-center justify-center gap-1 transition-colors"
-                >
-                  <Copy className="w-3 h-3" />
-                  Copy to today
-                </button>
-              </div>
+            return (
+              <SwipeableItem
+                key={mt}
+                onDuplicateToToday={slotItems.length > 0 ? copySlotToToday : undefined}
+                duplicateLabel="Copy to Today"
+                options={
+                  slotItems.length > 0
+                    ? [
+                        {
+                          label: `Duplicate ${mt} into today`,
+                          onClick: copySlotToToday
+                        }
+                      ]
+                    : undefined
+                }
+              >
+                <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex flex-col justify-between gap-2">
+                  <div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-zinc-200 capitalize">{mt}</span>
+                      <span className="text-[10px] font-mono text-teal-400">{slotKcal} kcal</span>
+                    </div>
+                    <span className="text-[10px] text-zinc-500 block truncate mt-0.5">
+                      {slotItems.length > 0
+                        ? slotItems.map((x) => x.name).join(', ')
+                        : 'No items logged'}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={slotItems.length === 0}
+                    onClick={copySlotToToday}
+                    aria-label={`Copy ${mt} from ${activeDate} to today`}
+                    className="w-full py-1.5 px-2 bg-teal-500/15 hover:bg-teal-500/25 disabled:opacity-40 border border-teal-500/30 rounded-lg text-[10px] font-semibold text-teal-300 flex items-center justify-center gap-1 transition-colors"
+                  >
+                    <Copy className="w-3 h-3" />
+                    Copy to today
+                  </button>
+                </div>
+              </SwipeableItem>
             );
           })}
         </div>
@@ -566,14 +630,19 @@ export const ReportsTab: React.FC = () => {
             disabled={isLoadingWeekly}
             aria-label="Refresh weekly insights"
             title="Refresh weekly insights"
-            className="p-2 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-teal-400 disabled:opacity-50 transition-colors"
+            className="px-2.5 py-1.5 rounded-xl bg-zinc-950 border border-zinc-800 hover:border-zinc-700 text-zinc-400 hover:text-teal-400 disabled:opacity-50 transition-colors flex items-center gap-1.5 text-xs"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingWeekly ? 'animate-spin text-teal-400' : ''}`} />
+            <RefreshCw className="w-3.5 h-3.5" />
+            {isLoadingWeekly && <span>Calculating...</span>}
           </button>
         </div>
 
         {isLoadingWeekly ? (
-          <p className="text-xs text-zinc-500 py-2">Analyzing your last 7 days...</p>
+          <div className="space-y-2 py-2 animate-pulse">
+            <div className="h-3.5 w-5/6 bg-zinc-800 rounded" />
+            <div className="h-3.5 w-3/4 bg-zinc-800/70 rounded" />
+            <div className="h-3.5 w-4/5 bg-zinc-800/70 rounded" />
+          </div>
         ) : weeklyBullets.length > 0 ? (
           <ul className="space-y-2 text-xs text-zinc-200 list-disc pl-4">
             {weeklyBullets.map((bullet, i) => (
@@ -608,7 +677,13 @@ export const ReportsTab: React.FC = () => {
       )}
 
       {/* #26 & #27 CALORIE CHART WITH 7-DAY / 30-DAY MONTHLY / 12-MONTH YEARLY TOGGLE */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
+      <div
+        className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4 print-card"
+        aria-describedby="sr-calorie-chart-summary"
+      >
+        <p id="sr-calorie-chart-summary" className="sr-only">
+          {`Calorie intake chart (${chartRange}). Daily target is ${macroTarget.calories} kilocalories. Weekly average is ${avgCalories} kilocalories, ${avgProtein}g protein, ${avgCarbs}g carbs, ${avgFat}g fat.`}
+        </p>
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-semibold text-zinc-200">
@@ -712,7 +787,15 @@ export const ReportsTab: React.FC = () => {
       </div>
 
       {/* #18 WEIGHT SMOOTHING: Raw daily weights in light grey, 7-day rolling average in teal */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3.5">
+      <div
+        className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3.5 print-card"
+        aria-describedby="sr-weight-chart-summary"
+      >
+        <p id="sr-weight-chart-summary" className="sr-only">
+          {smoothedWeights.length > 1
+            ? `Weight chart with ${smoothedWeights.length} weigh-ins. Latest 7-day rolling average is ${smoothedWeights[smoothedWeights.length - 1]?.smoothedKg} kilograms.`
+            : 'Weight chart requires at least 2 weigh-ins to display trend.'}
+        </p>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Scale className="w-4 h-4 text-teal-400" />
@@ -972,9 +1055,9 @@ export const ReportsTab: React.FC = () => {
               >
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] font-mono text-teal-400">{r.date}</span>
-                  {r.journalQuestion && (
+                  {r.journalPrompt && (
                     <span className="text-[10px] text-zinc-500 truncate max-w-[200px]">
-                      {r.journalQuestion}
+                      {r.journalPrompt}
                     </span>
                   )}
                 </div>
@@ -1104,38 +1187,143 @@ export const ReportsTab: React.FC = () => {
 
         {templates.length === 0 ? (
           <p className="text-xs text-zinc-500 text-center py-3 border border-dashed border-zinc-800 rounded-xl">
-            Save today&apos;s meals as a template to reuse later.
+            No meal templates yet. Save today&apos;s meals as a template to reuse later.
           </p>
         ) : (
           <div className="space-y-2">
             {templates.map((t) => (
-              <div
+              <SwipeableItem
                 key={t.id}
-                className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between"
+                onDelete={() => setTemplateToDelete(t)}
+                onDuplicateToToday={() => handleApplyTemplate(t.id)}
+                duplicateLabel="Apply Template"
+                options={[
+                  {
+                    label: `Apply to ${activeDate}`,
+                    onClick: () => handleApplyTemplate(t.id)
+                  },
+                  {
+                    label: 'Delete meal template',
+                    onClick: () => setTemplateToDelete(t),
+                    destructive: true
+                  }
+                ]}
               >
-                <div>
-                  <span className="text-xs font-semibold text-zinc-200 block">{t.name}</span>
-                  <span className="text-[10px] text-zinc-500 font-mono">
-                    {t.items.length} items · {t.items.reduce((s, i) => s + i.calories, 0)} kcal total
-                  </span>
-                </div>
+                <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between">
+                  <div>
+                    <span className="text-xs font-semibold text-zinc-200 block">{t.name}</span>
+                    <span className="text-[10px] text-zinc-500 font-mono">
+                      {t.items.length} items · {t.items.reduce((s, i) => s + i.calories, 0)} kcal total
+                    </span>
+                  </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleApplyTemplate(t.id)}
-                    className="px-2.5 py-1 bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 rounded-lg text-xs font-medium transition-colors"
-                  >
-                    Apply to {activeDate}
-                  </button>
-                  <button
-                    onClick={() => handleDeleteTemplate(t.id)}
-                    className="p-1 text-zinc-600 hover:text-rose-400 rounded transition-colors"
-                    aria-label="Delete template"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleApplyTemplate(t.id)}
+                      className="px-2.5 py-1 bg-teal-500/20 hover:bg-teal-500/30 text-teal-300 rounded-lg text-xs font-medium transition-colors"
+                    >
+                      Apply to {activeDate}
+                    </button>
+                    <button
+                      onClick={() => setTemplateToDelete(t)}
+                      className="p-1 text-zinc-600 hover:text-rose-400 rounded transition-colors"
+                      aria-label="Delete template"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+              </SwipeableItem>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* SAVED RECIPES SECTION (#27 Empty state + #18 Two-step delete confirmation) */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Bookmark className="w-4 h-4 text-teal-400" />
+            <h4 className="text-sm font-semibold text-zinc-200">
+              Saved Recipes ({savedRecipes.length})
+            </h4>
+          </div>
+        </div>
+
+        {savedRecipes.length === 0 ? (
+          <p className="text-xs text-zinc-500 py-3 text-center border border-dashed border-zinc-800 rounded-xl">
+            No saved recipes yet. Create a recipe in the Add Food screen to save it here.
+          </p>
+        ) : (
+          <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+            {savedRecipes.map((rec) => (
+              <SwipeableItem
+                key={rec.id}
+                onDelete={() => setRecipeToDelete(rec)}
+                onDuplicateToToday={async () => {
+                  await addFoodItem({
+                    date: new Date().toISOString().split('T')[0],
+                    mealType: 'dinner',
+                    name: rec.name,
+                    calories: rec.totalCalories,
+                    carbs: rec.totalCarbs,
+                    fat: rec.totalFat,
+                    protein: rec.totalProtein,
+                    serving: '1 recipe portion',
+                    source: 'recipe'
+                  });
+                  setNotification(`Logged "${rec.name}" into today`);
+                  setTimeout(() => setNotification(null), 3000);
+                }}
+                duplicateLabel="Log Recipe Today"
+                options={[
+                  {
+                    label: 'Log recipe into today',
+                    onClick: async () => {
+                      await addFoodItem({
+                        date: new Date().toISOString().split('T')[0],
+                        mealType: 'dinner',
+                        name: rec.name,
+                        calories: rec.totalCalories,
+                        carbs: rec.totalCarbs,
+                        fat: rec.totalFat,
+                        protein: rec.totalProtein,
+                        serving: '1 recipe portion',
+                        source: 'recipe'
+                      });
+                      setNotification(`Logged "${rec.name}" into today`);
+                      setTimeout(() => setNotification(null), 3000);
+                    }
+                  },
+                  {
+                    label: 'Delete saved recipe',
+                    onClick: () => setRecipeToDelete(rec),
+                    destructive: true
+                  }
+                ]}
+              >
+                <div className="p-2.5 bg-zinc-950 border border-zinc-850 rounded-xl flex items-center justify-between">
+                  <div className="truncate pr-2">
+                    <span className="text-xs font-medium text-zinc-200 block truncate">{rec.name}</span>
+                    <span className="text-[10px] font-mono text-zinc-500">
+                      {rec.ingredients.length} ingredients · {rec.totalCarbs}c · {rec.totalFat}f · {rec.totalProtein}p
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono text-xs font-bold text-teal-400">
+                      {rec.totalCalories} kcal
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRecipeToDelete(rec)}
+                      className="p-1 text-zinc-600 hover:text-rose-400 rounded transition-colors"
+                      aria-label={`Delete recipe ${rec.name}`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </SwipeableItem>
             ))}
           </div>
         )}
@@ -1165,44 +1353,125 @@ export const ReportsTab: React.FC = () => {
 
         <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
           {savedFoods.length === 0 ? (
-            <p className="text-xs text-zinc-500 py-3 text-center">
-              Foods you log will appear here for one-tap re-adding.
+            <p className="text-xs text-zinc-500 py-3 text-center border border-dashed border-zinc-800 rounded-xl">
+              No saved foods yet. Foods you log will appear here for one-tap re-adding.
             </p>
           ) : filteredSavedFoods.length === 0 ? (
             <p className="text-xs text-zinc-500 py-3 text-center">No saved foods found.</p>
           ) : (
             filteredSavedFoods.map((food) => (
-              <div
+              <SwipeableItem
                 key={food.id}
-                className="p-2.5 bg-zinc-950 border border-zinc-850 rounded-xl flex items-center justify-between"
+                onDelete={() => handleDeleteSavedFood(food.id)}
+                onDuplicateToToday={async () => {
+                  await addFoodItem({
+                    date: new Date().toISOString().split('T')[0],
+                    mealType: 'lunch',
+                    name: food.name,
+                    calories: food.calories,
+                    carbs: food.carbs,
+                    fat: food.fat,
+                    protein: food.protein,
+                    serving: food.serving || '1 portion',
+                    source: 'saved'
+                  });
+                  setNotification(`Logged "${food.name}" into today`);
+                  setTimeout(() => setNotification(null), 3000);
+                }}
+                duplicateLabel="Log Today"
+                options={[
+                  {
+                    label: 'Log food into today',
+                    onClick: async () => {
+                      await addFoodItem({
+                        date: new Date().toISOString().split('T')[0],
+                        mealType: 'lunch',
+                        name: food.name,
+                        calories: food.calories,
+                        carbs: food.carbs,
+                        fat: food.fat,
+                        protein: food.protein,
+                        serving: food.serving || '1 portion',
+                        source: 'saved'
+                      });
+                      setNotification(`Logged "${food.name}" into today`);
+                      setTimeout(() => setNotification(null), 3000);
+                    }
+                  },
+                  {
+                    label: 'Delete saved food',
+                    onClick: () => handleDeleteSavedFood(food.id),
+                    destructive: true
+                  }
+                ]}
               >
-                <div className="truncate pr-2">
-                  <span className="text-xs font-medium text-zinc-200 block truncate">{food.name}</span>
-                  <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
-                    <span>{food.serving}</span>
-                    <span>·</span>
-                    <span className="text-blue-400">{food.carbs}c</span>
-                    <span className="text-amber-400">{food.fat}f</span>
-                    <span className="text-red-400">{food.protein}p</span>
+                <div className="p-2.5 bg-zinc-950 border border-zinc-850 rounded-xl flex items-center justify-between">
+                  <div className="truncate pr-2">
+                    <span className="text-xs font-medium text-zinc-200 block truncate">{food.name}</span>
+                    <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
+                      <span>{food.serving}</span>
+                      <span>·</span>
+                      <span className="text-blue-400">{food.carbs}c</span>
+                      <span className="text-amber-400">{food.fat}f</span>
+                      <span className="text-red-400">{food.protein}p</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono text-xs font-bold text-teal-400">
+                      {food.calories} kcal
+                    </span>
+                    <button
+                      onClick={() => handleDeleteSavedFood(food.id)}
+                      className="p-1 text-zinc-600 hover:text-rose-400 rounded transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="font-mono text-xs font-bold text-teal-400">
-                    {food.calories} kcal
-                  </span>
-                  <button
-                    onClick={() => handleDeleteSavedFood(food.id)}
-                    className="p-1 text-zinc-600 hover:text-rose-400 rounded transition-colors"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
+              </SwipeableItem>
             ))
           )}
         </div>
       </div>
+
+      {/* #18 Two-step confirmation for deleting a meal template */}
+      <ConfirmDialog
+        isOpen={templateToDelete !== null}
+        title="Delete Meal Template"
+        description={
+          templateToDelete
+            ? `Are you sure you want to delete the meal template "${templateToDelete.name}"?`
+            : ''
+        }
+        confirmLabel="Delete Template"
+        secondStepLabel="Confirm Template Deletion"
+        onClose={() => setTemplateToDelete(null)}
+        onConfirm={async () => {
+          if (!templateToDelete) return;
+          await handleDeleteTemplateConfirmed(templateToDelete);
+        }}
+      />
+
+      {/* #18 Two-step confirmation for deleting a saved recipe */}
+      <ConfirmDialog
+        isOpen={recipeToDelete !== null}
+        title="Delete Saved Recipe"
+        description={
+          recipeToDelete
+            ? `Are you sure you want to delete the saved recipe "${recipeToDelete.name}"?`
+            : ''
+        }
+        confirmLabel="Delete Recipe"
+        secondStepLabel="Confirm Recipe Deletion"
+        onClose={() => setRecipeToDelete(null)}
+        onConfirm={async () => {
+          if (!recipeToDelete) return;
+          const id = recipeToDelete.id;
+          setSavedRecipes(prev => prev.filter(r => r.id !== id));
+          await api.deleteSavedRecipe(id);
+        }}
+      />
     </div>
   );
 };

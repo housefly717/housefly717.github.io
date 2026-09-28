@@ -953,7 +953,7 @@ export function addFriend(userId: string, username: string, isPartner?: boolean)
     userId,
     username: cleanUser,
     displayName: matchedUserId ? db.profiles[matchedUserId].name : display,
-    streakDays: realStats ? realStats.foodStreak : 0,
+    streakDays: realStats?.foodStreak ?? 0,
     daysOnTargetThisWeek: 0,
     waterDaysCompleted: 0,
     isPartner: Boolean(isPartner),
@@ -1064,6 +1064,17 @@ export function saveRecipe(userId: string, recipe: Omit<SavedRecipe, 'id' | 'use
   return item;
 }
 
+export function deleteSavedRecipe(userId: string, id: string): boolean {
+  const idx = db.savedRecipes.findIndex(r => r.id === id && r.userId === userId);
+  if (idx !== -1) {
+    db.savedRecipes.splice(idx, 1);
+    saveDb();
+    broadcastSync(userId, 'recipe_deleted', { id });
+    return true;
+  }
+  return false;
+}
+
 // ------------------- MEAL TEMPLATES -------------------
 export function getMealTemplates(userId: string): MealTemplate[] {
   return db.mealTemplates.filter(t => t.userId === userId);
@@ -1135,6 +1146,20 @@ export function deleteMealTemplate(userId: string, id: string): boolean {
   return false;
 }
 
+export function restoreMealTemplate(userId: string, template: Omit<MealTemplate, 'id' | 'userId' | 'createdAt'>): MealTemplate {
+  const restored: MealTemplate = {
+    id: `tmpl_${crypto.randomUUID()}`,
+    userId,
+    name: template.name,
+    items: Array.isArray(template.items) ? template.items : [],
+    createdAt: Date.now()
+  };
+  db.mealTemplates.push(restored);
+  saveDb();
+  broadcastSync(userId, 'template_saved', restored);
+  return restored;
+}
+
 // ------------------- PLANS -------------------
 export function getPlan(userId: string): WeekPlan | undefined {
   return db.plans[userId];
@@ -1181,13 +1206,25 @@ export function hasUsdaApiKey(): boolean {
 
 // ------------------- EXPORT & CLEAR DATA -------------------
 export function exportUserData(userId: string) {
+  const userWater: Record<string, number> = {};
+  for (const [k, v] of Object.entries(db.waterEntries)) {
+    if (k.startsWith(`${userId}:`)) {
+      userWater[k.split(':')[1]] = v;
+    }
+  }
   return {
+    schemaVersion: '1.0.0',
     profile: getProfile(userId),
     stats: getUserStats(userId),
+    diaryEntries: getAllDiaryEntries(userId),
     diary: getAllDiaryEntries(userId),
+    exerciseEntries: db.exerciseEntries.filter(e => e.userId === userId),
     exercises: db.exerciseEntries.filter(e => e.userId === userId),
+    weightEntries: getWeightEntries(userId),
     weights: getWeightEntries(userId),
+    waterEntries: userWater,
     measurements: getBodyMeasurements(userId),
+    cravings: getCravings(userId),
     nonScaleVictories: getNonScaleVictories(userId),
     pantry: getPantryItems(userId),
     savedFoods: getSavedFoods(userId),
@@ -1227,4 +1264,475 @@ export function clearUserData(userId: string) {
   db.userXp[userId] = { xp: 0, badges: [] };
   saveDb();
   broadcastSync(userId, 'data_cleared');
+}
+
+// #36 GDPR right to be forgotten: account deletion wipes everything, no backups, no shadow copies
+export function deleteUserAccount(userId: string) {
+  clearUserData(userId);
+  db.friends = db.friends.filter(f => f.userId !== userId);
+  db.sharedRecipes = db.sharedRecipes.filter(s => s.userId !== userId);
+  userSessionsStore = userSessionsStore.filter(s => s.userId !== userId);
+  bugReportsStore = bugReportsStore.filter(b => b.userId !== userId);
+  delete db.profiles[userId];
+  delete db.userXp[userId];
+  delete db.users[userId];
+  saveDb();
+}
+
+// ------------------- SECURITY SANITIZATION (#26) -------------------
+export function sanitizeString(input: unknown, maxLen = 1000): string {
+  if (typeof input !== 'string') return '';
+  return input
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<\/?[a-z][^>]*>/gi, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+    .trim()
+    .slice(0, maxLen);
+}
+
+export function sanitizeObjectStrings<T>(obj: T): T {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') {
+    return sanitizeString(obj, 4000) as unknown as T;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeObjectStrings(item)) as unknown as T;
+  }
+  if (typeof obj === 'object') {
+    const out: Record<string, any> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, any>)) {
+      if (k === 'image' || k === 'base64Image' || k === 'photoUrl') {
+        out[k] = v;
+      } else {
+        out[k] = sanitizeObjectStrings(v);
+      }
+    }
+    return out as T;
+  }
+  return obj;
+}
+
+// ------------------- ACCOUNT MANAGEMENT & SESSIONS (#31, #32, #49, #50, #52, #53, #54, #58) -------------------
+export interface UserSessionRecord {
+  id: string;
+  userId: string;
+  deviceName: string;
+  city: string;
+  ipHash: string;
+  createdAt: number;
+  lastActiveAt: number;
+}
+
+let userSessionsStore: UserSessionRecord[] = [];
+
+export function recordUserSession(userId: string, userAgent = '', city = 'London, UK', ip = '127.0.0.1'): UserSessionRecord {
+  const ua = userAgent.toLowerCase();
+  let deviceName = 'Desktop Browser';
+  if (ua.includes('iphone')) deviceName = 'iPhone Safari';
+  else if (ua.includes('ipad')) deviceName = 'iPad Safari';
+  else if (ua.includes('android')) deviceName = 'Android Chrome';
+  else if (ua.includes('macintosh') && ua.includes('safari') && !ua.includes('chrome')) deviceName = 'macOS Safari';
+  else if (ua.includes('firefox')) deviceName = 'Desktop Firefox';
+  else if (ua.includes('chrome')) deviceName = 'Desktop Chrome';
+
+  const ipHash = crypto.createHash('sha256').update(ip).digest('hex').slice(0, 10);
+  const existing = userSessionsStore.find(s => s.userId === userId && s.deviceName === deviceName && s.ipHash === ipHash);
+  if (existing) {
+    existing.lastActiveAt = Date.now();
+    return existing;
+  }
+
+  const session: UserSessionRecord = {
+    id: `sess_${crypto.randomUUID()}`,
+    userId,
+    deviceName,
+    city: city || 'Local Network',
+    ipHash,
+    createdAt: Date.now(),
+    lastActiveAt: Date.now()
+  };
+  userSessionsStore.push(session);
+  return session;
+}
+
+export function getUserSessions(userId: string, currentUserAgent = ''): UserSessionRecord[] {
+  const list = userSessionsStore.filter(s => s.userId === userId).sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+  if (list.length === 0) {
+    return [recordUserSession(userId, currentUserAgent)];
+  }
+  return list;
+}
+
+export function revokeUserSession(userId: string, sessionId: string): boolean {
+  const before = userSessionsStore.length;
+  userSessionsStore = userSessionsStore.filter(s => !(s.userId === userId && s.id === sessionId));
+  return userSessionsStore.length < before;
+}
+
+export function revokeAllUserSessions(userId: string): number {
+  const count = userSessionsStore.filter(s => s.userId === userId).length;
+  userSessionsStore = userSessionsStore.filter(s => s.userId !== userId);
+  return count;
+}
+
+export function verifyUserPassword(userId: string, password: string): boolean {
+  const user = db.users[userId];
+  if (!user) return false;
+  if (user.isGuest || !user.passwordHash) return true;
+  return user.passwordHash === hashPassword(password);
+}
+
+export function changeUserPassword(userId: string, currentPassword: string, newPassword: string): void {
+  const user = db.users[userId];
+  if (!user || user.isGuest) {
+    throw new Error('Only registered accounts can change their password.');
+  }
+  if (user.passwordHash && user.passwordHash !== hashPassword(currentPassword)) {
+    throw new Error('Current password is incorrect.');
+  }
+  user.passwordHash = hashPassword(newPassword);
+  saveDb();
+}
+
+export function changeUserEmail(userId: string, oldEmail: string, newEmail: string): UserRow {
+  const user = db.users[userId];
+  if (!user || user.isGuest) {
+    throw new Error('Only registered accounts can change their email address.');
+  }
+  const cleanOld = oldEmail.toLowerCase().trim();
+  const cleanNew = newEmail.toLowerCase().trim();
+  if (user.email && user.email.toLowerCase() !== cleanOld) {
+    throw new Error('Old email address does not match your current account email.');
+  }
+  const conflict = Object.values(db.users).find(u => u.email === cleanNew && u.id !== userId);
+  if (conflict) {
+    throw new Error('That email address is already in use by another account.');
+  }
+  user.email = cleanNew;
+  saveDb();
+  return user;
+}
+
+export function loginOrSignupWithGoogle(email: string, displayName: string, guestIdToMigrate?: string): UserRow {
+  const norm = email.toLowerCase().trim();
+  let user = findUserByEmail(norm);
+  if (!user) {
+    const id = `usr_${crypto.randomUUID()}`;
+    user = {
+      id,
+      email: norm,
+      isGuest: false,
+      createdAt: Date.now(),
+      lastLoginAt: Date.now()
+    };
+    db.users[id] = user;
+    const defaultUsername = norm.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+    db.profiles[id] = createEmptyProfile(displayName || '', defaultUsername);
+    db.userXp[id] = { xp: 0, badges: [] };
+  } else {
+    user.lastLoginAt = Date.now();
+  }
+  if (guestIdToMigrate && guestIdToMigrate !== user.id && db.users[guestIdToMigrate]) {
+    migrateGuestData(guestIdToMigrate, user.id);
+  }
+  saveDb();
+  return user;
+}
+
+// #58 Demo mode button on landing page: loads a temporary account with sample data
+export function createDemoAccount(): UserRow {
+  const id = `demo_${crypto.randomUUID()}`;
+  const now = Date.now();
+  const today = new Date().toISOString().split('T')[0];
+  const yesterdayDate = new Date(now - 86400000).toISOString().split('T')[0];
+  const twoDaysAgoDate = new Date(now - 2 * 86400000).toISOString().split('T')[0];
+
+  const user: UserRow = {
+    id,
+    email: 'demo@caloriq.app',
+    isGuest: true,
+    createdAt: now,
+    lastLoginAt: now
+  };
+  db.users[id] = user;
+  db.profiles[id] = {
+    ...createEmptyProfile('Alex (Demo)', 'alex_demo'),
+    age: 31,
+    gender: 'prefer_not_to_say',
+    heightCm: 174,
+    fitnessLevel: 'intermediate',
+    currentWeightKg: 74.2,
+    goalWeightKg: 69.0,
+    dailyActivity: 'moderate',
+    goalSpeed: 'lose_normal',
+    pinnedWhy: 'Steady energy through the workday and consistent strength training.'
+  };
+  db.userXp[id] = { xp: 240, badges: ['First log', 'Hydrated', 'First workout', 'First weigh-in', '3-day streak', '50 XP', '200 XP'] };
+
+  addDiaryEntry(id, {
+    date: today,
+    mealType: 'breakfast',
+    name: 'Oatmeal with Greek Yogurt & Blueberries',
+    calories: 345,
+    carbs: 48,
+    fat: 6,
+    protein: 24,
+    serving: '1 bowl (320g)',
+    source: 'manual'
+  });
+  addDiaryEntry(id, {
+    date: today,
+    mealType: 'lunch',
+    name: 'Grilled Chicken, Quinoa & Roasted Broccoli',
+    calories: 520,
+    carbs: 46,
+    fat: 14,
+    protein: 48,
+    serving: '1 plate (410g)',
+    source: 'manual'
+  });
+  addDiaryEntry(id, {
+    date: yesterdayDate,
+    mealType: 'breakfast',
+    name: '2 Poached Eggs on Sourdough Toast',
+    calories: 330,
+    carbs: 28,
+    fat: 14,
+    protein: 21,
+    serving: '2 slices + 2 eggs',
+    source: 'manual'
+  });
+  addDiaryEntry(id, {
+    date: twoDaysAgoDate,
+    mealType: 'dinner',
+    name: 'Baked Salmon, Sweet Potato & Spinach',
+    calories: 590,
+    carbs: 42,
+    fat: 24,
+    protein: 46,
+    serving: '1 fillet + sides',
+    source: 'manual'
+  });
+
+  setWaterGlasses(id, today, 5);
+  addExerciseEntry(id, {
+    date: today,
+    activityName: 'Brisk Walking Intervals (30 min)',
+    met: 4.5,
+    minutes: 30,
+    caloriesBurned: 168,
+    intensity: 'Moderate'
+  });
+  addWeightEntry(id, twoDaysAgoDate, 74.8);
+  addWeightEntry(id, yesterdayDate, 74.5);
+  addWeightEntry(id, today, 74.2);
+
+  saveDb();
+  return user;
+}
+
+// ------------------- COMPLIANCE, ANALYTICS, SUPPORT & MONITORING (#34, #41-44, #46, #47, #74, #75, #79) -------------------
+export interface CookieConsentRecord {
+  id: string;
+  choice: 'accepted' | 'declined';
+  timestamp: string;
+  ip: string;
+  userAgent: string;
+}
+
+export interface ContactSubmissionRecord {
+  id: string;
+  name: string;
+  email: string;
+  subject: string;
+  message: string;
+  createdAt: number;
+}
+
+export interface BugReportRecord {
+  id: string;
+  userId: string;
+  whatHappened: string;
+  whatExpected: string;
+  createdAt: number;
+}
+
+let cookieConsentLogs: CookieConsentRecord[] = [];
+let contactSubmissions: ContactSubmissionRecord[] = [];
+let bugReportsStore: BugReportRecord[] = [];
+let maintenanceModeState = { enabled: false, message: 'Caloriq is undergoing a scheduled update. Back in a few minutes.' };
+
+const privacyAnalyticsStore: {
+  pageviews: number;
+  events: Record<string, number>;
+  byPath: Record<string, number>;
+  recentEvents: Array<{ event: string; path: string; timestamp: number }>;
+} = {
+  pageviews: 0,
+  events: {
+    pageview: 0,
+    signup: 0,
+    first_meal_logged: 0,
+    first_ai_call: 0,
+    first_report_viewed: 0,
+    first_week_completed: 0
+  },
+  byPath: {},
+  recentEvents: []
+};
+
+export function logCookieConsent(choice: 'accepted' | 'declined', ip: string, userAgent: string): CookieConsentRecord {
+  const rec: CookieConsentRecord = {
+    id: `consent_${crypto.randomUUID()}`,
+    choice,
+    timestamp: new Date().toISOString(),
+    ip,
+    userAgent: sanitizeString(userAgent, 250)
+  };
+  cookieConsentLogs.push(rec);
+  return rec;
+}
+
+export function getCookieConsentLogs(): CookieConsentRecord[] {
+  return cookieConsentLogs.slice(-100);
+}
+
+export function recordPrivacyAnalyticsEvent(event: string, rawPath = '/'): void {
+  const allowed = new Set(['pageview', 'signup', 'first_meal_logged', 'first_ai_call', 'first_report_viewed', 'first_week_completed']);
+  if (!allowed.has(event)) return;
+  const cleanPath = sanitizeString(rawPath || '/', 64) || '/';
+  if (event === 'pageview') {
+    privacyAnalyticsStore.pageviews += 1;
+    privacyAnalyticsStore.byPath[cleanPath] = (privacyAnalyticsStore.byPath[cleanPath] || 0) + 1;
+  }
+  privacyAnalyticsStore.events[event] = (privacyAnalyticsStore.events[event] || 0) + 1;
+  privacyAnalyticsStore.recentEvents.unshift({
+    event,
+    path: cleanPath,
+    timestamp: Date.now()
+  });
+  if (privacyAnalyticsStore.recentEvents.length > 50) {
+    privacyAnalyticsStore.recentEvents.length = 50;
+  }
+}
+
+export function getPrivacyAnalyticsSummary() {
+  return {
+    ...privacyAnalyticsStore,
+    totalUsers: Object.values(db.users).filter(u => !u.isGuest).length,
+    consentLogsCount: cookieConsentLogs.length,
+    bugReportsCount: bugReportsStore.length,
+    contactMessagesCount: contactSubmissions.length
+  };
+}
+
+export function saveContactMessage(payload: { name: string; email: string; subject: string; message: string }): ContactSubmissionRecord {
+  const rec: ContactSubmissionRecord = {
+    id: `contact_${crypto.randomUUID()}`,
+    name: sanitizeString(payload.name, 120),
+    email: sanitizeString(payload.email, 160),
+    subject: sanitizeString(payload.subject, 200),
+    message: sanitizeString(payload.message, 4000),
+    createdAt: Date.now()
+  };
+  contactSubmissions.unshift(rec);
+  return rec;
+}
+
+export function getContactMessages(): ContactSubmissionRecord[] {
+  return contactSubmissions.slice(0, 100);
+}
+
+export function saveBugReport(userId: string, whatHappened: string, whatExpected: string): BugReportRecord {
+  const rec: BugReportRecord = {
+    id: `bug_${crypto.randomUUID()}`,
+    userId,
+    whatHappened: sanitizeString(whatHappened, 2000),
+    whatExpected: sanitizeString(whatExpected, 2000),
+    createdAt: Date.now()
+  };
+  bugReportsStore.unshift(rec);
+  return rec;
+}
+
+export function getBugReports(): BugReportRecord[] {
+  return bugReportsStore.slice(0, 100);
+}
+
+export function getMaintenanceStatus() {
+  return maintenanceModeState;
+}
+
+export function setMaintenanceStatus(enabled: boolean, message?: string) {
+  maintenanceModeState = {
+    enabled: Boolean(enabled),
+    message: sanitizeString(message || 'Caloriq is undergoing a scheduled update. Back in a few minutes.', 300)
+  };
+  return maintenanceModeState;
+}
+
+export function importUserBackupData(userId: string, migratedData: any): { restoredCounts: Record<string, number> } {
+  clearUserData(userId);
+  if (migratedData.profile && typeof migratedData.profile === 'object') {
+    updateProfile(userId, sanitizeObjectStrings(migratedData.profile));
+  }
+
+  let diaryCount = 0;
+  if (Array.isArray(migratedData.diaryEntries)) {
+    for (const item of migratedData.diaryEntries) {
+      addDiaryEntry(userId, {
+        date: sanitizeString(item.date, 20),
+        mealType: item.mealType || 'breakfast',
+        name: sanitizeString(item.name, 200),
+        calories: Math.max(0, Number(item.calories) || 0),
+        carbs: Math.max(0, Number(item.carbs) || 0),
+        fat: Math.max(0, Number(item.fat) || 0),
+        protein: Math.max(0, Number(item.protein) || 0),
+        serving: sanitizeString(item.serving || '1 serving', 100),
+        source: item.source || 'manual'
+      });
+      diaryCount++;
+    }
+  }
+
+  let exerciseCount = 0;
+  if (Array.isArray(migratedData.exerciseEntries)) {
+    for (const ex of migratedData.exerciseEntries) {
+      addExerciseEntry(userId, {
+        date: sanitizeString(ex.date, 20),
+        activityName: sanitizeString(ex.activityName || 'Workout', 200),
+        met: Math.max(1, Number(ex.met) || 5),
+        minutes: Math.max(1, Number(ex.minutes) || 15),
+        caloriesBurned: Math.max(0, Number(ex.caloriesBurned) || 0),
+        intensity: ex.intensity === 'Low' || ex.intensity === 'High' ? ex.intensity : 'Moderate'
+      });
+      exerciseCount++;
+    }
+  }
+
+  let weightCount = 0;
+  if (Array.isArray(migratedData.weightEntries)) {
+    for (const w of migratedData.weightEntries) {
+      if (Number(w.weightKg) >= 20 && Number(w.weightKg) <= 500) {
+        addWeightEntry(userId, sanitizeString(w.date, 20), Number(w.weightKg));
+        weightCount++;
+      }
+    }
+  }
+
+  if (migratedData.waterEntries && typeof migratedData.waterEntries === 'object') {
+    for (const [dt, glasses] of Object.entries(migratedData.waterEntries)) {
+      const cleanDate = dt.includes(':') ? dt.split(':')[1] : dt;
+      setWaterGlasses(userId, cleanDate, Math.max(0, Number(glasses) || 0));
+    }
+  }
+
+  saveDb();
+  return {
+    restoredCounts: {
+      diary: diaryCount,
+      exercises: exerciseCount,
+      weights: weightCount
+    }
+  };
 }

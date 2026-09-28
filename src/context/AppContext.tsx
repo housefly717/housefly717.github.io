@@ -15,7 +15,9 @@ import type {
 import { api } from '../services/api.js';
 import { calculateDailyCalorieTarget, calculateMacroTargets } from '../utils/nutritionMath.js';
 import { triggerHaptic } from '../utils/haptics.js';
-import { detectDefaultLanguage, SupportedLanguage } from '../utils/i18n.js';
+import { detectDefaultLanguage, SupportedLanguage, syncHtmlLangAttribute } from '../utils/i18n.js';
+import { getDateBounds } from '../utils/validation.js';
+import { trackEventOnce, checkDay7Retention } from '../utils/analytics.js';
 
 export interface UndoToastItem {
   id: string;
@@ -69,6 +71,14 @@ interface AppContextType {
   offlineQueueCount: number;
   isLoading: boolean;
   isSyncing: boolean;
+  saveStatus: 'saved' | 'saving' | 'error';
+  hasSyncConflict: boolean;
+  resolveSyncConflict: () => Promise<void>;
+  isSessionExpiryWarningOpen: boolean;
+  sessionExpiryRemainingSec: number;
+  staySignedIn: () => void;
+  lastSelectedMeal: MealType;
+  setLastSelectedMeal: (meal: MealType) => void;
   selectedMealForAdd: MealType | null;
   isAddFoodOpen: boolean;
   openAddFood: (meal?: MealType) => void;
@@ -77,6 +87,7 @@ interface AppContextType {
   openAuthModal: () => void;
   closeAuthModal: () => void;
   undoToast: UndoToastItem | null;
+  showUndoToast: (label: string, onUndo: () => Promise<void>) => void;
   triggerUndoableDelete: (label: string, onDelete: () => Promise<void>, onUndo: () => Promise<void>) => Promise<void>;
   dismissUndoToast: () => void;
   // Actions
@@ -155,11 +166,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isGuestLockOpen, setIsGuestLockOpen] = useState<boolean>(false);
 
   // Multi-language
-  const [language, setLanguageState] = useState<SupportedLanguage>(() => detectDefaultLanguage());
+  const [language, setLanguageState] = useState<SupportedLanguage>(() => {
+    const detected = detectDefaultLanguage();
+    syncHtmlLangAttribute(detected);
+    return detected;
+  });
   const setLanguage = (lang: SupportedLanguage) => {
     setLanguageState(lang);
-    localStorage.setItem('caloriq_lang', lang);
+    syncHtmlLangAttribute(lang);
   };
+
+  useEffect(() => {
+    syncHtmlLangAttribute(language);
+    checkDay7Retention();
+  }, [language]);
 
   // Fasting timer (#13)
   const [fastingPreset, setFastingPreset] = useState<FastingPreset>(() => {
@@ -189,6 +209,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setActiveDate = useCallback((date: string) => {
     if (isGuest && date !== getTodayStr()) {
       openGuestLock();
+      return;
+    }
+    const { minDate, maxDate } = getDateBounds();
+    if (date > maxDate || date < minDate) {
       return;
     }
     setActiveDateState(date);
@@ -281,6 +305,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [hasSyncConflict, setHasSyncConflict] = useState<boolean>(false);
+
+  // #21 Session expiry warning (25m idle -> 5m warning before sign out)
+  const lastInteractionRef = useRef<number>(Date.now());
+  const [isSessionExpiryWarningOpen, setIsSessionExpiryWarningOpen] = useState<boolean>(false);
+  const [sessionExpiryRemainingSec, setSessionExpiryRemainingSec] = useState<number>(300);
+
+  // #24 Remember last meal
+  const [lastSelectedMeal, setLastSelectedMealState] = useState<MealType>(() => {
+    const saved = localStorage.getItem('caloriq_last_meal');
+    if (saved === 'breakfast' || saved === 'lunch' || saved === 'dinner' || saved === 'snack') {
+      return saved;
+    }
+    return 'breakfast';
+  });
+  const setLastSelectedMeal = useCallback((meal: MealType) => {
+    setLastSelectedMealState(meal);
+    localStorage.setItem('caloriq_last_meal', meal);
+  }, []);
 
   const [isAddFoodOpen, setIsAddFoodOpen] = useState<boolean>(false);
   const [selectedMealForAdd, setSelectedMealForAdd] = useState<MealType | null>(null);
@@ -342,6 +386,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  // #19 Auto-save indicator & #20 Sync conflict banner subscriptions
+  useEffect(() => {
+    const unsubSave = api.onSaveStatusChange((status) => {
+      setSaveStatus(status);
+    });
+    const unsubConflict = api.onSyncConflict((conflictDate) => {
+      if (!conflictDate || conflictDate === activeDate) {
+        setHasSyncConflict(true);
+      }
+    });
+    return () => {
+      unsubSave();
+      unsubConflict();
+    };
+  }, [activeDate]);
+
+  // #21 Session expiry warning for signed-in users (25 min idle -> 5 min warning)
+  const staySignedIn = useCallback(() => {
+    lastInteractionRef.current = Date.now();
+    setIsSessionExpiryWarningOpen(false);
+    setSessionExpiryRemainingSec(300);
+  }, []);
+
+  useEffect(() => {
+    if (isGuest) {
+      setIsSessionExpiryWarningOpen(false);
+      return;
+    }
+    const recordActivity = () => {
+      if (!isSessionExpiryWarningOpen) {
+        lastInteractionRef.current = Date.now();
+      }
+    };
+    window.addEventListener('mousedown', recordActivity, { passive: true });
+    window.addEventListener('keydown', recordActivity, { passive: true });
+    window.addEventListener('touchstart', recordActivity, { passive: true });
+    window.addEventListener('scroll', recordActivity, { passive: true });
+
+    const interval = window.setInterval(() => {
+      const idleMs = Date.now() - lastInteractionRef.current;
+      const warnThresholdMs = 25 * 60 * 1000; // 25 minutes
+      const expireThresholdMs = 30 * 60 * 1000; // 30 minutes total
+      if (idleMs >= expireThresholdMs) {
+        setIsSessionExpiryWarningOpen(false);
+        api.logout();
+        api.initSession().then((session) => {
+          setUserId(session.userId);
+          setUserEmail(session.email);
+          setIsGuest(session.isGuest);
+          if (session.profile) setProfile(session.profile);
+          if (session.stats) setStats(session.stats);
+        });
+      } else if (idleMs >= warnThresholdMs) {
+        setIsSessionExpiryWarningOpen(true);
+        setSessionExpiryRemainingSec(Math.max(0, Math.ceil((expireThresholdMs - idleMs) / 1000)));
+      }
+    }, 1000);
+
+    return () => {
+      window.removeEventListener('mousedown', recordActivity);
+      window.removeEventListener('keydown', recordActivity);
+      window.removeEventListener('touchstart', recordActivity);
+      window.removeEventListener('scroll', recordActivity);
+      window.clearInterval(interval);
+    };
+  }, [isGuest, isSessionExpiryWarningOpen]);
 
   const showUndoToast = useCallback((label: string, onUndo: () => Promise<void>) => {
     if (undoTimerRef.current) {
@@ -461,8 +572,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [activeDate, userId, loadDayData]);
 
   // Actions
-  const openAddFood = (meal: MealType = 'breakfast') => {
-    setSelectedMealForAdd(meal);
+  const openAddFood = (meal?: MealType) => {
+    const chosen = meal || lastSelectedMeal || 'breakfast';
+    setSelectedMealForAdd(chosen);
+    setLastSelectedMeal(chosen);
     setIsAddFoodOpen(true);
   };
 
@@ -475,7 +588,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const closeAuthModal = () => setIsAuthModalOpen(false);
 
   const addFoodItem = async (food: Omit<FoodItem, 'id' | 'userId' | 'createdAt'>): Promise<FoodItem> => {
+    if (food.mealType) {
+      setLastSelectedMeal(food.mealType);
+    }
     const item = await api.addFood(food);
+    trackEventOnce('first_meal_logged');
     if (food.date === activeDate) {
       setDiaryItems(prev => {
         const next = [...prev, item];
@@ -529,10 +646,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateWaterGlasses = async (glasses: number): Promise<void> => {
+    const prevGlasses = waterGlasses;
     triggerHaptic(glasses >= 8 ? 'success' : 'light');
     setWaterGlasses(glasses);
     await api.setWater(activeDate, glasses);
     loadGeneralData();
+    if (glasses < prevGlasses) {
+      showUndoToast(`Removed water glass (${glasses} left)`, async () => {
+        setWaterGlasses(prevGlasses);
+        await api.setWater(activeDate, prevGlasses);
+        loadGeneralData();
+      });
+    }
   };
 
   const addExerciseItem = async (exercise: Omit<ExerciseItem, 'id' | 'userId' | 'createdAt'>): Promise<ExerciseItem> => {
@@ -691,10 +816,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const refreshDayData = async () => {
+    setHasSyncConflict(false);
     await Promise.all([
       loadDayData(activeDate),
       loadGeneralData()
     ]);
+  };
+
+  const resolveSyncConflict = async () => {
+    setHasSyncConflict(false);
+    await refreshDayData();
   };
 
   const onAuthSuccess = async () => {
@@ -770,6 +901,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         offlineQueueCount,
         isLoading,
         isSyncing,
+        saveStatus,
+        hasSyncConflict,
+        resolveSyncConflict,
+        isSessionExpiryWarningOpen,
+        sessionExpiryRemainingSec,
+        staySignedIn,
+        lastSelectedMeal,
+        setLastSelectedMeal,
         selectedMealForAdd,
         isAddFoodOpen,
         openAddFood,
@@ -778,6 +917,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         openAuthModal,
         closeAuthModal,
         undoToast,
+        showUndoToast,
         triggerUndoableDelete,
         dismissUndoToast,
         addFoodItem,

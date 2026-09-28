@@ -29,6 +29,15 @@ import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { decipherExerciseText } from '../utils/localAiEngine.js';
 import { formatWeight } from '../utils/nutritionMath.js';
+import {
+  useDebounce,
+  validateExerciseMinutes,
+  validateWaterGlasses,
+  isDailyTotalUnusual,
+  findRecentDuplicateFood,
+  getDateBounds
+} from '../utils/validation.js';
+import { SwipeableItem } from './SwipeableItem.js';
 import type { MealType, FoodItem } from '../types/index.js';
 
 const TIPS_OF_THE_DAY = [
@@ -81,10 +90,19 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     logFoodAgainTomorrow,
     copyYesterdayMeals,
     openAddFood,
+    lastSelectedMeal,
     isGuest,
     openGuestLock,
     weights
   } = useApp();
+
+  const mealsSectionRef = useRef<HTMLDivElement | null>(null);
+  const { minDate, maxDate: todayStr } = getDateBounds();
+  const [pendingWaterCount, setPendingWaterCount] = useState<number | null>(null);
+  const [pendingQuickDuplicate, setPendingQuickDuplicate] = useState<{
+    mealType: MealType;
+    food: { name: string; calories: number; carbs: number; fat: number; protein: number; serving: string };
+  } | null>(null);
 
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   // #13 Fix My Day AI suggestions state
@@ -144,19 +162,33 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     };
   }, [cravings]);
 
-  // Inline Log Exercise box state
+  // Inline Log Exercise box state (#16 draft save + #15 debounce)
   const [showExerciseBox, setShowExerciseBox] = useState(false);
-  const [exerciseInput, setExerciseInput] = useState('');
+  const [exerciseInput, setExerciseInput] = useState(() => {
+    return localStorage.getItem('caloriq_draft_diary_exercise') || '';
+  });
+  const debouncedExerciseInput = useDebounce(exerciseInput, 400);
   const [isSavingExercise, setIsSavingExercise] = useState(false);
+  const [inlineExerciseError, setInlineExerciseError] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('caloriq_draft_diary_exercise', exerciseInput);
+  }, [exerciseInput]);
 
   const decipheredExercise = useMemo(
-    () => decipherExerciseText(exerciseInput, profile?.currentWeightKg || 70),
-    [exerciseInput, profile?.currentWeightKg]
+    () => decipherExerciseText(debouncedExerciseInput, profile?.currentWeightKg || 70),
+    [debouncedExerciseInput, profile?.currentWeightKg]
   );
 
   const handleSaveInlineExercise = async (e: React.FormEvent) => {
     e.preventDefault();
+    setInlineExerciseError(null);
     if (!exerciseInput.trim() || decipheredExercise.totalCaloriesBurned <= 0) return;
+    const minErr = validateExerciseMinutes(Math.max(1, Math.round(decipheredExercise.totalMinutes)));
+    if (minErr) {
+      setInlineExerciseError(minErr);
+      return;
+    }
     setIsSavingExercise(true);
     try {
       await addExerciseItem({
@@ -168,6 +200,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
         intensity: decipheredExercise.overallIntensity
       });
       setExerciseInput('');
+      localStorage.removeItem('caloriq_draft_diary_exercise');
       setShowExerciseBox(false);
       setCopyStatus(`Saved exercise (+${decipheredExercise.totalCaloriesBurned} kcal burned)`);
       setTimeout(() => setCopyStatus(null), 3000);
@@ -200,18 +233,38 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
       last7.push(p.toISOString().split('T')[0]);
     }
     let daysLogged = 0;
+    let validDaysForAvg = 0;
+    let excludedDaysCount = 0;
+    let excludedMealsCount = 0;
     let kcalSum = 0;
     let protSum = 0;
     for (const dt of last7) {
       const entries = allDiaryItems.filter(i => i.date === dt);
       if (entries.length > 0) {
         daysLogged++;
-        kcalSum += entries.reduce((s, e) => s + e.calories, 0);
-        protSum += entries.reduce((s, e) => s + e.protein, 0);
+        const rawDayKcal = entries.reduce((s, e) => s + (e.calories || 0), 0);
+        if (rawDayKcal > 20000) {
+          excludedDaysCount++;
+          continue;
+        }
+        const validEntries = entries.filter(e => {
+          if ((e.calories || 0) > 10000) {
+            excludedMealsCount++;
+            return false;
+          }
+          return true;
+        });
+        if (validEntries.length === 0) {
+          excludedDaysCount++;
+          continue;
+        }
+        validDaysForAvg++;
+        kcalSum += validEntries.reduce((s, e) => s + (e.calories || 0), 0);
+        protSum += validEntries.reduce((s, e) => s + (e.protein || 0), 0);
       }
     }
-    const avgKcal = daysLogged > 0 ? Math.round(kcalSum / daysLogged) : 0;
-    const avgProt = daysLogged > 0 ? Math.round(protSum / daysLogged) : 0;
+    const avgKcal = validDaysForAvg > 0 ? Math.min(20000, Math.round(kcalSum / validDaysForAvg)) : 0;
+    const avgProt = validDaysForAvg > 0 ? Math.min(1000, Math.round(protSum / validDaysForAvg)) : 0;
     const weekWeights = weights
       .filter(w => last7.includes(w.date))
       .sort((a, b) => a.date.localeCompare(b.date));
@@ -220,11 +273,12 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
         ? Math.round((weekWeights[weekWeights.length - 1].weightKg - weekWeights[0].weightKg) * 10) / 10
         : 0;
     const diffFromTarget = avgKcal - macroTarget.calories;
+    const totalOutlierDays = excludedDaysCount > 0 ? excludedDaysCount : (excludedMealsCount > 0 ? 1 : 0);
     const factLine =
       daysLogged === 0
         ? '0 days logged last week.'
         : `Logged ${daysLogged} of 7 days with an average daily difference of ${diffFromTarget > 0 ? `+${diffFromTarget}` : diffFromTarget} kcal vs target.`;
-    return { daysLogged, avgKcal, avgProt, weightChangeKg, factLine };
+    return { daysLogged, avgKcal, avgProt, weightChangeKg, factLine, excludedDaysCount: totalOutlierDays };
   }, [activeDate, allDiaryItems, weights, macroTarget.calories]);
 
   const cravingPatternText = useMemo(() => {
@@ -381,10 +435,30 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     }
   };
 
+  const handleWaterRequest = (newCount: number) => {
+    const safeCount = Math.max(0, newCount);
+    const warning = validateWaterGlasses(safeCount);
+    if (warning && safeCount > waterGlasses) {
+      setPendingWaterCount(safeCount);
+      return;
+    }
+    setPendingWaterCount(null);
+    updateWaterGlasses(safeCount);
+  };
+
   const handleQuickLog = async (
     mealType: MealType,
-    food: { name: string; calories: number; carbs: number; fat: number; protein: number; serving: string }
+    food: { name: string; calories: number; carbs: number; fat: number; protein: number; serving: string },
+    forceDuplicate = false
   ) => {
+    if (!forceDuplicate) {
+      const dup = findRecentDuplicateFood(diaryItems, food.name, food.calories);
+      if (dup) {
+        setPendingQuickDuplicate({ mealType, food });
+        return;
+      }
+    }
+    setPendingQuickDuplicate(null);
     await addFoodItem({
       date: activeDate,
       mealType,
@@ -397,6 +471,22 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
       source: 'saved'
     });
     setCopyStatus(`Quick-logged ${food.name}`);
+    setTimeout(() => setCopyStatus(null), 2500);
+  };
+
+  const handleDuplicateItemToToday = async (item: FoodItem) => {
+    await addFoodItem({
+      date: todayStr,
+      mealType: item.mealType,
+      name: item.name,
+      calories: item.calories,
+      carbs: item.carbs,
+      fat: item.fat,
+      protein: item.protein,
+      serving: item.serving || '1 portion',
+      source: item.source || 'saved'
+    });
+    setCopyStatus(`Duplicated "${item.name}" into today`);
     setTimeout(() => setCopyStatus(null), 2500);
   };
 
@@ -471,6 +561,53 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
 
   return (
     <div className="space-y-5 pb-8 max-w-md mx-auto">
+      {/* #10 Daily total over 10,000 kcal warning banner */}
+      {isDailyTotalUnusual(totalEaten) && (
+        <button
+          type="button"
+          onClick={() => mealsSectionRef.current?.scrollIntoView({ behavior: 'smooth' })}
+          className="w-full bg-amber-950/80 hover:bg-amber-900/80 border border-amber-500/50 rounded-2xl px-4 py-3 flex items-center justify-between gap-2.5 text-left transition-colors shadow-lg"
+        >
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="text-xs font-semibold text-amber-200">
+              Today&apos;s total is unusual. Tap to review.
+            </span>
+          </div>
+          <span className="text-[11px] font-mono text-amber-300 shrink-0">{totalEaten.toLocaleString()} kcal</span>
+        </button>
+      )}
+
+      {/* #11 Quick-log duplicate confirmation banner */}
+      {pendingQuickDuplicate && (
+        <div className="bg-amber-950/80 border border-amber-500/50 rounded-2xl p-3.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="text-xs text-amber-100 font-medium">
+              You just logged this. Add another?
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setPendingQuickDuplicate(null)}
+              className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-xs font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                handleQuickLog(pendingQuickDuplicate.mealType, pendingQuickDuplicate.food, true)
+              }
+              className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold rounded-lg text-xs"
+            >
+              Add another
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* #32 "Why" pin at the top of the Diary every day */}
       {profile.pinnedWhy && (
         <div className="bg-zinc-900/90 border border-teal-500/30 rounded-2xl px-4 py-3 flex items-center gap-2.5">
@@ -521,43 +658,65 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             </div>
           </div>
           <p className="text-[11px] text-zinc-300">{mondayRecap.factLine}</p>
+          {mondayRecap.excludedDaysCount > 0 && (
+            <p className="text-[11px] text-amber-300 font-mono">
+              {mondayRecap.excludedDaysCount === 1
+                ? '1 day excluded from averages (unusual entry).'
+                : `${mondayRecap.excludedDaysCount} days excluded from averages (unusual entry).`}
+            </p>
+          )}
         </div>
       )}
-      {/* 7-Day Strip with day chevrons and fill bars */}
+      {/* 7-Day Strip with day chevrons and fill bars (#12 no future dates) */}
       <div className="bg-zinc-900/90 border border-zinc-800/90 rounded-2xl p-2.5">
         <div className="flex items-center justify-between gap-1">
-          {getSevenDays().map((day) => (
-            <button
-              key={day.str}
-              onClick={() => setActiveDate(day.str)}
-              className={`flex-1 py-1.5 px-1 rounded-xl flex flex-col items-center gap-1 transition-all ${
-                day.isSelected
-                  ? 'bg-teal-500/20 text-teal-300 border border-teal-500/40'
-                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
-              }`}
-            >
-              <span className="text-[10px] font-medium uppercase">{day.dayLetter}</span>
-              <span className={`text-xs font-semibold ${day.isSelected ? 'text-teal-300' : 'text-zinc-200'}`}>
-                {day.dayNum}
-              </span>
-              <div className="w-4 h-1 bg-zinc-800 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${
-                    day.isSelected ? 'bg-teal-400' : 'bg-zinc-600'
-                  }`}
-                  style={{ width: day.isSelected ? `${Math.min(100, ringProgress)}%` : '40%' }}
-                />
-              </div>
-            </button>
-          ))}
+          {getSevenDays().map((day) => {
+            const isOutOfBounds = day.str > todayStr || day.str < minDate;
+            return (
+              <button
+                key={day.str}
+                type="button"
+                disabled={isOutOfBounds}
+                onClick={() => !isOutOfBounds && setActiveDate(day.str)}
+                className={`flex-1 py-1.5 px-1 rounded-xl flex flex-col items-center gap-1 transition-all ${
+                  day.isSelected
+                    ? 'bg-teal-500/20 text-teal-300 border border-teal-500/40'
+                    : isOutOfBounds
+                      ? 'text-zinc-700 opacity-40 cursor-not-allowed'
+                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50'
+                }`}
+              >
+                <span className="text-[10px] font-medium uppercase">{day.dayLetter}</span>
+                <span className={`text-xs font-semibold ${day.isSelected ? 'text-teal-300' : 'text-zinc-200'}`}>
+                  {day.dayNum}
+                </span>
+                <div className="w-4 h-1 bg-zinc-800 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full ${
+                      day.isSelected ? 'bg-teal-400' : 'bg-zinc-600'
+                    }`}
+                    style={{ width: day.isSelected ? `${Math.min(100, ringProgress)}%` : '40%' }}
+                  />
+                </div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {/* TOP CALORIE RING CARD */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl relative overflow-hidden">
+      <div
+        className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl relative overflow-hidden"
+        aria-describedby="sr-calorie-ring-summary"
+      >
+        <p id="sr-calorie-ring-summary" className="sr-only">
+          {hasStats
+            ? `Daily calorie summary: ${totalEaten} kilocalories eaten, ${totalBurned} kilocalories burned from exercise, daily target ${dailyTarget} kilocalories, ${Math.abs(remaining)} kilocalories ${isOverBudget ? 'over budget' : 'remaining'}.`
+            : 'Daily calorie summary: Set up your profile to calculate your daily calorie target.'}
+        </p>
         <div className="flex flex-col items-center justify-center">
           <div className="relative w-44 h-44 flex items-center justify-center">
-            <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100">
+            <svg className="w-full h-full -rotate-90" viewBox="0 0 100 100" aria-hidden="true">
               <circle
                 cx="50"
                 cy="50"
@@ -627,7 +786,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             </span>
           </div>
 
-          {/* #13 "Fix my day" button when over goal */}
+          {/* #13 "Fix my day" button when over goal (#14 Calculating... & #13 skeleton) */}
           {isOverBudget && (
             <div className="w-full mt-3 space-y-2">
               <button
@@ -644,13 +803,23 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                     setIsFixingDay(false);
                   }
                 }}
-                className="w-full py-2 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-300 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
+                className="w-full py-2 bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-50 border border-rose-500/40 text-rose-300 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
               >
-                {isFixingDay ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />}
-                Fix my day (Suggest smart swaps for {Math.abs(remaining)} kcal over)
+                <Wand2 className="w-3.5 h-3.5" />
+                {isFixingDay
+                  ? 'Calculating...'
+                  : `Fix my day (Suggest smart swaps for ${Math.abs(remaining)} kcal over)`}
               </button>
 
-              {fixDayResult && (
+              {isFixingDay && (
+                <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2 animate-pulse">
+                  <div className="h-3 w-3/4 bg-zinc-800 rounded" />
+                  <div className="h-10 w-full bg-zinc-900 rounded-lg" />
+                  <div className="h-10 w-full bg-zinc-900 rounded-lg" />
+                </div>
+              )}
+
+              {!isFixingDay && fixDayResult && (
                 <div className="p-3 bg-zinc-950 border border-rose-500/30 rounded-xl text-left space-y-2">
                   <p className="text-xs text-zinc-200 font-medium">{fixDayResult.summary}</p>
                   <div className="space-y-1.5">
@@ -672,7 +841,15 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
       </div>
 
       {/* THREE MACRO METERS: Carbs (blue), Fat (amber), Protein (red) */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
+      <div
+        className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3"
+        aria-describedby="sr-macro-bars-summary"
+      >
+        <p id="sr-macro-bars-summary" className="sr-only">
+          {hasStats
+            ? `Macronutrients today: Carbohydrates ${carbsEaten} of ${macroTarget.carbsGrams} grams (${carbsPercent}%), Fat ${fatEaten} of ${macroTarget.fatGrams} grams (${fatPercent}%), Protein ${proteinEaten} of ${macroTarget.proteinGrams} grams (${proteinPercent}%).`
+            : 'Macronutrients today: Set up your profile to see macro gram targets.'}
+        </p>
         <div className="flex items-center justify-between">
           <div className="text-xs font-semibold text-zinc-300">Daily Macronutrients</div>
           {!hasStats && (
@@ -752,7 +929,13 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
       </div>
 
       {/* WATER TRACKER: Quick-add buttons + 8 tappable glasses per day */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3">
+      <div
+        className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-3"
+        aria-describedby="sr-water-tracker-summary"
+      >
+        <p id="sr-water-tracker-summary" className="sr-only">
+          {`Water intake today: ${waterGlasses} of 8 glasses (${waterGlasses * 250} milliliters).`}
+        </p>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Droplets className="w-4 h-4 text-cyan-400" />
@@ -767,7 +950,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
         <div className="grid grid-cols-3 gap-2">
           <button
             type="button"
-            onClick={() => updateWaterGlasses(waterGlasses + 1)}
+            onClick={() => handleWaterRequest(waterGlasses + 1)}
             aria-label="Add 250 milliliters of water"
             className="min-h-[38px] py-1.5 px-2.5 bg-zinc-950 hover:bg-cyan-950/40 border border-zinc-800 hover:border-cyan-500/40 rounded-xl text-xs font-mono font-semibold text-cyan-300 transition-colors"
           >
@@ -775,7 +958,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </button>
           <button
             type="button"
-            onClick={() => updateWaterGlasses(waterGlasses + 2)}
+            onClick={() => handleWaterRequest(waterGlasses + 2)}
             aria-label="Add 500 milliliters of water"
             className="min-h-[38px] py-1.5 px-2.5 bg-zinc-950 hover:bg-cyan-950/40 border border-zinc-800 hover:border-cyan-500/40 rounded-xl text-xs font-mono font-semibold text-cyan-300 transition-colors"
           >
@@ -783,7 +966,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </button>
           <button
             type="button"
-            onClick={() => updateWaterGlasses(waterGlasses + 4)}
+            onClick={() => handleWaterRequest(waterGlasses + 4)}
             aria-label="Add 1 liter of water"
             className="min-h-[38px] py-1.5 px-2.5 bg-zinc-950 hover:bg-cyan-950/40 border border-zinc-800 hover:border-cyan-500/40 rounded-xl text-xs font-mono font-semibold text-cyan-300 transition-colors"
           >
@@ -791,13 +974,41 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </button>
         </div>
 
+        {/* #6 Water glasses > 20 warning prompt */}
+        {pendingWaterCount !== null && (
+          <div className="p-3 bg-amber-950/70 border border-amber-500/40 rounded-xl flex items-center justify-between gap-2">
+            <span className="text-xs text-amber-200 font-medium">
+              That&apos;s more than 20 glasses. Are you sure?
+            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setPendingWaterCount(null)}
+                className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 rounded-lg text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  updateWaterGlasses(pendingWaterCount);
+                  setPendingWaterCount(null);
+                }}
+                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-semibold rounded-lg text-xs"
+              >
+                Yes ({pendingWaterCount})
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-8 gap-1.5">
           {Array.from({ length: 8 }).map((_, idx) => {
             const isFilled = idx < waterGlasses;
             return (
               <button
                 key={idx}
-                onClick={() => updateWaterGlasses(isFilled && idx === waterGlasses - 1 ? idx : idx + 1)}
+                onClick={() => handleWaterRequest(isFilled && idx === waterGlasses - 1 ? idx : idx + 1)}
                 aria-label={`Water glass ${idx + 1}`}
                 className={`min-h-[44px] py-2 rounded-xl flex flex-col items-center justify-center transition-all ${
                   isFilled
@@ -912,6 +1123,12 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               )}
             </div>
 
+            {(inlineExerciseError || validateExerciseMinutes(Math.round(decipheredExercise.totalMinutes))) && (
+              <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-300">
+                {inlineExerciseError || validateExerciseMinutes(Math.round(decipheredExercise.totalMinutes))}
+              </div>
+            )}
+
             <div className="flex items-center gap-2">
               <button
                 type="submit"
@@ -919,7 +1136,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                 className="flex-1 py-2.5 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
               >
                 <Check className="w-4 h-4" />
-                Save
+                {isSavingExercise ? 'Calculating...' : 'Save'}
               </button>
               <button
                 type="button"
@@ -946,7 +1163,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
 
           <button
             type="button"
-            onClick={() => openAddFood('lunch')}
+            onClick={() => openAddFood(lastSelectedMeal)}
             className="px-2.5 py-1 bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-teal-300 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors"
           >
             <Mic className="w-3.5 h-3.5" />
@@ -962,7 +1179,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
       </div>
 
       {/* FOUR MEAL SECTIONS: Breakfast (25%), Lunch (35%), Dinner (30%), Snacks (10%) */}
-      <div className="space-y-3.5">
+      <div ref={mealsSectionRef} className="space-y-3.5">
         {mealsList.map((meal) => {
           const items = diaryItems.filter((i) => i.mealType === meal.type);
           const mealKcal = items.reduce((sum, i) => sum + (i.calories || 0), 0);
@@ -1057,50 +1274,51 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                 </div>
               )}
 
-              {/* Logged Foods List */}
+              {/* Logged Foods List (#26 Swipe left to delete, Swipe right to duplicate into today, Long-press options) */}
               {items.length === 0 ? (
-                <div className="py-2.5 text-center text-xs text-zinc-600 border border-dashed border-zinc-800 rounded-xl">
-                  No foods logged yet — swipe left on items to delete or long-press for options
+                <div className="py-3 px-3 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                  No foods logged for {meal.title.toLowerCase()} yet. Tap Add to log a meal.
                 </div>
               ) : (
                 <div className="space-y-1.5">
                   {items.map((item) => {
-                    const isSwiped = swipedItemId === item.id;
                     const isLongPressed = longPressedItemId === item.id;
                     const isEditingNote = editingNoteId === item.id;
 
                     return (
                       <div key={item.id} className="space-y-1">
-                        <div className="relative overflow-hidden rounded-xl">
-                          {/* Swipe-left delete action background (#1) */}
-                          {isSwiped && (
-                            <button
-                              type="button"
-                              onClick={() => deleteFoodItem(item.id)}
-                              className="absolute inset-y-0 right-0 w-20 bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center justify-center gap-1 z-10 transition-all"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Delete
-                            </button>
-                          )}
-
-                          <div
-                            onTouchStart={(e) => handlePointerDownItem(item.id, e.touches[0].clientX)}
-                            onTouchMove={(e) => handlePointerMoveItem(item.id, e.touches[0].clientX)}
-                            onTouchEnd={handlePointerUpItem}
-                            onMouseDown={(e) => handlePointerDownItem(item.id, e.clientX)}
-                            onMouseMove={(e) => {
-                              if (e.buttons === 1) handlePointerMoveItem(item.id, e.clientX);
-                            }}
-                            onMouseUp={handlePointerUpItem}
-                            onContextMenu={(e) => {
-                              e.preventDefault();
-                              setLongPressedItemId(prev => (prev === item.id ? null : item.id));
-                            }}
-                            className={`p-2.5 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between group transition-transform select-none ${
-                              isSwiped ? '-translate-x-20' : 'translate-x-0'
-                            }`}
-                          >
+                        <SwipeableItem
+                          onDelete={() => deleteFoodItem(item.id)}
+                          onDuplicateToToday={() => handleDuplicateItemToToday(item)}
+                          duplicateLabel="Duplicate to Today"
+                          options={[
+                            {
+                              label: 'Duplicate into today',
+                              onClick: () => handleDuplicateItemToToday(item)
+                            },
+                            {
+                              label: 'Log again tomorrow',
+                              onClick: async () => {
+                                await logFoodAgainTomorrow(item);
+                                setCopyStatus(`Logged "${item.name}" for tomorrow`);
+                                setTimeout(() => setCopyStatus(null), 2500);
+                              }
+                            },
+                            {
+                              label: item.note ? 'Edit meal note' : 'Add meal note',
+                              onClick: () => {
+                                setEditingNoteId(item.id);
+                                setNoteDraft(item.note || '');
+                              }
+                            },
+                            {
+                              label: 'Delete food item',
+                              onClick: () => deleteFoodItem(item.id),
+                              destructive: true
+                            }
+                          ]}
+                        >
+                          <div className="p-2.5 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between group select-none">
                             <div
                               onClick={() => {
                                 setEditingNoteId(isEditingNote ? null : item.id);
@@ -1199,7 +1417,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                               </button>
                             </div>
                           </div>
-                        </div>
+                        </SwipeableItem>
 
                         {/* #2 Long-press "Log again tomorrow" action bar */}
                         {isLongPressed && (
@@ -1393,7 +1611,7 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </div>
         )}
 
-        {/* #16 "What can I make?" button */}
+        {/* #16 "What can I make?" button (#14 Calculating... & #13 skeleton) */}
         <button
           type="button"
           disabled={isKitchenAiBusy}
@@ -1416,13 +1634,23 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
               setIsKitchenAiBusy(false);
             }
           }}
-          className="w-full py-2 bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/30 text-teal-300 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
+          className="w-full py-2 bg-teal-500/15 hover:bg-teal-500/25 disabled:opacity-50 border border-teal-500/30 text-teal-300 font-semibold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors"
         >
-          {isKitchenAiBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ChefHat className="w-3.5 h-3.5" />}
-          What can I make? (3 meals for your remaining macros)
+          <ChefHat className="w-3.5 h-3.5" />
+          {isKitchenAiBusy
+            ? 'Calculating...'
+            : 'What can I make? (3 meals for your remaining macros)'}
         </button>
 
-        {kitchenMeals && kitchenMeals.length > 0 && (
+        {isKitchenAiBusy && (
+          <div className="space-y-2 pt-1 animate-pulse">
+            <div className="h-14 bg-zinc-950 border border-zinc-800 rounded-xl" />
+            <div className="h-14 bg-zinc-950 border border-zinc-800 rounded-xl" />
+            <div className="h-14 bg-zinc-950 border border-zinc-800 rounded-xl" />
+          </div>
+        )}
+
+        {!isKitchenAiBusy && kitchenMeals && kitchenMeals.length > 0 && (
           <div className="space-y-2 pt-1">
             {kitchenMeals.map((m, idx) => (
               <div key={idx} className="p-2.5 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between gap-2">
@@ -1669,29 +1897,42 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </div>
         </form>
 
-        {cravings.filter(c => c.date === activeDate).length > 0 && (
+        {cravings.filter(c => c.date === activeDate).length === 0 ? (
+          <div className="py-2.5 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+            No cravings logged today. Log when a craving hits to spot triggers.
+          </div>
+        ) : (
           <div className="space-y-1.5 pt-1">
             {cravings
               .filter(c => c.date === activeDate)
               .map((c) => (
-                <div
+                <SwipeableItem
                   key={c.id}
-                  className="p-2 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs"
+                  onDelete={() => deleteCravingItem(c.id)}
+                  options={[
+                    {
+                      label: 'Delete craving entry',
+                      onClick: () => deleteCravingItem(c.id),
+                      destructive: true
+                    }
+                  ]}
                 >
-                  <div>
-                    <span className="text-zinc-200 font-medium">{c.wantedFood}</span>
-                    <span className="text-[10px] text-zinc-500 font-mono block">
-                      {c.time} · Strength {c.intensity}/5 {c.trigger ? `· ${c.trigger}` : ''}
-                    </span>
+                  <div className="p-2 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs">
+                    <div>
+                      <span className="text-zinc-200 font-medium">{c.wantedFood}</span>
+                      <span className="text-[10px] text-zinc-500 font-mono block">
+                        {c.time} · Strength {c.intensity}/5 {c.trigger ? `· ${c.trigger}` : ''}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => deleteCravingItem(c.id)}
+                      className="p-1 text-zinc-600 hover:text-rose-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => deleteCravingItem(c.id)}
-                    className="p-1 text-zinc-600 hover:text-rose-400"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                </SwipeableItem>
               ))}
           </div>
         )}

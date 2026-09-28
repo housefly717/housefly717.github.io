@@ -13,6 +13,9 @@ import {
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
+import { SwipeableItem } from './SwipeableItem.js';
+import { SafeImage } from './SafeImage.js';
 import type { FriendRecord, SharedRecipeRecord, SavedRecipe } from '../types/index.js';
 
 export const SocialAccountabilitySection: React.FC = () => {
@@ -32,6 +35,7 @@ export const SocialAccountabilitySection: React.FC = () => {
   const [savedRecipes, setSavedRecipes] = useState<SavedRecipe[]>([]);
   const [friendUsername, setFriendUsername] = useState('');
   const [isPartnerInvite, setIsPartnerInvite] = useState(false);
+  const [friendToRemove, setFriendToRemove] = useState<FriendRecord | null>(null);
 
   // #43 Share a progress card state
   const [hideWeightOnCard, setHideWeightOnCard] = useState(true);
@@ -229,7 +233,7 @@ export const SocialAccountabilitySection: React.FC = () => {
 
         {cardPreviewUrl && (
           <div className="space-y-2 pt-1">
-            <img
+            <SafeImage
               src={cardPreviewUrl}
               alt="Weekly progress card"
               className="w-full rounded-xl border border-zinc-800"
@@ -319,52 +323,44 @@ export const SocialAccountabilitySection: React.FC = () => {
         ) : (
           <div className="space-y-1.5">
             {friends.map((f) => (
-              <div
+              <SwipeableItem
                 key={f.id}
-                className="p-2.5 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs"
+                itemTitle={`@${f.username}`}
+                onSwipeLeftDelete={() => setFriendToRemove(f)}
               >
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-zinc-200">@{f.username}</span>
-                  {(f.isPartner || profile.accountabilityPartner === f.username) && (
-                    <span className="px-1.5 py-0.5 rounded bg-teal-500/15 border border-teal-500/30 text-[9px] text-teal-300 font-mono">
-                      Partner
+                <div className="p-2.5 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-zinc-200">@{f.username}</span>
+                    {(f.isPartner || profile.accountabilityPartner === f.username) && (
+                      <span className="px-1.5 py-0.5 rounded bg-teal-500/15 border border-teal-500/30 text-[9px] text-teal-300 font-mono">
+                        Partner
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-mono font-bold text-teal-400">
+                      {f.streakDays}d streak
                     </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-mono font-bold text-teal-400">
-                    {f.streakDays}d streak
-                  </span>
-                  {profile.accountabilityPartner !== f.username && (
+                    {profile.accountabilityPartner !== f.username && (
+                      <button
+                        type="button"
+                        onClick={() => handleSetPartner(f.username)}
+                        className="text-[10px] text-zinc-500 hover:text-teal-300"
+                      >
+                        Set Partner
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => handleSetPartner(f.username)}
-                      className="text-[10px] text-zinc-500 hover:text-teal-300"
+                      onClick={() => setFriendToRemove(f)}
+                      aria-label={`Remove friend @${f.username}`}
+                      className="p-1 text-zinc-600 hover:text-rose-400"
                     >
-                      Set Partner
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      triggerUndoableDelete(
-                        `Removed @${f.username}`,
-                        async () => {
-                          setFriends(prev => prev.filter(x => x.id !== f.id));
-                          await api.removeFriend(f.id);
-                        },
-                        async () => {
-                          const readded = await api.addFriend(f.username, f.isPartner);
-                          setFriends(prev => [...prev, readded]);
-                        }
-                      )
-                    }
-                    className="p-1 text-zinc-600 hover:text-rose-400"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  </div>
                 </div>
-              </div>
+              </SwipeableItem>
             ))}
           </div>
         )}
@@ -460,6 +456,34 @@ export const SocialAccountabilitySection: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* #18 Two-step confirmation for removing a friend */}
+      <ConfirmDialog
+        isOpen={Boolean(friendToRemove)}
+        title={`Remove @${friendToRemove?.username || ''}?`}
+        description={`Are you sure you want to remove @${friendToRemove?.username || ''} from your friends list?`}
+        confirmLabel="Continue"
+        secondStepLabel="Remove Friend"
+        twoStep={true}
+        isDestructive={true}
+        onConfirm={() => {
+          if (!friendToRemove) return;
+          const target = friendToRemove;
+          setFriendToRemove(null);
+          triggerUndoableDelete(
+            `Removed @${target.username}`,
+            async () => {
+              setFriends(prev => prev.filter(x => x.id !== target.id));
+              await api.removeFriend(target.id);
+            },
+            async () => {
+              const readded = await api.addFriend(target.username, target.isPartner);
+              setFriends(prev => [...prev, readded]);
+            }
+          );
+        }}
+        onCancel={() => setFriendToRemove(null)}
+      />
     </div>
   );
 };

@@ -29,12 +29,21 @@ import {
   Gift,
   Copy,
   Check,
-  Globe
+  Globe,
+  Upload,
+  KeyRound,
+  Mail,
+  Bug,
+  LogOut
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
+import { APP_VERSION } from '../utils/i18n.js';
+import { validateAndMigrateBackup, CURRENT_BACKUP_SCHEMA_VERSION } from '../utils/backupMigration.js';
 import { WeeklyRecapModal } from './WeeklyRecapModal.js';
 import { SocialAccountabilitySection } from './SocialAccountabilitySection.js';
+import { ConfirmDialog } from './ConfirmDialog.js';
+import { SwipeableItem } from './SwipeableItem.js';
 import {
   hasCompleteProfileStats,
   calculateBmr,
@@ -44,6 +53,15 @@ import {
   calculateProjectedGoalDate,
   formatWeight
 } from '../utils/nutritionMath.js';
+import {
+  useDebounce,
+  validateAge,
+  validateHeightCm,
+  validateWeight,
+  validateBodyFat,
+  getDateBounds,
+  validateDateRange
+} from '../utils/validation.js';
 import type { SupportedLanguage } from '../utils/i18n.js';
 import type { UserProfile, ChatMessage } from '../types/index.js';
 
@@ -77,6 +95,7 @@ export const MeTab: React.FC<MeTabProps> = ({
 }) => {
   const {
     userId,
+    userEmail,
     profile,
     updateUserProfile,
     weights,
@@ -90,6 +109,7 @@ export const MeTab: React.FC<MeTabProps> = ({
     guestRemainingMs,
     openAuthModal,
     resetGuestSession,
+    refreshDayData,
     allDiaryItems,
     exercises,
     allExercises,
@@ -138,6 +158,8 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // Account deletion 2-step state & notice
   const [deleteStep, setDeleteStep] = useState<0 | 1>(0);
+  const [deletePasswordConfirm, setDeletePasswordConfirm] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletedBanner, setDeletedBanner] = useState<string | null>(() => {
     const msg = sessionStorage.getItem('caloriq_deleted_notice');
     if (msg) {
@@ -146,6 +168,33 @@ export const MeTab: React.FC<MeTabProps> = ({
     }
     return null;
   });
+
+  // #53, #58 Active sessions & Last signed in
+  const [sessionsList, setSessionsList] = useState<Array<{ id: string; deviceLabel: string; ip: string; createdAt: string; lastActiveAt: string; isCurrent: boolean }>>([]);
+  const lastSignedInAt = localStorage.getItem('caloriq_last_signed_in_at');
+
+  // #55 Email change flow state
+  const [showEmailChange, setShowEmailChange] = useState(false);
+  const [emailChangeCurrentPwd, setEmailChangeCurrentPwd] = useState('');
+  const [emailChangeNewEmail, setEmailChangeNewEmail] = useState('');
+  const [emailChangeStep, setEmailChangeStep] = useState<'request' | 'confirm'>('request');
+  const [emailChangeOldCode, setEmailChangeOldCode] = useState('');
+  const [emailChangeNewCode, setEmailChangeNewCode] = useState('');
+  const [emailChangeStatus, setEmailChangeStatus] = useState<string | null>(null);
+
+  // #56 Password change flow state
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
+  const [currentPasswordInput, setCurrentPasswordInput] = useState('');
+  const [newPasswordInput, setNewPasswordInput] = useState('');
+  const [passwordChangeStatus, setPasswordChangeStatus] = useState<string | null>(null);
+
+  // #62 Report a bug state
+  const [bugDescription, setBugDescription] = useState('');
+  const [bugStatus, setBugStatus] = useState<string | null>(null);
+  const [isSendingBug, setIsSendingBug] = useState(false);
+
+  // #79, #80 Backup import state
+  const [backupImportStatus, setBackupImportStatus] = useState<string | null>(null);
 
   // Referral code state
   const myReferralCode =
@@ -158,6 +207,8 @@ export const MeTab: React.FC<MeTabProps> = ({
   // Form State
   const [formData, setFormData] = useState<UserProfile>(profile);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const debouncedFormData = useDebounce(formData, 400);
 
   // "Why I started" pinned card state (#42)
   const [whyText, setWhyText] = useState(profile.pinnedWhy || '');
@@ -169,11 +220,15 @@ export const MeTab: React.FC<MeTabProps> = ({
   // Weight Log input
   const [newWeight, setNewWeight] = useState('');
   const [weightDate, setWeightDate] = useState(new Date().toISOString().split('T')[0]);
+  const [weightError, setWeightError] = useState<string | null>(null);
+  const debouncedNewWeight = useDebounce(newWeight, 400);
+  const { minDate, maxDate } = getDateBounds();
 
   // Chat with Developer State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
+  const [isLoadingChat, setIsLoadingChat] = useState(true);
 
   // Clear confirmation modal
   const [showClearConfirm, setShowClearConfirm] = useState(false);
@@ -194,7 +249,10 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   useEffect(() => {
     loadChatMessages();
-  }, []);
+    if (!isGuest) {
+      api.getSessions().then((res) => setSessionsList(res.sessions || [])).catch(() => {});
+    }
+  }, [isGuest]);
 
   const loadChatMessages = async () => {
     try {
@@ -202,6 +260,8 @@ export const MeTab: React.FC<MeTabProps> = ({
       setChatMessages(res.messages || []);
     } catch {
       // ignore
+    } finally {
+      setIsLoadingChat(false);
     }
   };
 
@@ -251,6 +311,44 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    setProfileError(null);
+
+    const ageErr = validateAge(formData.age);
+    if (ageErr) {
+      setProfileError(ageErr);
+      return;
+    }
+    const heightErr = validateHeightCm(formData.heightCm);
+    if (heightErr) {
+      setProfileError(heightErr);
+      return;
+    }
+    const currWeightVal =
+      formData.unitSystem === 'metric'
+        ? formData.currentWeightKg
+        : Math.round(formData.currentWeightKg * 2.20462 * 10) / 10;
+    const weightErr = validateWeight(currWeightVal, formData.unitSystem);
+    if (weightErr) {
+      setProfileError(weightErr);
+      return;
+    }
+    if (formData.goalWeightKg > 0) {
+      const goalVal =
+        formData.unitSystem === 'metric'
+          ? formData.goalWeightKg
+          : Math.round(formData.goalWeightKg * 2.20462 * 10) / 10;
+      const goalWeightErr = validateWeight(goalVal, formData.unitSystem);
+      if (goalWeightErr) {
+        setProfileError(goalWeightErr);
+        return;
+      }
+    }
+    const bfErr = validateBodyFat(formData.bodyFatPercent);
+    if (bfErr) {
+      setProfileError(bfErr);
+      return;
+    }
+
     await updateUserProfile(formData);
     setSaveStatus('Profile and macro targets updated successfully!');
     setTimeout(() => setSaveStatus(null), 3000);
@@ -258,6 +356,18 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   const handleAddWeight = async (e: React.FormEvent) => {
     e.preventDefault();
+    setWeightError(null);
+
+    const dateErr = validateDateRange(weightDate);
+    if (dateErr) {
+      setWeightError(dateErr);
+      return;
+    }
+    const wErr = validateWeight(newWeight, formData.unitSystem);
+    if (wErr) {
+      setWeightError(wErr);
+      return;
+    }
     const w = parseFloat(newWeight);
     if (!w || w <= 0) return;
 
@@ -310,6 +420,8 @@ export const MeTab: React.FC<MeTabProps> = ({
       }
 
       const cleanExport = {
+        schemaVersion: CURRENT_BACKUP_SCHEMA_VERSION,
+        exportedAt: new Date().toISOString(),
         profile,
         diary: diaryByDate,
         weights,
@@ -335,11 +447,65 @@ export const MeTab: React.FC<MeTabProps> = ({
     }
   };
 
-  const handlePermanentDeleteAccount = async () => {
+  const handleImportBackupFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBackupImportStatus('Validating backup file...');
     try {
-      await api.clearAllData();
-    } catch {
-      // ignore
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const migrated = validateAndMigrateBackup(parsed);
+      await api.importBackupData(migrated as unknown as Record<string, unknown>);
+      await refreshDayData();
+      setBackupImportStatus(
+        migrated.migratedFromVersion
+          ? `Backup restored and migrated from v${migrated.migratedFromVersion} to v${migrated.schemaVersion}.`
+          : 'Backup restored successfully.'
+      );
+    } catch (err: any) {
+      setBackupImportStatus(err?.message || 'Invalid backup JSON file.');
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleSubmitBugReport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bugDescription.trim() || isSendingBug) return;
+    setIsSendingBug(true);
+    setBugStatus(null);
+    try {
+      const recentErrors = ((window as any).__caloriqConsoleErrors || []).slice(-5);
+      await api.submitBugReport({
+        description: bugDescription.trim(),
+        browser: navigator.userAgent,
+        os: navigator.platform || 'Unknown OS',
+        screenSize: `${window.innerWidth}x${window.innerHeight}`,
+        route: window.location.pathname,
+        consoleErrors: recentErrors
+      });
+      setBugDescription('');
+      setBugStatus('Bug report submitted with diagnostic details. Thank you.');
+    } catch (err: any) {
+      setBugStatus(err?.message || 'Could not send bug report.');
+    } finally {
+      setIsSendingBug(false);
+    }
+  };
+
+  const handlePermanentDeleteAccount = async () => {
+    setDeleteError(null);
+    if (!isGuest && !deletePasswordConfirm.trim()) {
+      setDeleteError('Please enter your password (or type DELETE) to confirm permanent deletion.');
+      return;
+    }
+    try {
+      await api.deleteAccount(deletePasswordConfirm.trim());
+    } catch (err: any) {
+      if (!isGuest && err?.message) {
+        setDeleteError(err.message);
+        return;
+      }
     }
     const keysToRemove: string[] = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -353,6 +519,7 @@ export const MeTab: React.FC<MeTabProps> = ({
     );
     await resetGuestSession();
     setDeleteStep(0);
+    setDeletePasswordConfirm('');
     setDeletedBanner('Your account and all your data have been deleted.');
   };
 
@@ -827,22 +994,26 @@ export const MeTab: React.FC<MeTabProps> = ({
         ) : (
           <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
             {victories.map((v) => (
-              <div
+              <SwipeableItem
                 key={v.id}
-                className="p-2.5 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs"
+                itemTitle={v.text}
+                onSwipeLeftDelete={() => deleteVictoryItem(v.id)}
               >
-                <div>
-                  <span className="text-zinc-200 font-medium block">{v.text}</span>
-                  <span className="text-[10px] text-zinc-500 font-mono">{v.date}</span>
+                <div className="p-2.5 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs">
+                  <div>
+                    <span className="text-zinc-200 font-medium block">{v.text}</span>
+                    <span className="text-[10px] text-zinc-500 font-mono">{v.date}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => deleteVictoryItem(v.id)}
+                    aria-label={`Delete victory ${v.text}`}
+                    className="p-1 text-zinc-600 hover:text-rose-400 transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => deleteVictoryItem(v.id)}
-                  className="p-1 text-zinc-600 hover:text-rose-400 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
+              </SwipeableItem>
             ))}
           </div>
         )}
@@ -900,11 +1071,16 @@ export const MeTab: React.FC<MeTabProps> = ({
               max="120"
               value={formData.age > 0 ? formData.age : ''}
               onChange={(e) => setFormData(p => ({ ...p, age: e.target.value ? Number(e.target.value) : 0 }))}
-              placeholder=""
+              placeholder="13–120"
               required
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
-            {formData.age > 0 && formData.age < 18 && (
+            {debouncedFormData.age > 0 && validateAge(debouncedFormData.age) && (
+              <span className="text-[10px] text-rose-400 mt-1 block">
+                {validateAge(debouncedFormData.age)}
+              </span>
+            )}
+            {formData.age >= 13 && formData.age < 18 && (
               <span className="text-[10px] text-amber-400 mt-1 block">
                 Use Caloriq with a parent or guardian.
               </span>
@@ -915,7 +1091,7 @@ export const MeTab: React.FC<MeTabProps> = ({
             <label className="block text-xs font-medium text-zinc-400 mb-1">Height (cm)</label>
             <input
               type="number"
-              min="100"
+              min="50"
               max="250"
               value={formData.heightCm > 0 ? formData.heightCm : ''}
               onChange={(e) => setFormData(p => ({ ...p, heightCm: e.target.value ? Number(e.target.value) : 0 }))}
@@ -923,6 +1099,11 @@ export const MeTab: React.FC<MeTabProps> = ({
               required
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
+            {debouncedFormData.heightCm > 0 && validateHeightCm(debouncedFormData.heightCm) && (
+              <span className="text-[10px] text-rose-400 mt-1 block">
+                {validateHeightCm(debouncedFormData.heightCm)}
+              </span>
+            )}
           </div>
 
           <div>
@@ -932,6 +1113,8 @@ export const MeTab: React.FC<MeTabProps> = ({
             <input
               type="number"
               step="0.1"
+              min={formData.unitSystem === 'metric' ? 20 : 44}
+              max={formData.unitSystem === 'metric' ? 500 : 1100}
               value={
                 formData.currentWeightKg > 0
                   ? formData.unitSystem === 'metric'
@@ -952,6 +1135,22 @@ export const MeTab: React.FC<MeTabProps> = ({
               required
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
+            {debouncedFormData.currentWeightKg > 0 &&
+              validateWeight(
+                debouncedFormData.unitSystem === 'metric'
+                  ? debouncedFormData.currentWeightKg
+                  : Math.round(debouncedFormData.currentWeightKg * 2.20462 * 10) / 10,
+                debouncedFormData.unitSystem
+              ) && (
+                <span className="text-[10px] text-rose-400 mt-1 block">
+                  {validateWeight(
+                    debouncedFormData.unitSystem === 'metric'
+                      ? debouncedFormData.currentWeightKg
+                      : Math.round(debouncedFormData.currentWeightKg * 2.20462 * 10) / 10,
+                    debouncedFormData.unitSystem
+                  )}
+                </span>
+              )}
           </div>
 
           <div>
@@ -961,6 +1160,8 @@ export const MeTab: React.FC<MeTabProps> = ({
             <input
               type="number"
               step="0.1"
+              min={formData.unitSystem === 'metric' ? 20 : 44}
+              max={formData.unitSystem === 'metric' ? 500 : 1100}
               value={
                 formData.goalWeightKg > 0
                   ? formData.unitSystem === 'metric'
@@ -993,6 +1194,12 @@ export const MeTab: React.FC<MeTabProps> = ({
               placeholder="e.g. 18 (uses Katch-McArdle)"
               className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
             />
+            {debouncedFormData.bodyFatPercent !== undefined &&
+              validateBodyFat(debouncedFormData.bodyFatPercent) && (
+                <span className="text-[10px] text-rose-400 mt-1 block">
+                  {validateBodyFat(debouncedFormData.bodyFatPercent)}
+                </span>
+              )}
           </div>
 
           <div>
@@ -1045,6 +1252,12 @@ export const MeTab: React.FC<MeTabProps> = ({
             <option value="gain_normal">Gain Normal (+500 kcal/day)</option>
           </select>
         </div>
+
+        {profileError && (
+          <div className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+            {profileError}
+          </div>
+        )}
 
         <button
           type="submit"
@@ -1109,53 +1322,75 @@ export const MeTab: React.FC<MeTabProps> = ({
           </p>
         )}
 
-        <form onSubmit={handleAddWeight} className="flex gap-2">
-          <input
-            type="date"
-            value={weightDate}
-            onChange={(e) => setWeightDate(e.target.value)}
-            required
-            className="bg-zinc-950 border border-zinc-800 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-teal-500 font-mono"
-          />
-          <input
-            type="number"
-            step="0.1"
-            value={newWeight}
-            onChange={(e) => setNewWeight(e.target.value)}
-            placeholder={`Weight in ${formData.unitSystem === 'metric' ? 'kg' : 'lbs'}`}
-            required
-            className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
-          />
-          <button
-            type="submit"
-            className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold text-xs rounded-xl flex items-center gap-1 transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Log
-          </button>
+        <form onSubmit={handleAddWeight} className="space-y-2">
+          <div className="flex gap-2">
+            <input
+              type="date"
+              min={minDate}
+              max={maxDate}
+              value={weightDate}
+              onChange={(e) => setWeightDate(e.target.value)}
+              required
+              className="bg-zinc-950 border border-zinc-800 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:border-teal-500 font-mono"
+            />
+            <input
+              type="number"
+              step="0.1"
+              min={formData.unitSystem === 'metric' ? 20 : 44}
+              max={formData.unitSystem === 'metric' ? 500 : 1100}
+              value={newWeight}
+              onChange={(e) => setNewWeight(e.target.value)}
+              placeholder={`Weight in ${formData.unitSystem === 'metric' ? 'kg' : 'lbs'}`}
+              required
+              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
+            />
+            <button
+              type="submit"
+              className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold text-xs rounded-xl flex items-center gap-1 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Log
+            </button>
+          </div>
+          {(weightError || (debouncedNewWeight !== '' && validateWeight(debouncedNewWeight, formData.unitSystem))) && (
+            <p className="text-xs text-rose-400">
+              {weightError || validateWeight(debouncedNewWeight, formData.unitSystem)}
+            </p>
+          )}
         </form>
 
-        <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
-          {sortedWeights.slice().reverse().map((w) => (
-            <div
-              key={w.id}
-              className="p-2 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs font-mono"
-            >
-              <span className="text-zinc-400">{w.date}</span>
-              <div className="flex items-center gap-3">
-                <span className="text-zinc-100 font-bold">
-                  {formatWeight(w.weightKg, formData.unitSystem)}
-                </span>
-                <button
-                  onClick={() => deleteWeightLog(w.id)}
-                  className="p-1 text-zinc-600 hover:text-rose-400 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+        {sortedWeights.length === 0 ? (
+          <p className="text-xs text-zinc-500 text-center py-3 bg-zinc-950/40 border border-zinc-850 rounded-xl">
+            No weigh-ins logged yet. Add your weight above to start tracking your progress.
+          </p>
+        ) : (
+          <div className="max-h-40 overflow-y-auto space-y-1.5 pr-1">
+            {sortedWeights.slice().reverse().map((w) => (
+              <SwipeableItem
+                key={w.id}
+                itemTitle={`Weight on ${w.date}`}
+                onSwipeLeftDelete={() => deleteWeightLog(w.id)}
+              >
+                <div className="p-2 bg-zinc-950/70 border border-zinc-850 rounded-xl flex items-center justify-between text-xs font-mono">
+                  <span className="text-zinc-400">{w.date}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="text-zinc-100 font-bold">
+                      {formatWeight(w.weightKg, formData.unitSystem)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => deleteWeightLog(w.id)}
+                      aria-label={`Delete weight entry on ${w.date}`}
+                      className="p-1 text-zinc-600 hover:text-rose-400 transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </SwipeableItem>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* XP & BADGES */}
@@ -1169,6 +1404,12 @@ export const MeTab: React.FC<MeTabProps> = ({
             Level {stats.level} ({stats.xp} XP)
           </span>
         </div>
+
+        {stats.badges.length === 0 && (
+          <p className="text-xs text-zinc-500 bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-2.5 text-center">
+            No badges unlocked yet. Log your first meal, water glass, or weigh-in to earn your first badge.
+          </p>
+        )}
 
         <div className="grid grid-cols-2 gap-2">
           {BADGE_DEFINITIONS.map((badge) => {
@@ -1297,7 +1538,13 @@ export const MeTab: React.FC<MeTabProps> = ({
         </div>
 
         <div className="h-44 overflow-y-auto bg-zinc-950 rounded-xl p-3 border border-zinc-850 space-y-2">
-          {chatMessages.length === 0 ? (
+          {isLoadingChat ? (
+            <div className="space-y-2 py-2">
+              <div className="w-2/3 h-8 rounded-xl bg-zinc-800/80 animate-pulse" />
+              <div className="w-1/2 h-8 rounded-xl bg-zinc-800/80 animate-pulse ml-auto" />
+              <div className="w-3/4 h-8 rounded-xl bg-zinc-800/80 animate-pulse" />
+            </div>
+          ) : chatMessages.length === 0 ? (
             <p className="text-xs text-zinc-600 text-center py-8">
               Send questions, bug reports, or feature ideas directly to the developer.
             </p>
@@ -1339,6 +1586,264 @@ export const MeTab: React.FC<MeTabProps> = ({
           >
             <Send className="w-4 h-4" />
           </button>
+        </form>
+      </div>
+
+      {/* #53, #55, #56, #58 ACCOUNT SECURITY & ACTIVE SESSIONS */}
+      {!isGuest && (
+        <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Shield className="w-4 h-4 text-teal-400" />
+              <div>
+                <h4 className="text-sm font-semibold text-zinc-200">Account Security &amp; Sessions</h4>
+                <span className="text-[11px] text-zinc-400 block">
+                  Signed in as {userEmail || 'Member'}
+                  {lastSignedInAt
+                    ? ` · Last signed in ${new Date(lastSignedInAt).toLocaleDateString()}`
+                    : ''}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setShowEmailChange((v) => !v);
+                setShowPasswordChange(false);
+              }}
+              aria-label="Change account email"
+              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Mail className="w-3.5 h-3.5 text-teal-400" />
+              Change Email
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowPasswordChange((v) => !v);
+                setShowEmailChange(false);
+              }}
+              aria-label="Change account password"
+              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <KeyRound className="w-3.5 h-3.5 text-teal-400" />
+              Change Password
+            </button>
+          </div>
+
+          {/* #55 Email Change Form */}
+          {showEmailChange && (
+            <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-xl space-y-3">
+              <h5 className="text-xs font-bold text-zinc-200">Change Email (Verifies old &amp; new address)</h5>
+              {emailChangeStep === 'request' ? (
+                <div className="space-y-2">
+                  <input
+                    type="password"
+                    value={emailChangeCurrentPwd}
+                    onChange={(e) => setEmailChangeCurrentPwd(e.target.value)}
+                    placeholder="Current password"
+                    aria-label="Current password for email change"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
+                  />
+                  <input
+                    type="email"
+                    value={emailChangeNewEmail}
+                    onChange={(e) => setEmailChangeNewEmail(e.target.value)}
+                    placeholder="New email address"
+                    aria-label="New email address"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setEmailChangeStatus(null);
+                      try {
+                        const res = await api.requestEmailChange(emailChangeCurrentPwd, emailChangeNewEmail);
+                        setEmailChangeStep('confirm');
+                        setEmailChangeStatus(res.message);
+                      } catch (err: any) {
+                        setEmailChangeStatus(err?.message || 'Failed to request email change.');
+                      }
+                    }}
+                    className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs"
+                  >
+                    Send Verification Codes
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={emailChangeOldCode}
+                    onChange={(e) => setEmailChangeOldCode(e.target.value)}
+                    placeholder="6-digit code from current email"
+                    aria-label="6-digit code from current email"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono text-zinc-100"
+                  />
+                  <input
+                    type="text"
+                    value={emailChangeNewCode}
+                    onChange={(e) => setEmailChangeNewCode(e.target.value)}
+                    placeholder="6-digit code from new email"
+                    aria-label="6-digit code from new email"
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono text-zinc-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const res = await api.confirmEmailChange(emailChangeNewEmail, emailChangeOldCode, emailChangeNewCode);
+                        setEmailChangeStatus(`Email updated to ${res.email}.`);
+                        setShowEmailChange(false);
+                      } catch (err: any) {
+                        setEmailChangeStatus(err?.message || 'Verification failed.');
+                      }
+                    }}
+                    className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs"
+                  >
+                    Confirm Email Change
+                  </button>
+                </div>
+              )}
+              {emailChangeStatus && (
+                <p role="status" aria-live="polite" className="text-[11px] text-teal-300">
+                  {emailChangeStatus}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* #56 Password Change Form */}
+          {showPasswordChange && (
+            <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2.5">
+              <h5 className="text-xs font-bold text-zinc-200">Change Password</h5>
+              <input
+                type="password"
+                value={currentPasswordInput}
+                onChange={(e) => setCurrentPasswordInput(e.target.value)}
+                placeholder="Current password"
+                aria-label="Current password"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
+              />
+              <input
+                type="password"
+                value={newPasswordInput}
+                onChange={(e) => setNewPasswordInput(e.target.value)}
+                placeholder="New password (at least 6 characters)"
+                aria-label="New password"
+                className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
+              />
+              <button
+                type="button"
+                onClick={async () => {
+                  setPasswordChangeStatus(null);
+                  try {
+                    const res = await api.changePassword(currentPasswordInput, newPasswordInput);
+                    setPasswordChangeStatus(res.message);
+                    setCurrentPasswordInput('');
+                    setNewPasswordInput('');
+                  } catch (err: any) {
+                    setPasswordChangeStatus(err?.message || 'Could not update password.');
+                  }
+                }}
+                className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs"
+              >
+                Update Password
+              </button>
+              {passwordChangeStatus && (
+                <p role="status" aria-live="polite" className="text-[11px] text-teal-300">
+                  {passwordChangeStatus}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* #58 Active Sessions List */}
+          <div className="space-y-2 pt-2 border-t border-zinc-800">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-zinc-300">Signed-In Devices</span>
+              {sessionsList.length > 1 && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await api.revokeAllSessions(true);
+                    const res = await api.getSessions();
+                    setSessionsList(res.sessions || []);
+                  }}
+                  className="text-[11px] text-rose-400 hover:text-rose-300 underline"
+                >
+                  Sign out all other devices
+                </button>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {sessionsList.map((sess) => (
+                <div
+                  key={sess.id}
+                  className="p-2.5 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between gap-2 text-xs"
+                >
+                  <div>
+                    <span className="font-semibold text-zinc-200 block">
+                      {sess.deviceLabel} {sess.isCurrent ? '(This device)' : ''}
+                    </span>
+                    <span className="text-[10px] font-mono text-zinc-400">
+                      Active {new Date(sess.lastActiveAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {!sess.isCurrent && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await api.revokeSession(sess.id);
+                        setSessionsList((prev) => prev.filter((s) => s.id !== sess.id));
+                      }}
+                      className="px-2.5 py-1 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 rounded-lg text-[11px] text-zinc-300"
+                    >
+                      Sign out
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* #62 REPORT A BUG FORM */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3">
+        <div className="flex items-center gap-2">
+          <Bug className="w-4 h-4 text-teal-400" />
+          <div>
+            <h4 className="text-sm font-semibold text-zinc-200">Report a bug</h4>
+            <span className="text-[11px] text-zinc-400">
+              Automatically includes your browser, OS, screen size, current route, and recent console errors.
+            </span>
+          </div>
+        </div>
+        <form onSubmit={handleSubmitBugReport} className="space-y-2.5">
+          <textarea
+            rows={2}
+            value={bugDescription}
+            onChange={(e) => setBugDescription(e.target.value)}
+            placeholder="Describe what happened and what you expected..."
+            aria-label="Describe the bug"
+            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:border-teal-500 resize-none"
+          />
+          <button
+            type="submit"
+            disabled={isSendingBug || !bugDescription.trim()}
+            className="w-full py-2 bg-zinc-950 hover:bg-zinc-850 disabled:opacity-50 border border-teal-500/40 text-teal-300 font-semibold rounded-xl text-xs transition-colors"
+          >
+            {isSendingBug ? 'Sending report...' : 'Submit Bug Report'}
+          </button>
+          {bugStatus && (
+            <p role="status" aria-live="polite" className="text-xs text-teal-300">
+              {bugStatus}
+            </p>
+          )}
         </form>
       </div>
 
@@ -1389,16 +1894,47 @@ export const MeTab: React.FC<MeTabProps> = ({
             </a>
           </div>
 
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleExportData}
+              aria-label="Export data as JSON"
+              className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
+            >
+              <Download className="w-4 h-4 text-teal-400" />
+              Export JSON
+            </button>
+
+            <label className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors cursor-pointer">
+              <Upload className="w-4 h-4 text-teal-400" />
+              <span>Restore JSON</span>
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={handleImportBackupFile}
+                aria-label="Restore backup from JSON file"
+                className="sr-only"
+              />
+            </label>
+          </div>
+
+          {backupImportStatus && (
+            <p role="status" aria-live="polite" className="text-xs text-teal-300 text-center">
+              {backupImportStatus}
+            </p>
+          )}
+
           <button
-            onClick={handleExportData}
-            aria-label="Export data as JSON"
-            className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-300 flex items-center justify-center gap-2 transition-colors"
+            type="button"
+            onClick={() => setShowClearConfirm(true)}
+            aria-label="Clear all data"
+            className="w-full p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-amber-300 flex items-center justify-center gap-2 transition-colors"
           >
-            <Download className="w-4 h-4 text-teal-400" />
-            Export data as JSON
+            <Trash2 className="w-4 h-4 text-amber-400" />
+            Clear all data
           </button>
 
-          {/* #4 Two-Step Account Deletion */}
+          {/* #18 & #43 Two-Step Account Deletion with Password Confirmation */}
           {deleteStep === 0 ? (
             <button
               type="button"
@@ -1414,6 +1950,21 @@ export const MeTab: React.FC<MeTabProps> = ({
               <p className="text-xs text-rose-200 font-medium text-center">
                 Are you sure? This permanently deletes your account and all your data.
               </p>
+              {!isGuest && (
+                <input
+                  type="password"
+                  value={deletePasswordConfirm}
+                  onChange={(e) => setDeletePasswordConfirm(e.target.value)}
+                  placeholder="Enter your password (or type DELETE) to confirm"
+                  aria-label="Confirm password to delete account"
+                  className="w-full bg-zinc-950 border border-rose-500/40 rounded-lg px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-500"
+                />
+              )}
+              {deleteError && (
+                <p role="alert" className="text-xs text-rose-300 text-center">
+                  {deleteError}
+                </p>
+              )}
               <div className="flex gap-2">
                 <button
                   type="button"
@@ -1425,7 +1976,11 @@ export const MeTab: React.FC<MeTabProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDeleteStep(0)}
+                  onClick={() => {
+                    setDeleteStep(0);
+                    setDeletePasswordConfirm('');
+                    setDeleteError(null);
+                  }}
                   aria-label="Cancel account deletion"
                   className="px-3 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs font-medium"
                 >
@@ -1434,38 +1989,25 @@ export const MeTab: React.FC<MeTabProps> = ({
               </div>
             </div>
           )}
+
+          <div className="pt-2 text-center text-[11px] font-mono text-zinc-400">
+            Caloriq {APP_VERSION}
+          </div>
         </div>
       </div>
 
-      {showClearConfirm && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-xs w-full p-5 text-center space-y-4">
-            <div className="w-10 h-10 rounded-full bg-rose-500/10 text-rose-400 flex items-center justify-center mx-auto">
-              <AlertTriangle className="w-5 h-5" />
-            </div>
-            <div>
-              <h5 className="text-sm font-bold text-zinc-100">Clear All Tracking Data?</h5>
-              <p className="text-xs text-zinc-400 mt-1">
-                This will delete all logged meals, exercises, weights, and recipes. This action cannot be undone.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowClearConfirm(false)}
-                className="flex-1 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-medium text-zinc-300"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleConfirmClear}
-                className="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-xs font-bold text-white shadow-md shadow-rose-600/30"
-              >
-                Clear Data
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* #18 Two-step confirmation for clearing all data */}
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        title="Clear All Tracking Data?"
+        description="This will delete all logged meals, exercises, weights, and recipes. This action cannot be undone."
+        confirmLabel="Continue"
+        secondStepLabel="Yes, Clear All Data"
+        twoStep={true}
+        isDestructive={true}
+        onConfirm={handleConfirmClear}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 };

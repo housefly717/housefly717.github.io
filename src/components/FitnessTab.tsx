@@ -15,6 +15,9 @@ import {
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { decipherExerciseText } from '../utils/localAiEngine.js';
+import { useDebounce, validateExerciseMinutes } from '../utils/validation.js';
+import { SwipeableItem } from './SwipeableItem.js';
+import { SafeImage } from './SafeImage.js';
 import type { BodyMeasurement, ProgressPhoto } from '../types/index.js';
 
 export const FitnessTab: React.FC = () => {
@@ -29,13 +32,21 @@ export const FitnessTab: React.FC = () => {
     triggerUndoableDelete
   } = useApp();
 
-  // Natural Language In-Code AI Exercise Logger
-  const [workoutDescription, setWorkoutDescription] = useState<string>('');
+  // Natural Language In-Code AI Exercise Logger (#16 draft save)
+  const [workoutDescription, setWorkoutDescription] = useState<string>(() => {
+    return localStorage.getItem('caloriq_draft_exercise_ai') || '';
+  });
+  const debouncedWorkoutDescription = useDebounce(workoutDescription, 400);
   const [liftWeightKg, setLiftWeightKg] = useState<string>('');
   const [liftReps, setLiftReps] = useState<string>('');
   const [distanceKm, setDistanceKm] = useState<string>('');
   const [plankSeconds, setPlankSeconds] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [exerciseError, setExerciseError] = useState<string | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('caloriq_draft_exercise_ai', workoutDescription);
+  }, [workoutDescription]);
 
   // #22 Body Measurements
   const [measurements, setMeasurements] = useState<BodyMeasurement[]>([]);
@@ -137,29 +148,42 @@ export const FitnessTab: React.FC = () => {
 
   const userWeightKg = profile.currentWeightKg || 70;
   const decipheredWorkout = useMemo(
-    () => decipherExerciseText(workoutDescription, userWeightKg),
-    [workoutDescription, userWeightKg]
+    () => decipherExerciseText(debouncedWorkoutDescription, userWeightKg),
+    [debouncedWorkoutDescription, userWeightKg]
   );
+  const exerciseMinutesWarning =
+    debouncedWorkoutDescription.trim() && decipheredWorkout.totalMinutes > 600
+      ? validateExerciseMinutes(decipheredWorkout.totalMinutes)
+      : null;
 
   const handleLogExercise = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!workoutDescription.trim() || decipheredWorkout.totalCaloriesBurned <= 0) return;
+    setExerciseError(null);
+    const liveDeciphered = decipherExerciseText(workoutDescription, userWeightKg);
+    if (!workoutDescription.trim() || liveDeciphered.totalCaloriesBurned <= 0) return;
+
+    const minErr = validateExerciseMinutes(liveDeciphered.totalMinutes);
+    if (minErr) {
+      setExerciseError(minErr);
+      return;
+    }
 
     setIsSubmitting(true);
     try {
       await addExerciseItem({
         date: activeDate,
-        activityName: decipheredWorkout.summaryTitle,
-        met: decipheredWorkout.averageMet,
-        minutes: Math.max(1, Math.round(decipheredWorkout.totalMinutes)),
-        caloriesBurned: decipheredWorkout.totalCaloriesBurned,
-        intensity: decipheredWorkout.overallIntensity,
+        activityName: liveDeciphered.summaryTitle,
+        met: liveDeciphered.averageMet,
+        minutes: Math.max(1, Math.round(liveDeciphered.totalMinutes)),
+        caloriesBurned: liveDeciphered.totalCaloriesBurned,
+        intensity: liveDeciphered.overallIntensity,
         weightKg: liftWeightKg ? Number(liftWeightKg) : undefined,
         reps: liftReps ? Number(liftReps) : undefined,
         distanceKm: distanceKm ? Number(distanceKm) : undefined,
         plankSeconds: plankSeconds ? Number(plankSeconds) : undefined
       });
       setWorkoutDescription('');
+      localStorage.removeItem('caloriq_draft_exercise_ai');
       setLiftWeightKg('');
       setLiftReps('');
       setDistanceKm('');
@@ -392,13 +416,30 @@ export const FitnessTab: React.FC = () => {
             </div>
           </div>
 
+          {(exerciseError || exerciseMinutesWarning) && (
+            <div className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+              {exerciseError || exerciseMinutesWarning}
+            </div>
+          )}
+
           <button
             type="submit"
-            disabled={isSubmitting || !workoutDescription.trim() || decipheredWorkout.totalCaloriesBurned <= 0}
+            disabled={
+              isSubmitting ||
+              !workoutDescription.trim() ||
+              decipheredWorkout.totalCaloriesBurned <= 0 ||
+              Boolean(exerciseMinutesWarning)
+            }
             className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
           >
-            <Plus className="w-4 h-4" />
-            Save Exercise
+            {isSubmitting ? (
+              <span>Calculating...</span>
+            ) : (
+              <>
+                <Plus className="w-4 h-4" />
+                <span>Save Exercise</span>
+              </>
+            )}
           </button>
         </form>
       </div>
@@ -622,7 +663,7 @@ export const FitnessTab: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <img
+                <SafeImage
                   src={leftPhoto.dataUrl}
                   alt="Before comparison"
                   className="w-full h-36 object-cover rounded-lg border border-zinc-800"
@@ -641,7 +682,7 @@ export const FitnessTab: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <img
+                <SafeImage
                   src={rightPhoto.dataUrl}
                   alt="After comparison"
                   className="w-full h-36 object-cover rounded-lg border border-zinc-800"
@@ -654,7 +695,7 @@ export const FitnessTab: React.FC = () => {
         {photos.length === 1 && (
           <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              <img src={photos[0].dataUrl} alt="Progress" className="w-12 h-12 object-cover rounded-lg" />
+              <SafeImage src={photos[0].dataUrl} alt="Progress" className="w-12 h-12 object-cover rounded-lg" />
               <div>
                 <span className="text-xs font-semibold text-zinc-200 uppercase block">{photos[0].label}</span>
                 <span className="text-[10px] text-zinc-500 font-mono">{photos[0].date} · Add 1 more for side-by-side compare</span>
@@ -677,38 +718,41 @@ export const FitnessTab: React.FC = () => {
         ) : (
           <div className="space-y-2">
             {exercises.map((item) => (
-              <div
+              <SwipeableItem
                 key={item.id}
-                className="p-3 bg-zinc-950/70 border border-zinc-800 rounded-xl flex items-center justify-between group"
+                itemTitle={item.activityName}
+                onSwipeLeftDelete={() => deleteExerciseItem(item.id)}
               >
-                <div>
-                  <span className="text-xs font-semibold text-zinc-200 block">
-                    {item.activityName}
-                  </span>
-                  <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono mt-0.5">
-                    <span>{item.minutes} mins</span>
-                    <span>·</span>
-                    <span className="text-zinc-400">MET {item.met}</span>
-                    <span>·</span>
-                    <span className="text-teal-400/80">{item.intensity}</span>
-                    {item.weightKg && <span>· {item.weightKg}kg{item.reps ? `×${item.reps}` : ''}</span>}
-                    {item.distanceKm && <span>· {item.distanceKm}km</span>}
+                <div className="p-3 bg-zinc-950/70 border border-zinc-800 rounded-xl flex items-center justify-between group">
+                  <div>
+                    <span className="text-xs font-semibold text-zinc-200 block">
+                      {item.activityName}
+                    </span>
+                    <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono mt-0.5">
+                      <span>{item.minutes} mins</span>
+                      <span>·</span>
+                      <span className="text-zinc-400">MET {item.met}</span>
+                      <span>·</span>
+                      <span className="text-teal-400/80">{item.intensity}</span>
+                      {item.weightKg && <span>· {item.weightKg}kg{item.reps ? `×${item.reps}` : ''}</span>}
+                      {item.distanceKm && <span>· {item.distanceKm}km</span>}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <span className="text-sm font-bold text-teal-400 font-mono">
+                      +{item.caloriesBurned} kcal
+                    </span>
+                    <button
+                      onClick={() => deleteExerciseItem(item.id)}
+                      className="p-1 text-zinc-600 hover:text-rose-400 rounded transition-colors"
+                      aria-label="Delete exercise"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-bold text-teal-400 font-mono">
-                    +{item.caloriesBurned} kcal
-                  </span>
-                  <button
-                    onClick={() => deleteExerciseItem(item.id)}
-                    className="p-1 text-zinc-600 hover:text-rose-400 rounded transition-colors"
-                    aria-label="Delete exercise"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
+              </SwipeableItem>
             ))}
           </div>
         )}

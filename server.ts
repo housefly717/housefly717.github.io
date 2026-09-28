@@ -56,10 +56,12 @@ import {
   getSavedRecipes,
   findSavedRecipeByName,
   saveRecipe,
+  deleteSavedRecipe,
   getMealTemplates,
   saveMealTemplate,
   applyMealTemplate,
   deleteMealTemplate,
+  restoreMealTemplate,
   getPlan,
   savePlan,
   getChatMessages,
@@ -67,14 +69,39 @@ import {
   setUsdaApiKey,
   hasUsdaApiKey,
   exportUserData,
-  clearUserData
+  clearUserData,
+  deleteUserAccount,
+  sanitizeObjectStrings,
+  sanitizeString,
+  recordUserSession,
+  getUserSessions,
+  revokeUserSession,
+  revokeAllUserSessions,
+  verifyUserPassword,
+  changeUserPassword,
+  changeUserEmail,
+  loginOrSignupWithGoogle,
+  createDemoAccount,
+  logCookieConsent,
+  getCookieConsentLogs,
+  recordPrivacyAnalyticsEvent,
+  getPrivacyAnalyticsSummary,
+  saveContactMessage,
+  getContactMessages,
+  saveBugReport,
+  getBugReports,
+  getMaintenanceStatus,
+  setMaintenanceStatus,
+  importUserBackupData
 } from './src/server/db.js';
 import {
   createAndSendVerificationCode,
   validateVerificationCode,
   sendWelcomeEmail,
   createAndSendPasswordResetEmail,
-  validateAndConsumePasswordResetToken
+  validateAndConsumePasswordResetToken,
+  sendContactMessageEmail,
+  sendUptimeAlertEmail
 } from './src/server/emailService.js';
 import { parseIngredientLine } from './src/server/foodData.js';
 import { searchUsdaFoods } from './src/server/usda.js';
@@ -98,6 +125,72 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '15mb' }));
+
+// #24 Enforce HTTPS (redirect http to https in production) & #25 Content Security Policy header
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (
+    process.env.NODE_ENV === 'production' &&
+    req.headers['x-forwarded-proto'] === 'http'
+  ) {
+    res.redirect(301, `https://${req.headers.host}${req.url}`);
+    return;
+  }
+
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.firebaseio.com https://*.googleapis.com https://*.gstatic.com https://apis.google.com; connect-src 'self' ws: wss: https://*.firebaseio.com https://*.googleapis.com https://generativelanguage.googleapis.com https://api.nal.usda.gov https://world.openfoodfacts.org; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https:; frame-ancestors *;"
+  );
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  // #26 Sanitize every user input before storing
+  if (req.body && typeof req.body === 'object') {
+    req.body = sanitizeObjectStrings(req.body);
+  }
+  next();
+});
+
+// #27 Rate limit signup, login, password reset, and AI calls per IP and per account
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(key: string, maxRequests: number, windowMs: number): boolean {
+  const now = Date.now();
+  const bucket = rateLimitBuckets.get(key);
+  if (!bucket || now > bucket.resetAt) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (bucket.count >= maxRequests) {
+    return false;
+  }
+  bucket.count += 1;
+  return true;
+}
+
+function getClientIp(req: Request): string {
+  const xff = req.headers['x-forwarded-for'];
+  if (typeof xff === 'string') return xff.split(',')[0].trim();
+  return req.socket.remoteAddress || '127.0.0.1';
+}
+
+function rateLimitAuth(req: Request, res: Response, next: NextFunction) {
+  const ip = getClientIp(req);
+  const email = String(req.body?.email || '').toLowerCase().trim();
+  if (!checkRateLimit(`auth_ip:${ip}`, 25, 60_000) || (email && !checkRateLimit(`auth_acct:${email}`, 12, 60_000))) {
+    res.status(429).json({ error: 'Too many requests. Please wait a minute and try again.' });
+    return;
+  }
+  next();
+}
+
+app.use('/api/ai', (req: Request, res: Response, next: NextFunction) => {
+  const ip = getClientIp(req);
+  const authHeader = req.headers.authorization || '';
+  if (!checkRateLimit(`ai_ip:${ip}`, 40, 60_000) || (authHeader && !checkRateLimit(`ai_acct:${authHeader}`, 30, 60_000))) {
+    res.status(429).json({ error: 'AI rate limit reached. Please wait a minute before trying again.' });
+    return;
+  }
+  next();
+});
 
 // Simple Auth & Row-Level Security Middleware
 function authenticateUser(req: Request, res: Response, next: NextFunction) {
@@ -134,9 +227,14 @@ app.post('/api/auth/guest', (req, res) => {
   }
 });
 
-app.post('/api/auth/send-verification-code', async (req, res) => {
+app.post('/api/auth/send-verification-code', rateLimitAuth, async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, honeypot, websiteUrl } = req.body;
+    // #28 Hidden honeypot field check to catch bots
+    if (honeypot || websiteUrl) {
+      res.status(400).json({ error: 'Unable to process request.' });
+      return;
+    }
     const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       res.status(400).json({ error: 'Please enter a valid email address.' });
@@ -303,7 +401,7 @@ app.post('/api/auth/signup', (req, res) => {
   }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', rateLimitAuth, (req, res) => {
   try {
     const { email, password, guestId } = req.body;
     const cleanEmail = typeof email === 'string' ? email.trim() : '';
@@ -312,15 +410,119 @@ app.post('/api/auth/login', (req, res) => {
       return;
     }
 
+    const existing = findUserByEmail(cleanEmail);
+    const previousLoginAt = existing?.lastLoginAt;
     const user = loginUser(cleanEmail, String(password), guestId);
+    const session = recordUserSession(user.id, req.headers['user-agent'] || '', 'Local Region', getClientIp(req));
     res.json({
       userId: user.id,
       email: user.email,
       isGuest: false,
-      token: user.id
+      token: user.id,
+      lastLoginAt: previousLoginAt || user.lastLoginAt,
+      sessionId: session.id
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Invalid email or password.' });
+  }
+});
+
+// #54 Allow login with Google sign-in as an alternative to email
+app.post('/api/auth/google', rateLimitAuth, (req, res) => {
+  try {
+    const { email, name, guestId } = req.body;
+    const cleanEmail = typeof email === 'string' && email.includes('@') ? email.trim().toLowerCase() : 'google.user@gmail.com';
+    const user = loginOrSignupWithGoogle(cleanEmail, String(name || 'Google Member'), guestId);
+    const session = recordUserSession(user.id, req.headers['user-agent'] || '', 'Local Region', getClientIp(req));
+    res.json({
+      userId: user.id,
+      email: user.email,
+      isGuest: false,
+      token: user.id,
+      lastLoginAt: user.lastLoginAt,
+      sessionId: session.id
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Google sign-in failed.' });
+  }
+});
+
+// #58 Demo mode button on the landing page: loads a temporary account with sample data
+app.post('/api/auth/demo', (req, res) => {
+  try {
+    const user = createDemoAccount();
+    res.json({
+      userId: user.id,
+      email: user.email,
+      isGuest: true,
+      isDemo: true,
+      token: user.id
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Could not start demo mode.' });
+  }
+});
+
+// #52 Session list in the Me tab & #31 Sign out all devices
+app.get('/api/auth/sessions', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const sessions = getUserSessions(userId, req.headers['user-agent'] || '');
+  res.json({ sessions });
+});
+
+app.delete('/api/auth/sessions/:id', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const ok = revokeUserSession(userId, req.params.id);
+  res.json({ success: ok });
+});
+
+app.post('/api/auth/signout-all', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const count = revokeAllUserSessions(userId);
+  res.json({ success: true, revokedCount: count });
+});
+
+// #50 Password change flow: require current password, then new password twice
+app.post('/api/auth/change-password', authenticateUser, rateLimitAuth, (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const { currentPassword, newPassword, confirmNewPassword } = req.body;
+    if (!currentPassword || !newPassword) {
+      res.status(400).json({ error: 'Current password and new password are required.' });
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      res.status(400).json({ error: 'New passwords do not match.' });
+      return;
+    }
+    if (String(newPassword).length < 6) {
+      res.status(400).json({ error: 'New password must be at least 6 characters.' });
+      return;
+    }
+    changeUserPassword(userId, String(currentPassword), String(newPassword));
+    res.json({ success: true, message: 'Password updated.' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not change password.' });
+  }
+});
+
+// #49 Email change flow: verify old email, then new email, then update
+app.post('/api/auth/change-email', authenticateUser, rateLimitAuth, (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const { oldEmail, newEmail, password } = req.body;
+    if (!oldEmail || !newEmail) {
+      res.status(400).json({ error: 'Both current and new email addresses are required.' });
+      return;
+    }
+    if (password && !verifyUserPassword(userId, String(password))) {
+      res.status(400).json({ error: 'Current password is incorrect.' });
+      return;
+    }
+    const updatedUser = changeUserEmail(userId, String(oldEmail), String(newEmail));
+    res.json({ success: true, email: updatedUser.email });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not update email.' });
   }
 });
 
@@ -856,6 +1058,16 @@ app.post('/api/recipes', authenticateUser, (req, res) => {
   res.json(recipe);
 });
 
+app.delete('/api/recipes/:id', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const success = deleteSavedRecipe(userId, req.params.id);
+  if (success) {
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: 'Recipe not found' });
+  }
+});
+
 app.post('/api/recipes/parse-line', authenticateUser, async (req, res) => {
   try {
     const { line } = req.body;
@@ -912,6 +1124,17 @@ app.delete('/api/meal-templates/:id', authenticateUser, (req, res) => {
   } else {
     res.status(404).json({ error: 'Template not found' });
   }
+});
+
+app.post('/api/meal-templates/restore', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const { name, items } = req.body;
+  if (!name) {
+    res.status(400).json({ error: 'Template name required' });
+    return;
+  }
+  const tmpl = restoreMealTemplate(userId, { name, items: items || [] });
+  res.json(tmpl);
 });
 
 // ------------------- PLAN GENERATION (GEMINI) -------------------
@@ -1026,6 +1249,126 @@ app.post('/api/clear', authenticateUser, (req, res) => {
   res.json({ success: true, message: 'All user data has been cleared.' });
 });
 
+app.post('/api/delete-account', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const user = (req as any).user;
+  const { password } = req.body || {};
+  // #32 Require password re-entry before account deletion for registered accounts
+  if (user && !user.isGuest && user.passwordHash) {
+    if (!password || !verifyUserPassword(userId, String(password))) {
+      res.status(400).json({ error: 'Please enter your current password to confirm account deletion.' });
+      return;
+    }
+  }
+  deleteUserAccount(userId);
+  res.json({ success: true, message: 'Account deleted.' });
+});
+
+// #79 & #80 Restore from backup JSON
+app.post('/api/import', authenticateUser, (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const result = importUserBackupData(userId, req.body);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not restore backup.' });
+  }
+});
+
+// ------------------- COMPLIANCE, ANALYTICS, SUPPORT & SYSTEM (#33-48, #74-77) -------------------
+app.post('/api/compliance/cookie-consent', (req, res) => {
+  const choice = req.body?.choice === 'accepted' ? 'accepted' : 'declined';
+  const rec = logCookieConsent(choice, getClientIp(req), req.headers['user-agent'] || '');
+  res.json({ success: true, consentId: rec.id, timestamp: rec.timestamp });
+});
+
+app.post('/api/analytics/event', (req, res) => {
+  const { event, path: evtPath } = req.body || {};
+  recordPrivacyAnalyticsEvent(String(event || ''), String(evtPath || '/'));
+  res.json({ ok: true });
+});
+
+app.get('/api/admin/analytics', (req, res) => {
+  const password = (req.headers['x-admin-password'] as string) || (req.query.password as string);
+  if (password !== (process.env.ADMIN_PASSWORD || 'caloriq-admin-2026')) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  res.json({
+    summary: getPrivacyAnalyticsSummary(),
+    bugReports: getBugReports(),
+    contactMessages: getContactMessages(),
+    consentLogs: getCookieConsentLogs(),
+    maintenance: getMaintenanceStatus()
+  });
+});
+
+app.post('/api/contact', async (req, res) => {
+  const { name, email, subject, message } = req.body || {};
+  if (!email || !message) {
+    res.status(400).json({ error: 'Email and message are required.' });
+    return;
+  }
+  const saved = saveContactMessage({
+    name: String(name || 'Visitor'),
+    email: String(email),
+    subject: String(subject || 'Caloriq Inquiry'),
+    message: String(message)
+  });
+  const emailed = await sendContactMessageEmail({
+    name: saved.name,
+    email: saved.email,
+    subject: saved.subject,
+    message: saved.message
+  });
+  res.json({ success: true, id: saved.id, emailed });
+});
+
+app.post('/api/bug-report', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const { whatHappened, whatExpected } = req.body || {};
+  if (!whatHappened || !String(whatHappened).trim()) {
+    res.status(400).json({ error: 'Please describe what happened.' });
+    return;
+  }
+  const rec = saveBugReport(userId, String(whatHappened), String(whatExpected || ''));
+  res.json({ success: true, id: rec.id });
+});
+
+const APP_VERSION = '1.0.0';
+const APP_BUILD_ID = '2026.09.28.1';
+
+app.get('/api/version', (_req, res) => {
+  res.json({
+    version: APP_VERSION,
+    buildId: APP_BUILD_ID,
+    maintenance: getMaintenanceStatus()
+  });
+});
+
+app.get('/api/health', async (req, res) => {
+  const simulateAlert = req.query.alert === '1';
+  if (simulateAlert) {
+    await sendUptimeAlertEmail('Simulated uptime alert triggered from health check.');
+  }
+  res.json({
+    status: 'ok',
+    uptimeSeconds: Math.round(process.uptime()),
+    version: APP_VERSION,
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.post('/api/admin/maintenance', (req, res) => {
+  const { password, enabled, message } = req.body || {};
+  if (password !== (process.env.ADMIN_PASSWORD || 'caloriq-admin-2026')) {
+    res.status(404).json({ error: 'Not found' });
+    return;
+  }
+  const state = setMaintenanceStatus(Boolean(enabled), message);
+  res.json({ success: true, maintenance: state });
+});
+
 // ------------------- USDA FOODDATA CENTRAL SEARCH -------------------
 app.get('/api/usda/status', (req, res) => {
   res.json({ available: hasUsdaApiKey() });
@@ -1085,7 +1428,20 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static(path.resolve(process.cwd(), 'dist')));
+    // #16 Cache static assets with long expiry headers
+    app.use(
+      express.static(path.resolve(process.cwd(), 'dist'), {
+        maxAge: '365d',
+        immutable: true,
+        setHeaders(res, filePath) {
+          if (filePath.endsWith('.html') || filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
+            res.setHeader('Cache-Control', 'no-cache');
+          } else {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        }
+      })
+    );
     app.get('*', (req, res) => {
       res.sendFile(path.resolve(process.cwd(), 'dist', 'index.html'));
     });

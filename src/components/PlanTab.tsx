@@ -639,27 +639,30 @@ export const PlanTab: React.FC = () => {
             ) : (
               <button
                 onClick={handleGenerate}
-                className="px-4 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+                disabled={isGenerating}
+                className="px-4 py-2 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
               >
-                Generate 7-Day Plan
                 <Sparkles className="w-4 h-4" />
+                {isGenerating ? 'Calculating...' : 'Generate 7-Day Plan'}
               </button>
             )}
           </div>
         </div>
       )}
 
-      {/* GENERATING STATE */}
+      {/* GENERATING STATE (#13 grey shimmer placeholder the shape of the content) */}
       {isGenerating && (
-        <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-8 text-center shadow-xl space-y-4">
-          <RefreshCw className="w-8 h-8 text-teal-400 animate-spin mx-auto" />
-          <div>
-            <h4 className="text-sm font-semibold text-zinc-100">
-              Generating your 7-day nutrition &amp; training plan...
-            </h4>
-            <p className="text-xs text-zinc-400 mt-1">
-              Calculating exact macro distributions ({macroTarget.calories} kcal) and eliminating all repeats.
-            </p>
+        <div className="space-y-4 animate-pulse" aria-label="Loading weekly plan">
+          <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 space-y-3">
+            <div className="h-4 w-44 bg-zinc-800 rounded-lg" />
+            <div className="h-3 w-64 bg-zinc-800/70 rounded-lg" />
+            <div className="h-2 w-full bg-zinc-800 rounded-full" />
+          </div>
+          <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 space-y-3">
+            <div className="h-4 w-36 bg-zinc-800 rounded-lg" />
+            <div className="h-16 w-full bg-zinc-800/70 rounded-xl" />
+            <div className="h-16 w-full bg-zinc-800/70 rounded-xl" />
+            <div className="h-16 w-full bg-zinc-800/70 rounded-xl" />
           </div>
         </div>
       )}

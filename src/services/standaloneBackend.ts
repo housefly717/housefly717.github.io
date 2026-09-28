@@ -747,7 +747,7 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
       displayName: matchedUserId
         ? db.profiles[matchedUserId].name
         : cleanUser.charAt(0).toUpperCase() + cleanUser.slice(1).replace(/_/g, ' '),
-      streakDays: realStats ? realStats.foodStreak : 0,
+      streakDays: realStats?.foodStreak ?? 0,
       daysOnTargetThisWeek: 0,
       waterDaysCompleted: 0,
       isPartner: Boolean(body.isPartner),
@@ -1013,6 +1013,12 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
   if (pathname === '/api/recipes/parse-line' && method === 'POST') {
     return parseIngredientLine(body.line || '');
   }
+  if (pathname.startsWith('/api/recipes/') && method === 'DELETE') {
+    const id = pathname.split('/').pop()!;
+    db.savedRecipes = db.savedRecipes.filter(r => !(r.id === id && r.userId === userId));
+    saveDb();
+    return { success: true };
+  }
 
   // MEAL TEMPLATES
   if (pathname === '/api/meal-templates') {
@@ -1058,6 +1064,18 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     });
     saveDb();
     return { success: true, count: created.length, items: created };
+  }
+  if (pathname === '/api/meal-templates/restore' && method === 'POST') {
+    const tmpl: MealTemplate = {
+      id: uid('tmpl'),
+      userId,
+      name: body.name || 'Template',
+      items: Array.isArray(body.items) ? body.items : [],
+      createdAt: Date.now()
+    };
+    db.mealTemplates.push(tmpl);
+    saveDb();
+    return tmpl;
   }
   if (pathname.startsWith('/api/meal-templates/') && method === 'DELETE') {
     const id = pathname.split('/').pop()!;
@@ -1141,6 +1159,136 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     db = { ...DEFAULT_DB };
     saveDb();
     return { success: true, message: 'All user data has been cleared.' };
+  }
+  if (pathname === '/api/delete-account' && method === 'POST') {
+    db = { ...DEFAULT_DB };
+    saveDb();
+    return { success: true, message: 'Account deleted.' };
+  }
+
+  if (pathname === '/api/auth/google' && method === 'POST') {
+    const email = (body.email || 'google.user@gmail.com').toLowerCase().trim();
+    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_')}`;
+    db.users[id] = { id, email, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
+    if (!db.profiles[id]) {
+      db.profiles[id] = defaultProfile(body.name || email.split('@')[0], email.split('@')[0]);
+    }
+    saveDb();
+    return { userId: id, email, isGuest: false, token: id, lastLoginAt: Date.now() };
+  }
+
+  if (pathname === '/api/auth/demo' && method === 'POST') {
+    const id = uid('demo');
+    const today = new Date().toISOString().split('T')[0];
+    db.users[id] = { id, email: 'demo@caloriq.app', isGuest: true, createdAt: Date.now(), lastLoginAt: Date.now() };
+    db.profiles[id] = {
+      ...defaultProfile('Alex (Demo)', 'alex_demo'),
+      age: 31,
+      gender: 'prefer_not_to_say',
+      heightCm: 174,
+      fitnessLevel: 'intermediate',
+      currentWeightKg: 74.2,
+      goalWeightKg: 69.0,
+      dailyActivity: 'moderate',
+      goalSpeed: 'lose_normal',
+      pinnedWhy: 'Steady energy through the workday and consistent strength training.'
+    };
+    db.diaryEntries.push({
+      id: uid('food'),
+      userId: id,
+      date: today,
+      mealType: 'breakfast',
+      name: 'Oatmeal with Greek Yogurt & Blueberries',
+      calories: 345,
+      carbs: 48,
+      fat: 6,
+      protein: 24,
+      serving: '1 bowl (320g)',
+      source: 'manual',
+      createdAt: Date.now()
+    });
+    db.waterEntries[`${id}:${today}`] = 5;
+    saveDb();
+    return { userId: id, email: 'demo@caloriq.app', isGuest: true, isDemo: true, token: id };
+  }
+
+  if (pathname === '/api/auth/sessions' && method === 'GET') {
+    return {
+      sessions: [
+        {
+          id: 'sess_current',
+          userId,
+          deviceName: 'Current Browser Session',
+          city: 'Local Device',
+          createdAt: Date.now() - 3600000,
+          lastActiveAt: Date.now()
+        }
+      ]
+    };
+  }
+
+  if (pathname.startsWith('/api/auth/sessions/') && method === 'DELETE') {
+    return { success: true };
+  }
+
+  if (pathname === '/api/auth/signout-all' && method === 'POST') {
+    return { success: true, revokedCount: 1 };
+  }
+
+  if (pathname === '/api/auth/change-password' && method === 'POST') {
+    if (body.newPassword !== body.confirmNewPassword) {
+      throw new Error('New passwords do not match.');
+    }
+    return { success: true, message: 'Password updated.' };
+  }
+
+  if (pathname === '/api/auth/change-email' && method === 'POST') {
+    if (db.users[userId]) {
+      db.users[userId].email = String(body.newEmail || '').toLowerCase().trim();
+      saveDb();
+    }
+    return { success: true, email: String(body.newEmail || '').toLowerCase().trim() };
+  }
+
+  if (pathname === '/api/import' && method === 'POST') {
+    if (body.profile) {
+      db.profiles[userId] = { ...getProfile(userId), ...body.profile };
+    }
+    if (Array.isArray(body.diaryEntries)) {
+      db.diaryEntries = db.diaryEntries.filter(e => e.userId !== userId);
+      for (const item of body.diaryEntries) {
+        db.diaryEntries.push({ ...item, id: uid('food'), userId, createdAt: Date.now() });
+      }
+    }
+    saveDb();
+    return {
+      success: true,
+      restoredCounts: {
+        diary: Array.isArray(body.diaryEntries) ? body.diaryEntries.length : 0,
+        exercises: Array.isArray(body.exerciseEntries) ? body.exerciseEntries.length : 0,
+        weights: Array.isArray(body.weightEntries) ? body.weightEntries.length : 0
+      }
+    };
+  }
+
+  if (pathname === '/api/version' && method === 'GET') {
+    return {
+      version: '1.0.0',
+      buildId: '2026.09.28.1',
+      maintenance: { enabled: false, message: '' }
+    };
+  }
+
+  if (pathname === '/api/contact' && method === 'POST') {
+    return { success: true, id: uid('contact'), emailed: true };
+  }
+
+  if (pathname === '/api/bug-report' && method === 'POST') {
+    return { success: true, id: uid('bug') };
+  }
+
+  if (pathname === '/api/compliance/cookie-consent' && method === 'POST') {
+    return { success: true, timestamp: new Date().toISOString() };
   }
 
   // USDA / BUILTIN SEARCH
