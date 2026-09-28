@@ -4,7 +4,8 @@ import { api } from '../services/api.js';
 import { LegalFooter } from './LegalFooter.js';
 
 interface PageNavProps {
-  onBack: () => void;
+  onBack?: () => void;
+  onBackToLanding?: () => void;
   onOpenPrivacy?: () => void;
   onOpenTerms?: () => void;
   onOpenCookies?: () => void;
@@ -599,10 +600,17 @@ export const PressPage: React.FC<PageNavProps> = ({
   );
 };
 
+export const CookiesPolicyPage = CookiesPage;
+export const PressKitPage = PressPage;
+
 // ============================================================================
 // #72 & #88 Custom 404 Page: "This page doesn't exist. Back to your diary."
 // ============================================================================
-export const NotFoundPage: React.FC<{ onBackToDiary: () => void }> = ({ onBackToDiary }) => {
+export const NotFoundPage: React.FC<{
+  onBackToDiary?: () => void;
+  onGoToDiary?: () => void;
+  onGoToLanding?: () => void;
+}> = ({ onBackToDiary, onGoToDiary, onGoToLanding }) => {
   useEffect(() => {
     document.title = 'Page Not Found — Caloriq';
   }, []);
@@ -618,7 +626,11 @@ export const NotFoundPage: React.FC<{ onBackToDiary: () => void }> = ({ onBackTo
         </h1>
         <button
           type="button"
-          onClick={onBackToDiary}
+          onClick={() => {
+            if (onBackToDiary) onBackToDiary();
+            else if (onGoToDiary) onGoToDiary();
+            else if (onGoToLanding) onGoToLanding();
+          }}
           aria-label="Back to your diary"
           className="w-full min-h-[44px] bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold py-2.5 px-4 rounded-xl text-xs transition-colors"
         >

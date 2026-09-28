@@ -110,3 +110,12 @@ export function migrateAndValidateBackup(rawInput: unknown): {
     }
   };
 }
+
+export function validateAndMigrateBackup(rawInput: unknown): MigratedBackupPayload {
+  const res = migrateAndValidateBackup(rawInput);
+  if (!res.valid || !res.data) {
+    throw new Error(res.error || 'Invalid backup file.');
+  }
+  return res.data;
+}
+

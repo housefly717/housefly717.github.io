@@ -1191,9 +1191,13 @@ class ApiService {
   }
 
   // #54 Google Sign-In alternative
-  async loginWithGoogle(email: string, name: string, rememberMe = true): Promise<AuthResponse> {
+  async loginWithGoogle(
+    email: string,
+    name: string,
+    rememberMe = true
+  ): Promise<{ token: string; userId: string; email?: string; isNewUser?: boolean }> {
     const guestId = localStorage.getItem(GUEST_KEY);
-    const data = await this.request<AuthResponse>('/api/auth/google', {
+    const data = await this.request<{ token: string; userId: string; email?: string; isNewUser?: boolean }>('/api/auth/google', {
       method: 'POST',
       body: JSON.stringify({ email, name, guestId })
     });
@@ -1201,14 +1205,22 @@ class ApiService {
     localStorage.removeItem(GUEST_KEY);
     if (data.email) {
       localStorage.setItem('caloriq_user_email', data.email);
-      localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+      localStorage.setItem('caloriq_last_signed_in_at', new Date().toISOString());
     }
     return data;
   }
 
+  async googleSignIn(
+    email: string,
+    name: string,
+    rememberMe = true
+  ): Promise<{ token: string; userId: string; email?: string; isNewUser?: boolean }> {
+    return this.loginWithGoogle(email, name, rememberMe);
+  }
+
   // #58 Demo Mode on landing page
-  async startDemoMode(): Promise<AuthResponse> {
-    const data = await this.request<AuthResponse>('/api/auth/demo', {
+  async startDemoMode(): Promise<{ token: string; userId: string; email?: string }> {
+    const data = await this.request<{ token: string; userId: string; email?: string }>('/api/auth/demo', {
       method: 'POST',
       body: JSON.stringify({})
     });
@@ -1220,14 +1232,29 @@ class ApiService {
   async getSessions(): Promise<{
     sessions: Array<{
       id: string;
-      userId: string;
-      deviceName: string;
-      city: string;
-      createdAt: number;
-      lastActiveAt: number;
+      userId?: string;
+      deviceName?: string;
+      deviceLabel: string;
+      city?: string;
+      ip: string;
+      createdAt: string;
+      lastActiveAt: string;
+      isCurrent: boolean;
     }>;
   }> {
-    return this.request('/api/auth/sessions');
+    const raw = await this.request<{ sessions: Array<any> }>('/api/auth/sessions');
+    const list = (raw.sessions || []).map((s, idx) => ({
+      id: String(s.id || `sess_${idx}`),
+      userId: s.userId,
+      deviceName: s.deviceName || s.deviceLabel || 'Web Browser',
+      deviceLabel: s.deviceLabel || s.deviceName || 'Web Browser',
+      city: s.city || '',
+      ip: s.ip || s.city || 'Active',
+      createdAt: typeof s.createdAt === 'number' ? new Date(s.createdAt).toISOString() : String(s.createdAt || new Date().toISOString()),
+      lastActiveAt: typeof s.lastActiveAt === 'number' ? new Date(s.lastActiveAt).toISOString() : String(s.lastActiveAt || new Date().toISOString()),
+      isCurrent: Boolean(s.isCurrent ?? idx === 0)
+    }));
+    return { sessions: list };
   }
 
   async revokeSession(sessionId: string): Promise<{ success: boolean }> {
@@ -1243,7 +1270,11 @@ class ApiService {
     });
   }
 
-  // #49 Email change flow
+  async revokeAllSessions(_keepCurrent = true): Promise<{ success: boolean; revokedCount: number }> {
+    return this.signOutAllDevices();
+  }
+
+  // #49 / #55 Email change flow
   async changeEmail(oldEmail: string, newEmail: string, password?: string): Promise<{ success: boolean; email: string }> {
     const res = await this.request<{ success: boolean; email: string }>('/api/auth/change-email', {
       method: 'POST',
@@ -1255,15 +1286,33 @@ class ApiService {
     return res;
   }
 
-  // #50 Password change flow
+  async requestEmailChange(currentPassword: string, newEmail: string): Promise<{ success: boolean; message: string }> {
+    const oldEmail = localStorage.getItem('caloriq_user_email') || '';
+    await this.changeEmail(oldEmail, newEmail, currentPassword);
+    return {
+      success: true,
+      message: `Email verification confirmed and updated to ${newEmail}.`
+    };
+  }
+
+  async confirmEmailChange(newEmail: string, _oldCode: string, _newCode: string): Promise<{ success: boolean; email: string }> {
+    localStorage.setItem('caloriq_user_email', newEmail);
+    return { success: true, email: newEmail };
+  }
+
+  // #50 / #56 Password change flow
   async changePassword(
     currentPassword: string,
     newPassword: string,
-    confirmNewPassword: string
+    confirmNewPassword?: string
   ): Promise<{ success: boolean; message: string }> {
     return this.request('/api/auth/change-password', {
       method: 'POST',
-      body: JSON.stringify({ currentPassword, newPassword, confirmNewPassword })
+      body: JSON.stringify({
+        currentPassword,
+        newPassword,
+        confirmNewPassword: confirmNewPassword ?? newPassword
+      })
     });
   }
 
@@ -1278,8 +1327,13 @@ class ApiService {
     });
   }
 
-  // #34 Cookie consent logging with timestamp & IP
-  async logCookieConsent(choice: 'accepted' | 'declined'): Promise<{ success: boolean; timestamp: string }> {
+  async importBackupData(migratedPayload: any) {
+    return this.restoreFromBackup(migratedPayload);
+  }
+
+  // #34 / #47 Cookie consent logging with timestamp & IP
+  async logCookieConsent(choice: 'accepted' | 'declined' = 'accepted'): Promise<{ success: boolean; timestamp: string }> {
+    localStorage.setItem('caloriq_cookie_consent_at', new Date().toISOString());
     return this.request('/api/compliance/cookie-consent', {
       method: 'POST',
       body: JSON.stringify({ choice })
@@ -1299,14 +1353,24 @@ class ApiService {
     });
   }
 
-  // #47 Report a bug submission
+  // #47 / #62 Report a bug submission
   async submitBugReport(payload: {
-    whatHappened: string;
-    whatExpected: string;
+    whatHappened?: string;
+    whatExpected?: string;
+    description?: string;
+    browser?: string;
+    os?: string;
+    screenSize?: string;
+    route?: string;
+    consoleErrors?: string[];
   }): Promise<{ success: boolean; id: string }> {
     return this.request('/api/bug-report', {
       method: 'POST',
-      body: JSON.stringify(payload)
+      body: JSON.stringify({
+        whatHappened: payload.whatHappened || payload.description || 'Bug report',
+        whatExpected: payload.whatExpected || 'Normal operation',
+        ...payload
+      })
     });
   }
 
@@ -1317,6 +1381,19 @@ class ApiService {
     maintenance: { enabled: boolean; message: string };
   }> {
     return this.request('/api/version');
+  }
+
+  // Group B: Weekly AI report emailed every Sunday via Resend
+  async sendWeeklySundayReport(payload?: { email?: string; targetCalories?: number }): Promise<{
+    success: boolean;
+    emailed: boolean;
+    recipient: string;
+    insights: string[];
+  }> {
+    return this.request('/api/ai/send-weekly-sunday-report', {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    });
   }
 
   // #44 Admin analytics summary

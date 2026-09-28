@@ -171,7 +171,7 @@ export async function sendWelcomeEmail(rawEmail: string): Promise<void> {
   await sendResendEmail({
     to: email,
     subject: 'Welcome to Caloriq',
-    text,
+    text: line,
     html
   });
 }
@@ -268,6 +268,56 @@ export async function sendUptimeAlertEmail(reason: string): Promise<boolean> {
   return sendResendEmail({
     to: DEVELOPER_EMAIL,
     subject: '[Caloriq Alert] Service Health Check Warning',
+    text,
+    html
+  });
+}
+
+// Group B: Weekly AI report emailed every Sunday via Resend
+export async function sendWeeklySundayAiReportEmail(payload: {
+  toEmail: string;
+  userName: string;
+  weekSummary: {
+    avgCalories: number;
+    targetCalories: number;
+    avgProtein: number;
+    daysLogged: number;
+    insights: string[];
+  };
+}): Promise<boolean> {
+  const recipient = (payload.toEmail || DEVELOPER_EMAIL).trim();
+  const insightsHtml = (payload.weekSummary.insights || [])
+    .map((line) => `<li style="margin-bottom: 8px; color: #e4e4e7;">${line}</li>`)
+    .join('');
+  const text = [
+    `Caloriq Sunday Weekly AI Report for ${payload.userName}`,
+    `Days Logged: ${payload.weekSummary.daysLogged}/7`,
+    `Average Daily Intake: ${payload.weekSummary.avgCalories} kcal (Target: ${payload.weekSummary.targetCalories} kcal)`,
+    `Average Protein: ${payload.weekSummary.avgProtein}g/day`,
+    '',
+    'Key Weekly AI Insights:',
+    ...(payload.weekSummary.insights || []).map((l) => `- ${l}`)
+  ].join('\n');
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; background-color: #09090b; color: #f4f4f5; border-radius: 16px; border: 1px solid #27272a;">
+      <p style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #2dd4bf; margin: 0 0 6px 0;">Caloriq Sunday Digest</p>
+      <h2 style="margin: 0 0 16px 0; font-size: 20px; color: #f4f4f5;">Weekly AI Nutrition Report</h2>
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 18px; padding: 12px; background-color: #18181b; border-radius: 12px; border: 1px solid #27272a; font-size: 12px;">
+        <div><strong style="color: #2dd4bf;">${payload.weekSummary.daysLogged}/7</strong><br/><span style="color: #a1a1aa;">Days Logged</span></div>
+        <div><strong style="color: #2dd4bf;">${payload.weekSummary.avgCalories} kcal</strong><br/><span style="color: #a1a1aa;">Avg Intake</span></div>
+        <div><strong style="color: #2dd4bf;">${payload.weekSummary.avgProtein}g</strong><br/><span style="color: #a1a1aa;">Avg Protein</span></div>
+      </div>
+      <h4 style="margin: 0 0 10px 0; font-size: 13px; color: #a1a1aa;">AI Coaching Observations:</h4>
+      <ul style="margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6;">
+        ${insightsHtml}
+      </ul>
+    </div>
+  `.trim();
+
+  return sendResendEmail({
+    to: recipient,
+    subject: 'Your Caloriq Sunday Weekly AI Report',
     text,
     html
   });

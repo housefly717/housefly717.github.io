@@ -71,6 +71,32 @@ export async function trackPrivacyEvent(
   }
 }
 
+export function trackPageview(path?: string): void {
+  trackPrivacyEvent('pageview', path || (typeof window !== 'undefined' ? window.location.pathname : '/'), false);
+}
+
+export function trackEvent(event: AllowedAnalyticsEvent, path?: string): void {
+  trackPrivacyEvent(event, path, false);
+}
+
+export function trackEventOnce(event: AllowedAnalyticsEvent, path?: string): void {
+  trackPrivacyEvent(event, path, true);
+}
+
+export function checkDay7Retention(): void {
+  if (typeof window === 'undefined') return;
+  const firstSeenKey = 'caloriq_first_seen_at';
+  const raw = localStorage.getItem(firstSeenKey);
+  if (!raw) {
+    localStorage.setItem(firstSeenKey, String(Date.now()));
+    return;
+  }
+  const firstSeen = Number(raw);
+  if (!isNaN(firstSeen) && Date.now() - firstSeen >= 7 * 24 * 60 * 60 * 1000) {
+    trackPrivacyEvent('first_week_completed', '/', true);
+  }
+}
+
 export function isEeaUkChTimezone(): boolean {
   if (typeof Intl === 'undefined') return true;
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';

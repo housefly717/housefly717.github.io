@@ -247,17 +247,39 @@ export function setAppLocale(locale: SupportedLocale): void {
   window.dispatchEvent(new CustomEvent('caloriq-locale-change', { detail: locale }));
 }
 
-export function syncHtmlLangAttribute(): SupportedLocale {
-  const locale = detectDeviceLocale();
+export const APP_VERSION = 'v1.0.0';
+export type SupportedLanguage = SupportedLocale;
+
+export function detectDefaultLanguage(): SupportedLocale {
+  return detectDeviceLocale();
+}
+
+export function syncHtmlLangAttribute(lang?: SupportedLocale): SupportedLocale {
+  const locale = lang || detectDeviceLocale();
+  if (typeof window !== 'undefined' && lang) {
+    localStorage.setItem(LOCALE_STORAGE_KEY, lang);
+  }
   if (typeof document !== 'undefined') {
     document.documentElement.setAttribute('lang', locale);
   }
   return locale;
 }
 
-export function t(key: TranslationKey, locale?: SupportedLocale): string {
+export function t(key: TranslationKey | 'diary' | 'fitness' | 'plan' | 'reports' | 'me', locale?: SupportedLocale): string {
   const active = locale || detectDeviceLocale();
-  return STRINGS[active]?.[key] || STRINGS.en[key] || key;
+  const mappedKey: TranslationKey =
+    key === 'diary'
+      ? 'nav.diary'
+      : key === 'fitness'
+        ? 'diary.exercise'
+        : key === 'plan'
+          ? 'nav.plan'
+          : key === 'reports'
+            ? 'nav.reports'
+            : key === 'me'
+              ? 'nav.me'
+              : key;
+  return STRINGS[active]?.[mappedKey] || STRINGS.en[mappedKey] || String(key);
 }
 
 // #85 Use metric system by default outside the US. Imperial inside the US.

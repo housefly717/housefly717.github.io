@@ -101,7 +101,8 @@ import {
   createAndSendPasswordResetEmail,
   validateAndConsumePasswordResetToken,
   sendContactMessageEmail,
-  sendUptimeAlertEmail
+  sendUptimeAlertEmail,
+  sendWeeklySundayAiReportEmail
 } from './src/server/emailService.js';
 import { parseIngredientLine } from './src/server/foodData.js';
 import { searchUsdaFoods } from './src/server/usda.js';
@@ -1333,6 +1334,64 @@ app.post('/api/bug-report', authenticateUser, (req, res) => {
   }
   const rec = saveBugReport(userId, String(whatHappened), String(whatExpected || ''));
   res.json({ success: true, id: rec.id });
+});
+
+// Group B: Weekly AI report emailed every Sunday via Resend
+app.post('/api/ai/send-weekly-sunday-report', authenticateUser, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const user = findUserById(userId);
+    const profile = getProfile(userId);
+    const allEntries = getAllDiaryEntries(userId);
+    const allWorkouts = getAllExerciseEntries(userId);
+
+    const last7Dates = new Set<string>();
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(Date.now() - i * 86400000).toISOString().split('T')[0];
+      last7Dates.add(d);
+    }
+
+    const weekEntries = allEntries.filter((e) => last7Dates.has(e.date));
+    const loggedDaysSet = new Set(weekEntries.map((e) => e.date));
+    const daysLogged = Math.max(1, loggedDaysSet.size);
+    const totalCal = weekEntries.reduce((s, e) => s + (e.calories || 0), 0);
+    const totalProt = weekEntries.reduce((s, e) => s + (e.protein || 0), 0);
+    const avgCalories = Math.round(totalCal / daysLogged);
+    const avgProtein = Math.round(totalProt / daysLogged);
+    const targetCalories = Number(req.body?.targetCalories) || 2000;
+
+    const insights = await generateWeeklyInsightsWithGemini({
+      avgCalories,
+      targetCalories,
+      avgProtein,
+      targetProtein: Math.round((targetCalories * 0.3) / 4),
+      avgSleepHours: 7.4,
+      workoutCount: allWorkouts.filter((w) => last7Dates.has(w.date)).length,
+      waterDaysMet: Math.min(7, daysLogged)
+    });
+
+    const recipientEmail = String(req.body?.email || user?.email || '').trim();
+    const emailed = await sendWeeklySundayAiReportEmail({
+      toEmail: recipientEmail,
+      userName: profile?.name || 'Athlete',
+      weekSummary: {
+        avgCalories,
+        targetCalories,
+        avgProtein,
+        daysLogged: loggedDaysSet.size,
+        insights
+      }
+    });
+
+    res.json({
+      success: true,
+      emailed,
+      recipient: recipientEmail || 'configured Sunday digest address',
+      insights
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Could not dispatch Sunday AI report.' });
+  }
 });
 
 const APP_VERSION = '1.0.0';

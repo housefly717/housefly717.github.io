@@ -38,6 +38,14 @@ import {
   getDateBounds
 } from '../utils/validation.js';
 import { SwipeableItem } from './SwipeableItem.js';
+import { HealthAndImportSection } from './HealthAndImportSection.js';
+import { NutritionDepthSection } from './NutritionDepthSection.js';
+import {
+  estimateGlycemicIndex,
+  detectAdditiveWarnings,
+  estimateMealCarbonKg,
+  getLowerCalorieSwap
+} from '../utils/nutritionDepth.js';
 import type { MealType, FoodItem } from '../types/index.js';
 
 const TIPS_OF_THE_DAY = [
@@ -1330,6 +1338,32 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                                 <span className="text-xs font-medium text-zinc-200 block truncate">
                                   {item.name}
                                 </span>
+                                {(() => {
+                                  const gi = estimateGlycemicIndex(
+                                    item.name,
+                                    item.carbs,
+                                    item.protein,
+                                    item.fat
+                                  );
+                                  const additives = detectAdditiveWarnings(item.name);
+                                  return (
+                                    <>
+                                      <span
+                                        className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono ${gi.badgeClass}`}
+                                      >
+                                        {gi.level}
+                                      </span>
+                                      {additives.length > 0 && (
+                                        <span
+                                          title={additives.map((a) => a.additive).join(', ')}
+                                          className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-[9px] font-mono text-amber-300"
+                                        >
+                                          Additive warning
+                                        </span>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                                 {(item.unusualQuantity || item.note?.includes('Unusual quantity')) && (
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[10px] font-mono font-semibold text-rose-400">
                                     <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
@@ -1343,6 +1377,10 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                                 <span className="text-blue-400">{item.carbs}c</span>
                                 <span className="text-amber-400">{item.fat}f</span>
                                 <span className="text-red-400">{item.protein}p</span>
+                                <span>·</span>
+                                <span className="text-zinc-400">
+                                  {estimateMealCarbonKg(item.name, item.calories)}kg CO2e
+                                </span>
                               </div>
                               {item.note && !isEditingNote && (
                                 <p className="text-[11px] text-zinc-400 mt-1 flex items-center gap-1">
@@ -1356,6 +1394,34 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                               <span className="text-xs font-bold text-teal-400 font-mono mr-1">
                                 {item.calories} kcal
                               </span>
+                              {/* Group B: AI meal swap — swap any logged meal for a lower-calorie option */}
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const swap = getLowerCalorieSwap(item);
+                                  await deleteFoodItem(item.id);
+                                  await addFoodItem({
+                                    date: activeDate,
+                                    mealType: item.mealType,
+                                    name: swap.name,
+                                    calories: swap.calories,
+                                    protein: swap.protein,
+                                    carbs: swap.carbs,
+                                    fat: swap.fat,
+                                    serving: '1 swapped lower-calorie portion',
+                                    source: 'ai'
+                                  });
+                                  setCopyStatus(
+                                    `Swapped for "${swap.name}" (-${swap.savedCalories} kcal)`
+                                  );
+                                  setTimeout(() => setCopyStatus(null), 3000);
+                                }}
+                                title="AI Meal Swap: Replace with a lower-calorie option"
+                                aria-label={`Swap ${item.name} for a lower-calorie option`}
+                                className="p-1 text-zinc-400 hover:text-teal-400 rounded transition-colors"
+                              >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                              </button>
                               {/* #15 Leftover tracker on dinner items */}
                               {meal.type === 'dinner' && (
                                 <button
@@ -1937,6 +2003,12 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </div>
         )}
       </div>
+
+      {/* GROUP B: AI & Nutrition Depth (Eat Right Now, History Suggestions, AI Meal Swap, Sunday Report, GI Tags, Omega-3, Additives, Carbon, Food Waste) */}
+      <NutritionDepthSection />
+
+      {/* GROUP A: Health Depth, Vitals, Meds, Supplements, Caffeine, Alcohol, Cycle, Symptoms & CSV Import */}
+      <HealthAndImportSection mode="diary" />
     </div>
   );
 };

@@ -42,6 +42,7 @@ import { APP_VERSION } from '../utils/i18n.js';
 import { validateAndMigrateBackup, CURRENT_BACKUP_SCHEMA_VERSION } from '../utils/backupMigration.js';
 import { WeeklyRecapModal } from './WeeklyRecapModal.js';
 import { SocialAccountabilitySection } from './SocialAccountabilitySection.js';
+import { HealthAndImportSection } from './HealthAndImportSection.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { SwipeableItem } from './SwipeableItem.js';
 import {
@@ -1524,6 +1525,9 @@ export const MeTab: React.FC<MeTabProps> = ({
 
       {/* PHASE 5: SOCIAL & ACCOUNTABILITY (#43, #44, #45, #46, #47) */}
       <SocialAccountabilitySection />
+
+      {/* GROUP A: IMPORT & HEALTH DEPTH */}
+      <HealthAndImportSection mode="me" />
 
       {/* CHAT WITH THE DEVELOPER */}
       <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3">
