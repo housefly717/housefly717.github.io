@@ -391,8 +391,14 @@ app.post('/api/auth/guest', (req, res) => {
 app.post('/api/auth/send-verification-code', rateLimitAuth, async (req, res) => {
   const ip = getClientIp(req);
   const fp = extractRequestDeviceFingerprint(req);
-  const { email, password, honeypot, websiteUrl, isResend } = req.body || {};
+  const { email, password, honeypot, websiteUrl, isResend, purpose } = req.body || {};
   const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const resolvedPurpose =
+    purpose === 'login_device' || purpose === 'new_device' || purpose === 'login'
+      ? 'new_device'
+      : purpose === 'password_reset'
+      ? 'password_reset'
+      : 'signup';
 
   try {
     // 5.I & 6.H Hidden honeypot field check to catch bots — reject silently and log
@@ -418,8 +424,7 @@ app.post('/api/auth/send-verification-code', rateLimitAuth, async (req, res) => 
       return;
     }
 
-    // 5.B IP rate limiting: 5 signup attempts per IP per hour (only count initial signup attempts, not resends)
-    if (!isResend && !checkRateLimit(`signup_ip_hr:${ip}`, 5, ONE_HOUR_MS)) {
+    if (!isResend && !checkRateLimit(`signup_ip_hr:${ip}`, 30, ONE_HOUR_MS)) {
       await logSecurityEvent({
         eventType: 'rate_limit_hit',
         userEmail: cleanEmail,
@@ -429,8 +434,8 @@ app.post('/api/auth/send-verification-code', rateLimitAuth, async (req, res) => 
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
         requestPath: req.path,
-        summary: `Signup IP rate limit hit (5/hr) for IP ${ip}`,
-        metadata: { limit: 'per IP (5 signup attempts/hr)', endpoint: req.path, throttledIp: ip, email: cleanEmail }
+        summary: `Signup IP rate limit hit (30/hr) for IP ${ip}`,
+        metadata: { limit: 'per IP (30 signup attempts/hr)', endpoint: req.path, throttledIp: ip, email: cleanEmail }
       });
       res.status(429).json({ error: 'Too many signup attempts from this IP. Try again in an hour.' });
       return;
@@ -453,43 +458,27 @@ app.post('/api/auth/send-verification-code', rateLimitAuth, async (req, res) => 
       return;
     }
 
-    const pwError = validatePasswordRules(String(password || ''), cleanEmail);
-    if (pwError || getPasswordStrength(String(password || ''), cleanEmail).score < 2) {
-      await logSecurityEvent({
-        eventType: 'signup_attempt',
-        userEmail: cleanEmail,
-        ip,
-        headers: req.headers,
-        deviceFingerprint: fp.rawFingerprint,
-        deviceName: fp.deviceName,
-        userAgent: fp.userAgent,
-        requestPath: req.path,
-        summary: `Signup attempt failed for ${cleanEmail}: password policy not met`,
-        metadata: { outcome: 'failure', reason: pwError || 'weak_password' }
-      });
-      res.status(400).json({ error: pwError || 'Password must be at least Fair strength.' });
-      return;
+    if (resolvedPurpose === 'signup' && password !== undefined && String(password).length > 0) {
+      const pwError = validatePasswordRules(String(password || ''), cleanEmail);
+      if (pwError || getPasswordStrength(String(password || ''), cleanEmail).score < 2) {
+        await logSecurityEvent({
+          eventType: 'signup_attempt',
+          userEmail: cleanEmail,
+          ip,
+          headers: req.headers,
+          deviceFingerprint: fp.rawFingerprint,
+          deviceName: fp.deviceName,
+          userAgent: fp.userAgent,
+          requestPath: req.path,
+          summary: `Signup attempt failed for ${cleanEmail}: password policy not met`,
+          metadata: { outcome: 'failure', reason: pwError || 'weak_password' }
+        });
+        res.status(400).json({ error: pwError || 'Password must be at least Fair strength.' });
+        return;
+      }
     }
 
-    const existingUser = findUserByEmail(cleanEmail);
-    if (existingUser && existingUser.passwordHash) {
-      await logSecurityEvent({
-        eventType: 'signup_attempt',
-        userEmail: cleanEmail,
-        ip,
-        headers: req.headers,
-        deviceFingerprint: fp.rawFingerprint,
-        deviceName: fp.deviceName,
-        userAgent: fp.userAgent,
-        requestPath: req.path,
-        summary: `Signup attempt failed for ${cleanEmail}: account already exists`,
-        metadata: { outcome: 'failure', reason: 'already_exists' }
-      });
-      res.status(400).json({ error: 'An account with this email already exists. Please sign in.' });
-      return;
-    }
-
-    const result = await createAndSendVerificationCode(cleanEmail, 'signup');
+    const result = await createAndSendVerificationCode(cleanEmail, resolvedPurpose);
     await logSecurityEvent({
       eventType: 'code_requested',
       userEmail: cleanEmail,
@@ -499,8 +488,8 @@ app.post('/api/auth/send-verification-code', rateLimitAuth, async (req, res) => 
       deviceName: fp.deviceName,
       userAgent: fp.userAgent,
       requestPath: req.path,
-      summary: `Signup verification code requested for ${cleanEmail} from ${ip}`,
-      metadata: { purpose: 'signup' }
+      summary: `Verification code (${resolvedPurpose}) requested for ${cleanEmail} from ${ip}`,
+      metadata: { purpose: resolvedPurpose }
     });
 
     res.json({
@@ -712,22 +701,19 @@ app.post('/api/auth/forgot-password', rateLimitAuth, async (req, res) => {
       summary: `Password reset requested for ${cleanEmail} from ${ip}`
     });
 
-    const user = findUserByEmail(cleanEmail);
-    if (user) {
-      await createAndSendVerificationCode(cleanEmail, 'password_reset');
-      await logSecurityEvent({
-        eventType: 'code_requested',
-        userEmail: cleanEmail,
-        ip,
-        headers: req.headers,
-        deviceFingerprint: fp.rawFingerprint,
-        deviceName: fp.deviceName,
-        userAgent: fp.userAgent,
-        requestPath: req.path,
-        summary: `Password reset 6-digit code sent to ${cleanEmail} from ${ip}`,
-        metadata: { purpose: 'password_reset' }
-      });
-    }
+    await createAndSendVerificationCode(cleanEmail, 'password_reset');
+    await logSecurityEvent({
+      eventType: 'code_requested',
+      userEmail: cleanEmail,
+      ip,
+      headers: req.headers,
+      deviceFingerprint: fp.rawFingerprint,
+      deviceName: fp.deviceName,
+      userAgent: fp.userAgent,
+      requestPath: req.path,
+      summary: `Password reset 6-digit code sent to ${cleanEmail} from ${ip}`,
+      metadata: { purpose: 'password_reset' }
+    });
 
     // 5.F Never reveal whether an email exists
     res.json({
@@ -951,12 +937,12 @@ app.post('/api/auth/signup', async (req, res) => {
 app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
   const ip = getClientIp(req);
   const fp = extractRequestDeviceFingerprint(req);
-  const { email, password, guestId } = req.body || {};
+  const { email, password, verificationCode, code, guestId } = req.body || {};
   const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const submittedCode = verificationCode || code;
 
   try {
-    // 5.B IP rate limiting: 20 login attempts per IP per hour
-    if (!checkRateLimit(`login_ip_hr:${ip}`, 20, ONE_HOUR_MS)) {
+    if (!checkRateLimit(`login_ip_hr:${ip}`, 40, ONE_HOUR_MS)) {
       await logSecurityEvent({
         eventType: 'rate_limit_hit',
         userEmail: cleanEmail,
@@ -966,15 +952,14 @@ app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
         requestPath: req.path,
-        summary: `Login IP rate limit hit (20/hr) for IP ${ip}`,
-        metadata: { limit: 'per IP (20 login attempts/hr)', endpoint: req.path, throttledIp: ip, email: cleanEmail }
+        summary: `Login IP rate limit hit (40/hr) for IP ${ip}`,
+        metadata: { limit: 'per IP (40 login attempts/hr)', endpoint: req.path, throttledIp: ip, email: cleanEmail }
       });
       res.status(429).json({ error: 'Too many login attempts from this IP. Try again in an hour.' });
       return;
     }
 
-    // 6.A Failed login: Missing fields
-    if (!cleanEmail || !password) {
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
       await logSecurityEvent({
         eventType: 'failed_login',
         userEmail: cleanEmail,
@@ -984,14 +969,14 @@ app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
         requestPath: req.path,
-        summary: `Failed login: missing fields (${!cleanEmail ? 'email' : 'password'}) from ${ip}`,
+        summary: `Failed login: missing or invalid email from ${ip}`,
         metadata: { reason: 'missing_fields' }
       });
-      res.status(400).json({ error: 'Email and password are required.' });
+      res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
     }
 
-    // 5.A & 5.G Check if email is currently locked out (5 failed attempts in 15 mins -> 15 min lock)
+    // Check if email is currently locked out (5 failed attempts in 15 mins -> 15 min lock)
     const lockStatus = getEmailLockoutStatus(cleanEmail);
     if (lockStatus.locked && lockStatus.unlocksAt) {
       const unlockTimeFormatted = new Date(lockStatus.unlocksAt).toLocaleTimeString([], {
@@ -1018,31 +1003,12 @@ app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
       return;
     }
 
-    // Verify credentials with constant-time comparison
-    const credCheck = verifyUserCredentials(cleanEmail, String(password));
-    if (!credCheck.valid || !credCheck.user) {
-      const failReasonLabel = credCheck.reason === 'unknown_email' ? 'Unknown email' : 'Wrong password';
-      await logSecurityEvent({
-        eventType: 'failed_login',
-        userEmail: cleanEmail,
-        ip,
-        headers: req.headers,
-        deviceFingerprint: fp.rawFingerprint,
-        deviceName: fp.deviceName,
-        userAgent: fp.userAgent,
-        requestPath: req.path,
-        summary: `Failed login (${failReasonLabel}) for ${cleanEmail} from ${ip}`,
-        metadata: { reason: credCheck.reason }
-      });
-
-      const failRecord = recordFailedLoginForEmail(cleanEmail);
-      if (failRecord.justLocked && failRecord.unlocksAt) {
-        const unlockTimeFormatted = new Date(failRecord.unlocksAt).toLocaleTimeString([], {
-          hour: '2-digit',
-          minute: '2-digit'
-        });
+    const existingUser = findUserByEmail(cleanEmail);
+    if (existingUser && existingUser.passwordHash && password) {
+      const credCheck = verifyUserCredentials(cleanEmail, String(password));
+      if (!credCheck.valid) {
         await logSecurityEvent({
-          eventType: 'account_lockout',
+          eventType: 'failed_login',
           userEmail: cleanEmail,
           ip,
           headers: req.headers,
@@ -1050,93 +1016,103 @@ app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
           deviceName: fp.deviceName,
           userAgent: fp.userAgent,
           requestPath: req.path,
-          summary: `Account locked for 15 minutes (${cleanEmail}) after 5 failed logins. Unlocks at ${unlockTimeFormatted}`,
-          metadata: {
-            emailLocked: cleanEmail,
-            duration: '15 minutes',
-            trigger: '5 failed logins',
-            unlocksAt: new Date(failRecord.unlocksAt).toISOString()
-          }
+          summary: `Failed login (Wrong password) for ${cleanEmail} from ${ip}`,
+          metadata: { reason: 'wrong_password' }
         });
-        // 5.G Send suspicious login alert email
-        sendSuspiciousLoginAlertEmail(cleanEmail).catch(() => {});
 
-        res.status(429).json({
-          error: `Too many attempts. Try again in 15 minutes, or reset your password. Account unlocks at ${unlockTimeFormatted}.`,
-          locked: true,
-          unlocksAt: new Date(failRecord.unlocksAt).toISOString()
+        const failRecord = recordFailedLoginForEmail(cleanEmail);
+        if (failRecord.justLocked && failRecord.unlocksAt) {
+          const unlockTimeFormatted = new Date(failRecord.unlocksAt).toLocaleTimeString([], {
+            hour: '2-digit',
+            minute: '2-digit'
+          });
+          await logSecurityEvent({
+            eventType: 'account_lockout',
+            userEmail: cleanEmail,
+            ip,
+            headers: req.headers,
+            deviceFingerprint: fp.rawFingerprint,
+            deviceName: fp.deviceName,
+            userAgent: fp.userAgent,
+            requestPath: req.path,
+            summary: `Account locked for 15 minutes (${cleanEmail}) after 5 failed logins. Unlocks at ${unlockTimeFormatted}`,
+            metadata: {
+              emailLocked: cleanEmail,
+              duration: '15 minutes',
+              trigger: '5 failed logins',
+              unlocksAt: new Date(failRecord.unlocksAt).toISOString()
+            }
+          });
+          sendSuspiciousLoginAlertEmail(cleanEmail).catch(() => {});
+
+          res.status(429).json({
+            error: `Too many attempts. Try again in 15 minutes, or reset your password. Account unlocks at ${unlockTimeFormatted}.`,
+            locked: true,
+            unlocksAt: new Date(failRecord.unlocksAt).toISOString()
+          });
+          return;
+        }
+
+        res.status(400).json({
+          error: 'Incorrect password. Please try again.'
         });
         return;
       }
-
-      res.status(400).json({
-        error:
-          credCheck.reason === 'unknown_email'
-            ? 'No account found with that email. Please sign up first.'
-            : 'Incorrect password. Please try again.'
-      });
-      return;
     }
 
-    // Credentials are valid! Clear failed login counter
     clearFailedLoginsForEmail(cleanEmail);
 
-    const targetUser = credCheck.user;
-    // 4 & 5.C Compare hashed device fingerprint against trusted devices (30-day window)
-    const isKnownDevice = isTrustedDeviceForUser(targetUser.id, fp.fingerprintHash);
-
-    if (!isKnownDevice) {
-      // Unknown / new device -> send 6-digit verification code via Resend!
-      const codeRes = await createAndSendVerificationCode(cleanEmail, 'new_device');
-      await logSecurityEvent({
-        eventType: 'code_requested',
-        userEmail: cleanEmail,
-        ip,
-        headers: req.headers,
-        deviceFingerprint: fp.rawFingerprint,
+    // If a verification code was submitted with login, validate it strictly against stored code
+    if (submittedCode !== undefined && String(submittedCode).trim() !== '') {
+      validateVerificationCode(cleanEmail, String(submittedCode), true);
+      const previousLoginAt = existingUser?.lastLoginAt;
+      const user = existingUser
+        ? loginUser(cleanEmail, String(password || ''), guestId)
+        : signupUser(cleanEmail, String(password || ''), guestId);
+      const geo = await resolveIpGeo(ip, req.headers);
+      trustDeviceForUser(user.id, {
+        fingerprintHash: fp.fingerprintHash,
+        rawFingerprint: fp.rawFingerprint,
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
-        requestPath: req.path,
-        summary: `New-device login verification code sent to ${cleanEmail} from ${ip}`,
-        metadata: { purpose: 'new_device_login' }
+        ip,
+        city: geo.city
       });
-
+      const session = recordUserSession(user.id, fp.userAgent, `${geo.city}, ${geo.country}`, ip);
       res.json({
-        requiresVerification: true,
-        email: cleanEmail,
-        resendCooldownSeconds: codeRes.resendCooldownSeconds
+        userId: user.id,
+        email: user.email,
+        isGuest: false,
+        token: user.id,
+        lastLoginAt: previousLoginAt || user.lastLoginAt,
+        sessionId: session.id,
+        requiresVerification: false
       });
       return;
     }
 
-    // Known device (same fingerprint within 30 days) -> no code required!
-    const previousLoginAt = targetUser.lastLoginAt;
-    const user = loginUser(cleanEmail, String(password), guestId);
-    const geo = await resolveIpGeo(ip, req.headers);
-    const session = recordUserSession(user.id, fp.userAgent, `${geo.city}, ${geo.country}`, ip);
-
+    // Send 6-digit verification code via Resend and store with 10-minute expiry
+    const codeRes = await createAndSendVerificationCode(cleanEmail, 'new_device');
     await logSecurityEvent({
-      eventType: 'login_known_device',
+      eventType: 'code_requested',
       userEmail: cleanEmail,
       ip,
       headers: req.headers,
-      deviceFingerprint: fp.fingerprintHash,
+      deviceFingerprint: fp.rawFingerprint,
       deviceName: fp.deviceName,
       userAgent: fp.userAgent,
       requestPath: req.path,
-      summary: `Successful login from known device for ${cleanEmail} (${ip})`
+      summary: `Sign-in verification code sent to ${cleanEmail} from ${ip}`,
+      metadata: { purpose: 'new_device_login' }
     });
 
     res.json({
-      userId: user.id,
-      email: user.email,
-      isGuest: false,
-      token: user.id,
-      lastLoginAt: previousLoginAt || user.lastLoginAt,
-      sessionId: session.id,
-      requiresVerification: false
+      requiresVerification: true,
+      email: cleanEmail,
+      resendCooldownSeconds: codeRes.resendCooldownSeconds
     });
   } catch (err: any) {
+    await logCodeValidationFailure(err, cleanEmail, ip, req, fp);
     if (err.reason === 'code_rate_limit') {
       await logSecurityEvent({
         eventType: 'code_rate_limit',
@@ -1147,19 +1123,22 @@ app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
         requestPath: req.path,
-        summary: `Too many login verification codes requested (>5/hr) for ${cleanEmail}`,
-        metadata: { limit: '5 codes per email per hour', throttledEmail: cleanEmail }
+        summary: `Too many login verification codes requested for ${cleanEmail}`,
+        metadata: { limit: '30 codes per email per hour', throttledEmail: cleanEmail }
       });
     }
     const status = err.status || 400;
     res.status(status).json({
       error: err.message || 'Invalid email or password.',
+      reason: err.reason,
+      locked: Boolean(err.locked),
+      attemptsRemaining: err.attemptsRemaining,
       retryAfterSeconds: err.retryAfterSeconds
     });
   }
 });
 
-// Verify 6-digit code for new-device login
+// Verify 6-digit code for sign-in
 app.post('/api/auth/verify-login-device', rateLimitAuth, async (req, res) => {
   const ip = getClientIp(req);
   const fp = extractRequestDeviceFingerprint(req);
@@ -1167,7 +1146,7 @@ app.post('/api/auth/verify-login-device', rateLimitAuth, async (req, res) => {
   const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
   try {
-    if (!cleanEmail || !password || !code) {
+    if (!cleanEmail || !code || String(code).trim().length === 0) {
       res.status(400).json({ error: "That code isn't right. Check your email and try again." });
       return;
     }
@@ -1183,12 +1162,14 @@ app.post('/api/auth/verify-login-device', rateLimitAuth, async (req, res) => {
       deviceName: fp.deviceName,
       userAgent: fp.userAgent,
       requestPath: req.path,
-      summary: `New-device verification code confirmed for ${cleanEmail}`
+      summary: `Sign-in verification code confirmed for ${cleanEmail}`
     });
 
     const existing = findUserByEmail(cleanEmail);
     const previousLoginAt = existing?.lastLoginAt;
-    const user = loginUser(cleanEmail, String(password), guestId);
+    const user = existing
+      ? loginUser(cleanEmail, String(password || ''), guestId)
+      : signupUser(cleanEmail, String(password || ''), guestId);
     const geo = await resolveIpGeo(ip, req.headers);
 
     trustDeviceForUser(user.id, {
@@ -1211,7 +1192,7 @@ app.post('/api/auth/verify-login-device', rateLimitAuth, async (req, res) => {
       deviceName: fp.deviceName,
       userAgent: fp.userAgent,
       requestPath: req.path,
-      summary: `Successful login from new device (${fp.deviceName}) for ${cleanEmail} in ${geo.city}, ${geo.country} (${ip})`,
+      summary: `Successful login (${fp.deviceName}) for ${cleanEmail} in ${geo.city}, ${geo.country} (${ip})`,
       metadata: {
         fingerprintHash: fp.fingerprintHash,
         fullFingerprint: fp.rawFingerprint,
@@ -1239,17 +1220,16 @@ app.post('/api/auth/verify-login-device', rateLimitAuth, async (req, res) => {
   }
 });
 
-// Resend code for new-device login
+// Resend code for sign-in
 app.post('/api/auth/resend-login-code', rateLimitAuth, async (req, res) => {
   const ip = getClientIp(req);
   const fp = extractRequestDeviceFingerprint(req);
-  const { email, password } = req.body || {};
+  const { email } = req.body || {};
   const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
   try {
-    const check = verifyUserCredentials(cleanEmail, String(password || ''));
-    if (!check.valid) {
-      res.status(400).json({ error: 'Invalid credentials.' });
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: 'Please enter a valid email address.' });
       return;
     }
     const result = await createAndSendVerificationCode(cleanEmail, 'new_device');
@@ -1262,7 +1242,7 @@ app.post('/api/auth/resend-login-code', rateLimitAuth, async (req, res) => {
       deviceName: fp.deviceName,
       userAgent: fp.userAgent,
       requestPath: req.path,
-      summary: `Resent new-device verification code to ${cleanEmail} from ${ip}`,
+      summary: `Resent sign-in verification code to ${cleanEmail} from ${ip}`,
       metadata: { purpose: 'new_device_login_resend' }
     });
     res.json({
@@ -1280,7 +1260,7 @@ app.post('/api/auth/resend-login-code', rateLimitAuth, async (req, res) => {
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
         requestPath: req.path,
-        summary: `Too many login verification codes requested (>5/hr) for ${cleanEmail}`
+        summary: `Too many login verification codes requested for ${cleanEmail}`
       });
     }
     res.status(err.status || 400).json({

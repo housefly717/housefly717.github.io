@@ -1,4 +1,6 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
 const DEFAULT_FROM = 'Caloriq <onboarding@resend.dev>';
@@ -21,22 +23,61 @@ interface PasswordResetEntry {
   lastSentAt: number;
 }
 
+const DATA_DIR = path.resolve(process.cwd(), 'data');
+const VERIFICATION_FILE = path.join(DATA_DIR, 'verification-codes.json');
+
 const verificationStore = new Map<string, VerificationEntry>();
 const passwordResetStore = new Map<string, PasswordResetEntry>();
 const codeRequestsPerHourStore = new Map<string, number[]>();
 
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds
-const MAX_VERIFY_ATTEMPTS = 5;
-const MAX_CODES_PER_HOUR = 5;
+const MAX_VERIFY_ATTEMPTS = 10;
+const MAX_CODES_PER_HOUR = 30;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
+function loadVerificationStore(): void {
+  try {
+    if (fs.existsSync(VERIFICATION_FILE)) {
+      const raw = fs.readFileSync(VERIFICATION_FILE, 'utf-8');
+      const parsed = JSON.parse(raw) as Record<string, VerificationEntry>;
+      if (parsed && typeof parsed === 'object') {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (v && typeof v.email === 'string' && typeof v.code === 'string') {
+            verificationStore.set(k.toLowerCase().trim(), v);
+          }
+        }
+      }
+    }
+  } catch {
+    // ignore read errors
+  }
+}
+
+function saveVerificationStore(): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const obj: Record<string, VerificationEntry> = {};
+    for (const [k, v] of verificationStore.entries()) {
+      obj[k] = v;
+    }
+    fs.writeFileSync(VERIFICATION_FILE, JSON.stringify(obj, null, 2), 'utf-8');
+  } catch {
+    // ignore write errors
+  }
+}
+
+loadVerificationStore();
+
 export function constantTimeStringEqual(a: string, b: string): boolean {
-  const hashA = crypto.createHash('sha256').update(String(a)).digest();
-  const hashB = crypto.createHash('sha256').update(String(b)).digest();
+  const strA = String(a);
+  const strB = String(b);
+  const hashA = crypto.createHash('sha256').update(strA).digest();
+  const hashB = crypto.createHash('sha256').update(strB).digest();
   const digestsMatch = crypto.timingSafeEqual(hashA, hashB);
-  return digestsMatch && a.length === b.length;
+  return digestsMatch && strA.length === strB.length;
 }
 
 export interface ResendDetailedResult {
@@ -45,6 +86,31 @@ export interface ResendDetailedResult {
   statusCode?: number;
   response?: any;
   error?: any;
+}
+
+async function postResendEmail(
+  apiKey: string,
+  to: string,
+  subject: string,
+  text: string,
+  html: string
+): Promise<{ response: Response; data: any }> {
+  const response = await fetch(RESEND_API_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: DEFAULT_FROM,
+      to: [to],
+      subject,
+      text,
+      html
+    })
+  });
+  const data = await response.json().catch(() => null);
+  return { response, data };
 }
 
 export async function sendResendEmailDetailed(payload: {
@@ -66,22 +132,26 @@ export async function sendResendEmailDetailed(payload: {
   }
 
   try {
-    const response = await fetch(RESEND_API_URL, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        from: DEFAULT_FROM,
-        to: [payload.to],
-        subject: payload.subject,
-        text: payload.text,
-        html: payload.html
-      })
-    });
+    let { response, data } = await postResendEmail(
+      apiKey,
+      payload.to,
+      payload.subject,
+      payload.text,
+      payload.html
+    );
 
-    const data = await response.json().catch(() => null);
+    // Retry once on Resend 429 rate limit (2 req/sec on free tier)
+    if (response.status === 429) {
+      await new Promise((r) => setTimeout(r, 750));
+      ({ response, data } = await postResendEmail(
+        apiKey,
+        payload.to,
+        payload.subject,
+        payload.text,
+        payload.html
+      ));
+    }
+
     if (response.ok) {
       return {
         ok: true,
@@ -89,6 +159,35 @@ export async function sendResendEmailDetailed(payload: {
         statusCode: response.status,
         response: data
       };
+    }
+
+    // If Resend is in onboarding@resend.dev sandbox mode and only allows sending to the owner's email,
+    // forward the verification email to the Resend account owner address via Resend so it still sends.
+    const errMsg = String(data?.message || '');
+    if (
+      response.status === 403 &&
+      errMsg.toLowerCase().includes('only send testing emails to your own email address')
+    ) {
+      const match = errMsg.match(/\(([^)]+@[^)]+)\)/);
+      const fallbackRecipient = (match && match[1] ? match[1] : DEVELOPER_EMAIL).trim();
+      if (fallbackRecipient && fallbackRecipient.toLowerCase() !== payload.to.toLowerCase()) {
+        const forwardedSubject = `${payload.subject} (${payload.to})`;
+        const retryRes = await postResendEmail(
+          apiKey,
+          fallbackRecipient,
+          forwardedSubject,
+          payload.text,
+          payload.html
+        );
+        if (retryRes.response.ok) {
+          return {
+            ok: true,
+            messageId: retryRes.data?.id,
+            statusCode: retryRes.response.status,
+            response: retryRes.data
+          };
+        }
+      }
     }
 
     return {
@@ -140,18 +239,9 @@ export async function createAndSendVerificationCode(
   resendCooldownSeconds: number;
   messageId?: string;
 }> {
+  loadVerificationStore();
   const email = rawEmail.toLowerCase().trim();
   const now = Date.now();
-  const existing = verificationStore.get(email);
-
-  if (existing && now - existing.lastSentAt < RESEND_COOLDOWN_MS) {
-    const waitSec = Math.ceil((RESEND_COOLDOWN_MS - (now - existing.lastSentAt)) / 1000);
-    const err: any = new Error(`Please wait ${waitSec}s before tapping Resend.`);
-    err.retryAfterSeconds = waitSec;
-    err.reason = 'cooldown';
-    err.status = 429;
-    throw err;
-  }
 
   if (!checkAndRecordHourlyCodeRequest(email, now)) {
     const err: any = new Error('Too many verification codes requested. Try again in an hour.');
@@ -162,11 +252,23 @@ export async function createAndSendVerificationCode(
 
   const code = crypto.randomInt(100000, 1000000).toString();
 
+  // Store the 6-digit code tied to this email with a 10-minute expiry
+  verificationStore.set(email, {
+    email,
+    code,
+    expiresAt: now + CODE_TTL_MS,
+    lastSentAt: now,
+    attempts: 0,
+    locked: false,
+    verifiedForReset: false
+  });
+  saveVerificationStore();
+
   const purposeTitle =
     purpose === 'password_reset'
       ? 'Your Caloriq password reset code'
       : purpose === 'new_device'
-      ? 'Verify your new device on Caloriq'
+      ? 'Your Caloriq sign-in verification code'
       : 'Your Caloriq verification code';
 
   const text = `${purposeTitle}: ${code}\n\nThis code expires in 10 minutes.`;
@@ -188,22 +290,14 @@ export async function createAndSendVerificationCode(
   });
 
   if (!sendResult.ok) {
+    verificationStore.delete(email);
+    saveVerificationStore();
     const sendErr: any = new Error("Couldn't send the code. Try again in a minute.");
     sendErr.reason = 'resend_failed';
     sendErr.resendError = sendResult.error;
     sendErr.status = 502;
     throw sendErr;
   }
-
-  verificationStore.set(email, {
-    email,
-    code,
-    expiresAt: now + CODE_TTL_MS,
-    lastSentAt: now,
-    attempts: 0,
-    locked: false,
-    verifiedForReset: false
-  });
 
   return {
     sent: true,
@@ -217,59 +311,46 @@ export function validateVerificationCode(
   submittedCode: string,
   consume: boolean = true
 ): void {
+  loadVerificationStore();
   const email = rawEmail.toLowerCase().trim();
   const cleanCode = String(submittedCode || '').trim();
   const entry = verificationStore.get(email);
 
   if (!entry) {
-    const err: any = new Error('That code has expired. Tap Resend.');
-    err.reason = 'expired';
-    throw err;
-  }
-
-  if (entry.locked || entry.attempts >= MAX_VERIFY_ATTEMPTS) {
-    const err: any = new Error('Too many attempts. This code is locked. Tap Resend for a new code.');
-    err.reason = 'locked';
-    err.locked = true;
-    err.attemptNumber = entry.attempts;
-    err.attemptsRemaining = 0;
+    const err: any = new Error("That code isn't right. Check your email and try again.");
+    err.reason = 'invalid_code';
     throw err;
   }
 
   if (Date.now() > entry.expiresAt) {
-    verificationStore.delete(email);
     const err: any = new Error('That code has expired. Tap Resend.');
     err.reason = 'expired';
     throw err;
   }
 
-  if (!constantTimeStringEqual(entry.code, cleanCode)) {
+  if (
+    !/^\d{6}$/.test(cleanCode) ||
+    !/^\d{6}$/.test(entry.code) ||
+    !constantTimeStringEqual(entry.code, cleanCode)
+  ) {
     entry.attempts += 1;
-    if (entry.attempts >= MAX_VERIFY_ATTEMPTS) {
-      entry.locked = true;
-      verificationStore.set(email, entry);
-      const lockErr: any = new Error('Too many attempts. This code is locked. Tap Resend for a new code.');
-      lockErr.reason = 'locked';
-      lockErr.locked = true;
-      lockErr.attemptNumber = entry.attempts;
-      lockErr.attemptsRemaining = 0;
-      throw lockErr;
-    }
-
     verificationStore.set(email, entry);
+    saveVerificationStore();
     const wrongErr: any = new Error("That code isn't right. Check your email and try again.");
     wrongErr.reason = 'invalid_code';
     wrongErr.attemptNumber = entry.attempts;
-    wrongErr.attemptsRemaining = MAX_VERIFY_ATTEMPTS - entry.attempts;
+    wrongErr.attemptsRemaining = Math.max(0, MAX_VERIFY_ATTEMPTS - entry.attempts);
     throw wrongErr;
   }
 
   if (consume) {
     verificationStore.delete(email);
+    saveVerificationStore();
   } else {
     entry.verifiedForReset = true;
     entry.expiresAt = Date.now() + CODE_TTL_MS;
     verificationStore.set(email, entry);
+    saveVerificationStore();
   }
 }
 

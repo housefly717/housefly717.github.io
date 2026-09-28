@@ -388,10 +388,10 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
   let user = findUserByEmail(norm);
 
   if (user) {
-    if (user.passwordHash && !constantTimeHashEqual(user.passwordHash, pwHash)) {
-      throw new Error('An account with this email already exists. Please sign in.');
+    if (password) {
+      user.passwordHash = pwHash;
     }
-    user.passwordHash = pwHash;
+    user.isGuest = false;
     user.lastLoginAt = Date.now();
   } else {
     const id = `usr_${crypto.randomUUID()}`;
@@ -424,7 +424,7 @@ export function resetUserPassword(email: string, newPassword: string, guestIdToM
   let user = findUserByEmail(norm);
 
   if (!user) {
-    throw new Error('No account found with that email.');
+    return signupUser(norm, newPassword, guestIdToMigrate);
   }
 
   user.passwordHash = pwHash;

@@ -412,70 +412,8 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     return { userId: id, isGuest: true, token: id };
   }
 
-  if (pathname === '/api/auth/send-verification-code' && method === 'POST') {
-    return { sent: true, resendCooldownSeconds: 30 };
-  }
-
-  if (pathname === '/api/auth/verify-signup' && method === 'POST') {
-    const email = (body.email || '').toLowerCase().trim();
-    const password = String(body.password || '');
-    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_') || uid('user')}`;
-    db.users[id] = { id, email, passwordHash: password, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
-    if (!db.profiles[id]) {
-      db.profiles[id] = defaultProfile('', email.split('@')[0]);
-    }
-    saveDb();
-    return { userId: id, email, isGuest: false, token: id };
-  }
-
-  if (pathname === '/api/auth/forgot-password' && method === 'POST') {
-    return { sent: true, resendCooldownSeconds: 30, message: 'If that email is registered, a code has been sent.' };
-  }
-
-  if (pathname === '/api/auth/reset-password' && method === 'POST') {
-    const email = (body.email || '').toLowerCase().trim();
-    const newPassword = String(body.newPassword || '');
-    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_') || uid('user')}`;
-    db.users[id] = { id, email, passwordHash: newPassword, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
-    if (!db.profiles[id]) {
-      db.profiles[id] = defaultProfile('', email.split('@')[0]);
-    }
-    saveDb();
-    return { userId: id, email, isGuest: false, token: id };
-  }
-
   if (pathname === '/api/auth/logout' && method === 'POST') {
     return { success: true };
-  }
-
-  if (pathname === '/api/auth/signup' && method === 'POST') {
-    const email = (body.email || '').toLowerCase().trim();
-    const password = String(body.password || '');
-    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_')}`;
-    db.users[id] = { id, email, passwordHash: password, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
-    if (!db.profiles[id]) {
-      db.profiles[id] = defaultProfile('', email.split('@')[0]);
-    } else if (db.profiles[id].name === email.split('@')[0] && !db.profiles[id].age) {
-      db.profiles[id].name = '';
-    }
-    saveDb();
-    return { userId: id, email, isGuest: false, token: id };
-  }
-
-  if (pathname === '/api/auth/login' && method === 'POST') {
-    const email = (body.email || '').toLowerCase().trim();
-    const id = `usr_${email.replace(/[^a-z0-9]/gi, '_')}`;
-    const existing = db.users[id];
-    if (!existing) {
-      db.users[id] = { id, email, isGuest: false, createdAt: Date.now(), lastLoginAt: Date.now() };
-    } else {
-      existing.lastLoginAt = Date.now();
-    }
-    if (!db.profiles[id]) {
-      db.profiles[id] = defaultProfile(email.split('@')[0], email.split('@')[0]);
-    }
-    saveDb();
-    return { userId: id, email, isGuest: false, token: id };
   }
 
   if (pathname === '/api/auth/me' && method === 'GET') {
@@ -1371,10 +1309,10 @@ export async function standaloneFetch(input: RequestInfo | URL, init?: RequestIn
 
   try {
     const response = await window.fetch(input, init);
-    if (response.ok || response.status === 400 || response.status === 401) {
+    if (response.status !== 404) {
       return response;
     }
-    // Fallback to standalone local engine if backend endpoint is absent (e.g. 404 on static host)
+    // Fallback to standalone local engine only if backend endpoint is 404 absent
     const data = await handleStandaloneApiRequest(urlStr, init);
     return new Response(JSON.stringify(data), {
       status: 200,

@@ -502,19 +502,27 @@ class ApiService {
   async sendSignupVerificationCode(
     email: string,
     password: string,
-    honeypot?: string
+    honeypot?: string,
+    isResend?: boolean
   ): Promise<{ sent: boolean; resendCooldownSeconds: number }> {
     const cleanEmail = email.trim().toLowerCase();
     const deviceMeta = getDeviceMetadata();
     let res: Response;
     try {
-      res = await standaloneFetch('/api/auth/send-verification-code', {
+      res = await fetch('/api/auth/send-verification-code', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Device-Meta': JSON.stringify(deviceMeta)
         },
-        body: JSON.stringify({ email: cleanEmail, password, honeypot, purpose: 'signup', deviceMeta })
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          honeypot,
+          isResend: Boolean(isResend),
+          purpose: 'signup',
+          deviceMeta
+        })
       });
     } catch {
       throw new Error("Couldn't send the code. Try again in a minute.");
@@ -532,7 +540,8 @@ class ApiService {
   }
 
   async sendLoginDeviceVerificationCode(
-    email: string
+    email: string,
+    isResend?: boolean
   ): Promise<{ sent: boolean; resendCooldownSeconds: number }> {
     const cleanEmail = email.trim().toLowerCase();
     const deviceMeta = getDeviceMetadata();
@@ -544,7 +553,12 @@ class ApiService {
           'Content-Type': 'application/json',
           'X-Device-Meta': JSON.stringify(deviceMeta)
         },
-        body: JSON.stringify({ email: cleanEmail, purpose: 'login_device', deviceMeta })
+        body: JSON.stringify({
+          email: cleanEmail,
+          isResend: Boolean(isResend),
+          purpose: 'login_device',
+          deviceMeta
+        })
       });
     } catch {
       throw new Error("Couldn't send the code. Try again in a minute.");
@@ -575,13 +589,20 @@ class ApiService {
 
     let res: Response;
     try {
-      res = await standaloneFetch('/api/auth/verify-signup', {
+      res = await fetch('/api/auth/verify-signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Device-Meta': JSON.stringify(deviceMeta)
         },
-        body: JSON.stringify({ email: cleanEmail, password, code: code.trim(), guestId, honeypot, deviceMeta })
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          code: code.trim(),
+          guestId,
+          honeypot,
+          deviceMeta
+        })
       });
     } catch {
       throw new Error("Can't reach the server right now. Please try again.");
@@ -606,6 +627,61 @@ class ApiService {
     };
     saveClientUsers(users);
     localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    this.setToken(data.token, false, rememberMe);
+    return data;
+  }
+
+  async verifyLoginDeviceCode(
+    email: string,
+    password: string,
+    code: string,
+    rememberMe: boolean = true
+  ): Promise<{ userId: string; email: string; token: string }> {
+    const cleanEmail = email.trim().toLowerCase();
+    const guestId = this.getGuestId();
+    const pwHash = hashClientPassword(password || '');
+    const deviceMeta = getDeviceMetadata();
+
+    let res: Response;
+    try {
+      res = await fetch('/api/auth/verify-login-device', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password: password || '',
+          code: code.trim(),
+          guestId,
+          deviceMeta
+        })
+      });
+    } catch {
+      throw new Error("Can't reach the server right now. Please try again.");
+    }
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      const err: any = new Error(errBody.error || "That code isn't right. Check your email and try again.");
+      err.reason = errBody.reason;
+      err.locked = Boolean(errBody.locked);
+      err.attemptsRemaining = errBody.attemptsRemaining;
+      throw err;
+    }
+
+    const data = await res.json();
+    const users = getClientUsers();
+    users[cleanEmail] = {
+      userId: data.userId,
+      email: cleanEmail,
+      passwordHash: pwHash,
+      createdAt: Date.now()
+    };
+    saveClientUsers(users);
+    localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
     this.setToken(data.token, false, rememberMe);
     return data;
   }
@@ -673,7 +749,7 @@ class ApiService {
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const err: any = new Error(errBody.error || 'Could not reset password.');
+      const err: any = new Error(errBody.error || "That code isn't right. Check your email and try again.");
       err.reason = errBody.reason;
       err.locked = Boolean(errBody.locked);
       err.attemptsRemaining = errBody.attemptsRemaining;
@@ -697,69 +773,36 @@ class ApiService {
   async signup(
     email: string,
     password: string,
-    rememberMe: boolean = true
+    rememberMe: boolean = true,
+    code?: string
   ): Promise<{ userId: string; email: string; token: string }> {
     const cleanEmail = email.trim().toLowerCase();
     const guestId = this.getGuestId();
     const pwHash = hashClientPassword(password);
 
-    try {
-      const res = await fetch('/api/auth/signup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password, guestId })
-      });
+    const res = await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: cleanEmail, password, code, guestId })
+    });
 
-      if (res.ok) {
-        const data = await res.json();
-        const users = getClientUsers();
-        users[cleanEmail] = {
-          userId: data.userId,
-          email: cleanEmail,
-          passwordHash: pwHash,
-          createdAt: Date.now()
-        };
-        saveClientUsers(users);
-        localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
-        this.setToken(data.token, false, rememberMe);
-        return data;
-      }
-
-      // If backend returned a 400 validation error, surface it
-      if (res.status === 400) {
-        const err = await res.json().catch(() => ({ error: 'Failed to create account.' }));
-        throw new Error(err.error || 'Failed to create account.');
-      }
-    } catch (err: any) {
-      if (err.message && (err.message.includes('already exists') || err.message.includes('valid email') || err.message.includes('Password must'))) {
-        throw err;
-      }
-      // Static host fallback: create account entirely in browser
+    if (res.ok) {
+      const data = await res.json();
+      const users = getClientUsers();
+      users[cleanEmail] = {
+        userId: data.userId,
+        email: cleanEmail,
+        passwordHash: pwHash,
+        createdAt: Date.now()
+      };
+      saveClientUsers(users);
+      localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+      this.setToken(data.token, false, rememberMe);
+      return data;
     }
 
-    const users = getClientUsers();
-    if (users[cleanEmail] && users[cleanEmail].passwordHash !== pwHash) {
-      throw new Error('An account with this email already exists. Please sign in.');
-    }
-
-    const userId = users[cleanEmail]?.userId || `usr_client_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    users[cleanEmail] = {
-      userId,
-      email: cleanEmail,
-      passwordHash: pwHash,
-      createdAt: Date.now()
-    };
-    saveClientUsers(users);
-    localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
-    const emptyProf = getEmptyClientProfile(cleanEmail.split('@')[0], cleanEmail.split('@')[0].replace(/[^a-z0-9_]/gi, '_'));
-    this.saveLocalProfile(userId, emptyProf);
-    this.setToken(userId, false, rememberMe);
-
-    return {
-      userId,
-      email: cleanEmail,
-      token: userId
-    };
+    const err = await res.json().catch(() => ({ error: 'Failed to create account.' }));
+    throw new Error(err.error || 'Failed to create account.');
   }
 
   async login(
@@ -772,18 +815,19 @@ class ApiService {
     email?: string;
     token?: string;
     requiresVerification?: boolean;
+    resendCooldownSeconds?: number;
     reason?: string;
     message?: string;
     cooldownSeconds?: number;
   }> {
     const cleanEmail = email.trim().toLowerCase();
     const guestId = this.getGuestId();
-    const pwHash = hashClientPassword(password);
+    const pwHash = hashClientPassword(password || '');
     const deviceMeta = getDeviceMetadata();
 
     let res: Response;
     try {
-      res = await standaloneFetch('/api/auth/login', {
+      res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -791,7 +835,7 @@ class ApiService {
         },
         body: JSON.stringify({
           email: cleanEmail,
-          password,
+          password: password || '',
           verificationCode: verificationCode ? verificationCode.trim() : undefined,
           guestId,
           deviceMeta

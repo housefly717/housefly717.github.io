@@ -307,11 +307,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       setErrorMsg(emailErr);
       return;
     }
-    if (!password || password.length < 6) {
-      setErrorMsg('Password must be at least 6 characters.');
-      return;
-    }
     if (mode === 'signup') {
+      if (!password || password.length < 6) {
+        setErrorMsg('Password must be at least 6 characters.');
+        return;
+      }
       if (!confirmedAgeGate) {
         setErrorMsg('Please confirm that you are 13 years of age or older.');
         return;
@@ -328,14 +328,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
     try {
       if (mode === 'signup') {
-        const res = await api.sendSignupVerificationCode(cleanEmail, password, honeypot);
+        const res = await api.sendSignupVerificationCode(cleanEmail, password, honeypot, false);
         setVerificationCode('');
         setIsCodeLocked(false);
         setResendCooldown(res.resendCooldownSeconds || 30);
         setFlowStage('verify_code');
         return;
       } else {
-        await api.login(cleanEmail, password, rememberMe);
+        const loginRes = await api.login(cleanEmail, password, rememberMe);
+        if (loginRes.requiresVerification) {
+          setVerificationCode('');
+          setIsCodeLocked(false);
+          setResendCooldown(loginRes.resendCooldownSeconds || 30);
+          setFlowStage('verify_login_device');
+          return;
+        }
       }
 
       await onAuthSuccess();
@@ -356,7 +363,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       setErrorMsg(
         err.message ||
           (mode === 'signup'
-            ? "Couldn't send the email. Try again in a minute."
+            ? "Couldn't send the code. Try again in a minute."
             : 'Invalid email or password.')
       );
     } finally {
@@ -366,12 +373,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
   const handleVerifySignupCode = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isCodeLocked) {
-      setErrorMsg('Too many attempts. This code is locked. Tap Resend for a new code.');
-      return;
-    }
     const cleanCode = verificationCode.trim();
-    if (!cleanCode) {
+    if (!cleanCode || cleanCode.length !== 6) {
       setErrorMsg("That code isn't right. Check your email and try again.");
       return;
     }
@@ -379,6 +382,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
     setErrorMsg('');
     setIsLoading(true);
     try {
+      if (flowStage === 'verify_login_device') {
+        await api.verifyLoginDeviceCode(email.trim(), password, cleanCode, rememberMe);
+        await onAuthSuccess();
+
+        setEmail('');
+        setPassword('');
+        setVerificationCode('');
+        setReferralCode('');
+        setErrorMsg('');
+
+        closeAuthModal();
+        if (typeof window !== 'undefined') {
+          window.history.pushState({}, '', '/dashboard');
+          window.dispatchEvent(new PopStateEvent('popstate'));
+        }
+        if (onAuthComplete) {
+          onAuthComplete();
+        }
+        return;
+      }
+
       await api.verifySignupCode(email.trim(), password, cleanCode, rememberMe);
       await onAuthSuccess();
 
@@ -404,21 +428,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       setFlowStage('intro');
       setQuestionStep(1);
     } catch (err: any) {
-      if (err.locked || err.reason === 'locked') {
-        setIsCodeLocked(true);
+      const msg = err.message || "That code isn't right. Check your email and try again.";
+      if (err.reason === 'expired' || msg.toLowerCase().includes('expired')) {
+        setResendCooldown(0);
       }
-      setErrorMsg(err.message || "That code isn't right. Check your email and try again.");
+      setErrorMsg(msg);
     } finally {
       setIsLoading(false);
     }
   };
 
   const handleResendVerificationCode = async () => {
-    if (resendCooldown > 0 || isLoading) return;
+    if (isLoading) return;
     setErrorMsg('');
     setIsLoading(true);
     try {
-      const res = await api.sendSignupVerificationCode(email.trim(), password);
+      const res =
+        flowStage === 'verify_login_device'
+          ? await api.sendLoginDeviceVerificationCode(email.trim(), true)
+          : await api.sendSignupVerificationCode(email.trim(), password, honeypot, true);
       setVerificationCode('');
       setIsCodeLocked(false);
       setResendCooldown(res.resendCooldownSeconds || 30);
@@ -426,7 +454,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       if (err.retryAfterSeconds) {
         setResendCooldown(err.retryAfterSeconds);
       }
-      setErrorMsg(err.message || "Couldn't send the email. Try again in a minute.");
+      setErrorMsg(err.message || "Couldn't send the code. Try again in a minute.");
     } finally {
       setIsLoading(false);
     }
@@ -1402,7 +1430,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
         )}
 
         {/* ==================== EMAIL VERIFICATION CODE SCREEN ==================== */}
-        {!isInSignupQuestionnaire && flowStage === 'verify_code' && (
+        {!isInSignupQuestionnaire &&
+          (flowStage === 'verify_code' || flowStage === 'verify_login_device') && (
           <div className="space-y-4">
             <div className="flex items-center justify-between pr-6">
               <button
@@ -1446,7 +1475,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                   value={verificationCode}
                   onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                   placeholder="000000"
-                  disabled={isCodeLocked || isLoading}
+                  disabled={isLoading}
                   autoFocus
                   required
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-center text-lg font-mono tracking-[0.35em] text-zinc-100 placeholder:text-zinc-700 focus:outline-none focus:border-teal-500 disabled:opacity-50"
@@ -1455,7 +1484,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
               <button
                 type="submit"
-                disabled={isLoading || isCodeLocked || verificationCode.trim().length !== 6}
+                disabled={isLoading || verificationCode.trim().length !== 6}
                 className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
               >
                 {isLoading ? (
@@ -1475,11 +1504,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
             <div className="text-center pt-1">
               <button
                 type="button"
-                disabled={resendCooldown > 0 || isLoading}
+                disabled={isLoading}
                 onClick={handleResendVerificationCode}
                 className="text-xs font-medium text-teal-400 hover:text-teal-300 disabled:text-zinc-500 disabled:no-underline underline transition-colors"
               >
-                {resendCooldown > 0 ? `Resend available in ${resendCooldown}s` : 'Resend'}
+                {resendCooldown > 0 ? `Resend (${resendCooldown}s)` : 'Resend'}
               </button>
             </div>
           </div>
@@ -1754,9 +1783,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                         type={showPassword ? 'text' : 'password'}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder="At least 6 characters"
-                        minLength={6}
-                        required
+                        placeholder={mode === 'login' ? 'Password (optional for email code)' : 'At least 6 characters'}
+                        minLength={mode === 'signup' ? 6 : undefined}
+                        required={mode === 'signup'}
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                       />
                       {/* #23 Show/hide password toggle */}
