@@ -373,8 +373,41 @@ export function createGuestUser(): UserRow {
   return user;
 }
 
-export function findUserById(id: string): UserRow | undefined {
-  return db.users[id];
+export function findUserById(id: string, emailHint?: string): UserRow | undefined {
+  if (db.users[id]) {
+    return db.users[id];
+  }
+  const cleanEmail = emailHint ? emailHint.toLowerCase().trim() : '';
+  if (cleanEmail) {
+    const byEmail = Object.values(db.users).find(u => u.email === cleanEmail);
+    if (byEmail) {
+      return byEmail;
+    }
+  }
+  if (id && (id.startsWith('usr_') || id.startsWith('guest_'))) {
+    const isGuest = id.startsWith('guest_');
+    const user: UserRow = {
+      id,
+      email: !isGuest && cleanEmail ? cleanEmail : undefined,
+      isGuest,
+      createdAt: Date.now(),
+      lastLoginAt: Date.now(),
+      trustedDevices: []
+    };
+    db.users[id] = user;
+    if (!db.profiles[id]) {
+      const defaultUsername = cleanEmail
+        ? cleanEmail.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase()
+        : `caloriq_${id.slice(0, 10).replace(/[^a-z0-9_]/gi, '_')}`;
+      db.profiles[id] = createEmptyProfile(isGuest ? 'Guest User' : '', defaultUsername);
+    }
+    if (!db.userXp[id]) {
+      db.userXp[id] = { xp: 0, badges: [] };
+    }
+    saveDb();
+    return user;
+  }
+  return undefined;
 }
 
 export function findUserByEmail(email: string): UserRow | undefined {

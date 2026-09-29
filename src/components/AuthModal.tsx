@@ -472,10 +472,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
     setResetSentSuccess(false);
     setIsLoading(true);
     try {
-      await api.requestPasswordReset(cleanEmail);
+      const res = await api.requestPasswordReset(cleanEmail);
+      setVerificationCode('');
+      setResendCooldown(res.resendCooldownSeconds || 30);
       setResetSentSuccess(true);
+      setFlowStage('reset_password');
     } catch (err: any) {
-      setErrorMsg(err.message || "Couldn't send the email. Try again in a minute.");
+      setErrorMsg(err.message || "Couldn't send the code. Try again in a minute.");
     } finally {
       setIsLoading(false);
     }
@@ -483,17 +486,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
   const handleConfirmPasswordReset = async (e: React.FormEvent) => {
     e.preventDefault();
+    const codeOrToken = resetToken.trim() || verificationCode.trim();
+    if (!codeOrToken) {
+      setErrorMsg("That code isn't right. Check your email and try again.");
+      return;
+    }
     if (!newResetPassword || newResetPassword.length < 6) {
       setErrorMsg('Password must be at least 6 characters.');
+      return;
+    }
+    if (getPasswordStrength(newResetPassword).score < 2) {
+      setErrorMsg('Password must be at least Fair strength.');
       return;
     }
     setErrorMsg('');
     setIsLoading(true);
     try {
-      await api.resetPassword(email.trim(), resetToken, newResetPassword, rememberMe);
+      await api.resetPassword(email.trim(), codeOrToken, newResetPassword, rememberMe);
       await onAuthSuccess();
       setNewResetPassword('');
       setResetToken('');
+      setVerificationCode('');
       if (typeof window !== 'undefined') {
         window.history.replaceState({}, '', '/dashboard');
       }
@@ -616,7 +629,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
     setErrorMsg('');
     try {
       if (isGuest && email.trim() && password) {
-        await api.signup(email.trim(), password, rememberMe);
+        try {
+          await api.signup(email.trim(), password, rememberMe);
+        } catch {
+          // ignore if already signed up
+        }
+      }
+
+      try {
+        localStorage.setItem('caloriq_signup_complete', 'true');
+        localStorage.setItem('caloriq_onboarding_complete_v1', 'true');
+        localStorage.setItem('caloriq_onboarding_completed', 'true');
+        if (userId) {
+          localStorage.setItem(`caloriq_signup_complete_${userId}`, 'true');
+          localStorage.removeItem(`caloriq_signup_draft_${userId}`);
+        }
+        localStorage.removeItem(draftStorageKey);
+      } catch {
+        // ignore
       }
 
       await updateUserProfile({
@@ -638,39 +668,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       });
 
       if (candidateProfile.currentWeightKg > 0) {
-        try {
-          await addWeightLog(candidateProfile.currentWeightKg);
-        } catch {
-          // ignore
-        }
+        addWeightLog(candidateProfile.currentWeightKg).catch(() => {});
       }
 
-      try {
-        localStorage.setItem('caloriq_signup_complete', 'true');
-        localStorage.setItem('caloriq_onboarding_complete_v1', 'true');
-        if (userId) {
-          localStorage.setItem(`caloriq_signup_complete_${userId}`, 'true');
-          localStorage.removeItem(`caloriq_signup_draft_${userId}`);
-        }
-        localStorage.removeItem(draftStorageKey);
-      } catch {
-        // ignore
-      }
-
-      await onAuthSuccess();
+      onAuthSuccess().catch(() => {});
 
       setSaveButtonPhase('saved');
       setShowClosePrompt(false);
       setSavedMidFlowNotice(null);
       trackEvent('signup');
 
-      await new Promise((resolve) => setTimeout(resolve, 450));
+      await new Promise((resolve) => setTimeout(resolve, 250));
 
       closeAuthModal();
 
       if (typeof window !== 'undefined') {
         window.history.pushState({}, '', '/dashboard');
         window.dispatchEvent(new PopStateEvent('popstate'));
+        window.scrollTo({ top: 0, behavior: 'smooth' });
       }
       if (onAuthComplete) {
         onAuthComplete();
@@ -691,7 +706,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   };
 
   const isInSignupQuestionnaire =
-    !isGuest && (flowStage === 'intro' || flowStage === 'questions' || flowStage === 'final');
+    flowStage === 'intro' || flowStage === 'questions' || flowStage === 'final';
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
@@ -1590,13 +1605,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
           </div>
         )}
 
-        {/* ==================== RESET PASSWORD (FROM EMAIL LINK) SCREEN ==================== */}
+        {/* ==================== RESET PASSWORD SCREEN ==================== */}
         {!isInSignupQuestionnaire && flowStage === 'reset_password' && (
           <div className="space-y-4">
+            <div className="flex items-center justify-between pr-6">
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMsg('');
+                  setFlowStage('credentials');
+                }}
+                className="text-zinc-400 hover:text-zinc-200 flex items-center gap-1 text-xs font-medium"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Back to sign in
+              </button>
+              <span className="font-mono text-xs text-teal-400 font-semibold">Reset Password</span>
+            </div>
+
             <div className="space-y-1">
               <h3 className="text-base font-bold text-zinc-100">Choose a new password</h3>
               <p className="text-xs text-zinc-400">
-                Setting a new password for <span className="text-zinc-200 font-medium">{email}</span>.
+                {resetToken
+                  ? `Setting a new password for ${email}.`
+                  : `We sent a 6-digit reset code to ${email}. Enter it below with your new password.`}
               </p>
             </div>
 
@@ -1607,6 +1639,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
             )}
 
             <form onSubmit={handleConfirmPasswordReset} className="space-y-4">
+              {!resetToken && (
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                    6-digit reset code
+                  </label>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={verificationCode}
+                    onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    disabled={isLoading}
+                    autoFocus
+                    required
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-center text-lg font-mono tracking-[0.35em] text-zinc-100 placeholder:text-zinc-700 focus:outline-none focus:border-teal-500 disabled:opacity-50"
+                  />
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5">
                   New Password
@@ -1620,7 +1672,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                     placeholder="At least 6 characters"
                     minLength={6}
                     required
-                    autoFocus
+                    autoFocus={Boolean(resetToken)}
                     className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                   />
                   <button
@@ -1636,7 +1688,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
               <button
                 type="submit"
-                disabled={isLoading}
+                disabled={isLoading || (!resetToken && verificationCode.trim().length !== 6)}
                 className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
               >
                 {isLoading ? (
@@ -1652,6 +1704,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 )}
               </button>
             </form>
+
+            {!resetToken && (
+              <div className="text-center pt-1">
+                <button
+                  type="button"
+                  disabled={isLoading}
+                  onClick={async () => {
+                    setErrorMsg('');
+                    setIsLoading(true);
+                    try {
+                      const res = await api.requestPasswordReset(email.trim());
+                      setVerificationCode('');
+                      setResendCooldown(res.resendCooldownSeconds || 30);
+                    } catch (err: any) {
+                      setErrorMsg(err.message || "Couldn't send the code. Try again in a minute.");
+                    } finally {
+                      setIsLoading(false);
+                    }
+                  }}
+                  className="text-xs font-medium text-teal-400 hover:text-teal-300 disabled:text-zinc-500 disabled:no-underline underline transition-colors"
+                >
+                  {resendCooldown > 0 ? `Resend (${resendCooldown}s)` : 'Resend'}
+                </button>
+              </div>
+            )}
           </div>
         )}
 

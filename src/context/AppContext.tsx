@@ -113,6 +113,20 @@ interface AppContextType {
   onAuthSuccess: () => Promise<void>;
 }
 
+const getSavedThemeMode = (): 'dark' | 'light' | 'auto' => {
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = localStorage.getItem('caloriq_theme_mode');
+      if (saved === 'dark' || saved === 'light' || saved === 'auto') {
+        return saved;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return 'dark';
+};
+
 const defaultProfile: UserProfile = {
   name: '',
   age: 0,
@@ -124,7 +138,7 @@ const defaultProfile: UserProfile = {
   dailyActivity: '',
   goalSpeed: '',
   unitSystem: 'metric',
-  themeMode: 'dark',
+  themeMode: getSavedThemeMode(),
   streakFreezesUsed: []
 };
 
@@ -339,7 +353,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Apply theme mode (dark / light / auto follows device setting)
   useEffect(() => {
-    const mode = profile.themeMode || 'dark';
+    const mode = profile.themeMode || getSavedThemeMode();
+    try {
+      localStorage.setItem('caloriq_theme_mode', mode);
+    } catch {
+      // ignore
+    }
     const root = document.documentElement;
     const applyTheme = () => {
       let useLight = false;
@@ -351,10 +370,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
       if (useLight) {
-        root.classList.add('light-mode');
+        root.classList.add('light-theme', 'light-mode');
         root.classList.remove('dark');
       } else {
-        root.classList.remove('light-mode');
+        root.classList.remove('light-theme', 'light-mode');
         root.classList.add('dark');
       }
     };
@@ -687,7 +706,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addWeightLog = async (weightKg: number, date: string = activeDate): Promise<void> => {
-    if (isGuest) {
+    const hasCompletedOnboarding =
+      Boolean(profile.signupComplete) ||
+      localStorage.getItem('caloriq_signup_complete') === 'true';
+    if (isGuest && !hasCompletedOnboarding) {
       openGuestLock();
       return;
     }
@@ -745,12 +767,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateUserProfile = async (updates: Partial<UserProfile>): Promise<void> => {
-    const updated = await api.updateProfile(updates);
-    setProfile(updated);
+    setProfile(prev => ({ ...prev, ...updates }));
     if (updates.signupComplete) {
       setIsGuest(false);
       setIsGuestLockOpen(false);
     }
+    const updated = await api.updateProfile(updates);
+    setProfile(prev => ({ ...prev, ...updated, ...updates }));
     loadGeneralData();
   };
 
@@ -838,7 +861,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUserEmail(session.email);
     setIsGuest(session.isGuest);
     setIsGuestLockOpen(false);
-    if (session.profile) setProfile(session.profile);
+    if (session.profile) {
+      setProfile(prev =>
+        prev.signupComplete && !session.profile.signupComplete
+          ? { ...session.profile, ...prev, signupComplete: true }
+          : { ...prev, ...session.profile }
+      );
+    }
     if (session.stats) setStats(session.stats);
     await refreshDayData();
   };

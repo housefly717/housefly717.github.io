@@ -36,3 +36,11 @@ createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </StrictMode>
 );
+
+setTimeout(() => {
+  try {
+    sessionStorage.removeItem('caloriq_sw_cache_reset_done');
+  } catch {
+    // ignore
+  }
+}, 2000);

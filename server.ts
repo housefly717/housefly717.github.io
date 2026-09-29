@@ -329,7 +329,8 @@ function authenticateUser(req: Request, res: Response, next: NextFunction) {
     return;
   }
 
-  const user = findUserById(token);
+  const emailHint = typeof req.headers['x-user-email'] === 'string' ? req.headers['x-user-email'] : undefined;
+  const user = findUserById(token, emailHint);
   if (!user) {
     res.status(401).json({ error: 'Unauthorized: Invalid user session' });
     return;

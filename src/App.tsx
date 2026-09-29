@@ -125,6 +125,10 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
   } = useApp();
 
   useEffect(() => {
+    setCurrentTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
     trackPageview(`/dashboard/${currentTab}`);
   }, [currentTab]);
 
@@ -366,6 +370,8 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
         onAuthComplete={() => {
           setCurrentTab('diary');
           window.history.pushState({}, '', '/dashboard');
+          window.dispatchEvent(new PopStateEvent('popstate'));
+          window.scrollTo({ top: 0, behavior: 'smooth' });
         }}
       />
       <GuestLockSheet />

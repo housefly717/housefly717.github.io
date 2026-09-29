@@ -58,6 +58,7 @@ import {
   useDebounce,
   validateAge,
   validateHeightCm,
+  validateHeightImperial,
   validateWeight,
   validateBodyFat,
   getDateBounds,
@@ -65,6 +66,14 @@ import {
 } from '../utils/validation.js';
 import type { SupportedLanguage } from '../utils/i18n.js';
 import type { UserProfile, ChatMessage } from '../types/index.js';
+
+function cmToFtIn(cm: number): { ft: string; in: string } {
+  if (!cm || cm <= 0) return { ft: '', in: '' };
+  const totalInches = Math.round(cm / 2.54);
+  const ft = Math.floor(totalInches / 12);
+  const inc = totalInches % 12;
+  return { ft: String(ft), in: String(inc) };
+}
 
 const BADGE_DEFINITIONS: Array<{ id: string; title: string; desc: string }> = [
   { id: 'First log', title: 'First Log', desc: 'Logged your first meal' },
@@ -207,6 +216,8 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // Form State
   const [formData, setFormData] = useState<UserProfile>(profile);
+  const [heightFtInput, setHeightFtInput] = useState<string>(() => cmToFtIn(profile.heightCm).ft);
+  const [heightInInput, setHeightInInput] = useState<string>(() => cmToFtIn(profile.heightCm).in);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [showProjectedWhy, setShowProjectedWhy] = useState(false);
@@ -248,6 +259,9 @@ export const MeTab: React.FC<MeTabProps> = ({
   useEffect(() => {
     setFormData(profile);
     setWhyText(profile.pinnedWhy || '');
+    const converted = cmToFtIn(profile.heightCm);
+    setHeightFtInput(converted.ft);
+    setHeightInInput(converted.in);
   }, [profile]);
 
   useEffect(() => {
@@ -305,7 +319,13 @@ export const MeTab: React.FC<MeTabProps> = ({
   };
 
   // #55 Theme mode toggle (dark | light | auto)
+  const currentThemeMode = formData.themeMode || profile.themeMode || 'dark';
   const handleSetTheme = async (mode: 'dark' | 'light' | 'auto') => {
+    try {
+      localStorage.setItem('caloriq_theme_mode', mode);
+    } catch {
+      // ignore
+    }
     setFormData(prev => ({ ...prev, themeMode: mode }));
     await updateUserProfile({ themeMode: mode });
   };
@@ -326,7 +346,10 @@ export const MeTab: React.FC<MeTabProps> = ({
       setProfileError(ageErr);
       return;
     }
-    const heightErr = validateHeightCm(formData.heightCm);
+    const heightErr =
+      formData.unitSystem === 'imperial'
+        ? validateHeightImperial(heightFtInput, heightInInput || '0')
+        : validateHeightCm(formData.heightCm);
     if (heightErr) {
       setProfileError(heightErr);
       return;
@@ -647,6 +670,49 @@ export const MeTab: React.FC<MeTabProps> = ({
           </div>
         </div>
 
+        {/* #55 Dark / Light / Auto Theme Toggle */}
+        <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl flex items-center justify-between">
+          <span className="text-xs font-medium text-zinc-300">Appearance Theme</span>
+          <div className="flex items-center gap-1 bg-zinc-950 p-1 rounded-lg border border-zinc-800">
+            <button
+              type="button"
+              onClick={() => handleSetTheme('dark')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-colors ${
+                currentThemeMode === 'dark'
+                  ? 'bg-teal-500 text-zinc-950 font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Moon className="w-3 h-3" />
+              Dark
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSetTheme('light')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-colors ${
+                currentThemeMode === 'light'
+                  ? 'bg-teal-500 text-zinc-950 font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Sun className="w-3 h-3" />
+              Light
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSetTheme('auto')}
+              className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-colors ${
+                currentThemeMode === 'auto'
+                  ? 'bg-teal-500 text-zinc-950 font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200'
+              }`}
+            >
+              <Clock className="w-3 h-3" />
+              Auto
+            </button>
+          </div>
+        </div>
+
         {/* Legal & Website Links */}
         <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-2">
           {onOpenDescription && (
@@ -892,7 +958,7 @@ export const MeTab: React.FC<MeTabProps> = ({
               type="button"
               onClick={() => handleSetTheme('dark')}
               className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-colors ${
-                (profile.themeMode || 'dark') === 'dark'
+                currentThemeMode === 'dark'
                   ? 'bg-teal-500 text-zinc-950 font-semibold'
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
@@ -904,7 +970,7 @@ export const MeTab: React.FC<MeTabProps> = ({
               type="button"
               onClick={() => handleSetTheme('light')}
               className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-colors ${
-                profile.themeMode === 'light'
+                currentThemeMode === 'light'
                   ? 'bg-teal-500 text-zinc-950 font-semibold'
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
@@ -916,7 +982,7 @@ export const MeTab: React.FC<MeTabProps> = ({
               type="button"
               onClick={() => handleSetTheme('auto')}
               className={`px-2.5 py-1 rounded-md text-[11px] font-medium flex items-center gap-1 transition-colors ${
-                profile.themeMode === 'auto'
+                currentThemeMode === 'auto'
                   ? 'bg-teal-500 text-zinc-950 font-semibold'
                   : 'text-zinc-400 hover:text-zinc-200'
               }`}
@@ -1054,10 +1120,19 @@ export const MeTab: React.FC<MeTabProps> = ({
           <h4 className="text-sm font-semibold text-zinc-200">Physiology & Goal Settings</h4>
           <button
             type="button"
-            onClick={() => setFormData(prev => ({
-              ...prev,
-              unitSystem: prev.unitSystem === 'metric' ? 'imperial' : 'metric'
-            }))}
+            onClick={() => {
+              const nextUnit = formData.unitSystem === 'metric' ? 'imperial' : 'metric';
+              if (formData.heightCm > 0) {
+                const converted = cmToFtIn(formData.heightCm);
+                setHeightFtInput(converted.ft);
+                setHeightInInput(converted.in);
+              }
+              setFormData(prev => ({
+                ...prev,
+                unitSystem: nextUnit
+              }));
+              updateUserProfile({ unitSystem: nextUnit });
+            }}
             className="px-2.5 py-1 bg-zinc-950 border border-zinc-800 rounded-lg text-xs font-mono text-teal-400 hover:border-zinc-700 transition-colors"
           >
             {formData.unitSystem.toUpperCase()} UNITS
@@ -1117,21 +1192,100 @@ export const MeTab: React.FC<MeTabProps> = ({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1">Height (cm)</label>
-            <input
-              type="number"
-              min="50"
-              max="250"
-              value={formData.heightCm > 0 ? formData.heightCm : ''}
-              onChange={(e) => setFormData(p => ({ ...p, heightCm: e.target.value ? Number(e.target.value) : 0 }))}
-              placeholder="e.g. 165"
-              required
-              className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
-            />
-            {debouncedFormData.heightCm > 0 && validateHeightCm(debouncedFormData.heightCm) && (
-              <span className="text-[10px] text-rose-400 mt-1 block">
-                {validateHeightCm(debouncedFormData.heightCm)}
-              </span>
+            <label className="block text-xs font-medium text-zinc-400 mb-1">
+              Height ({formData.unitSystem === 'metric' ? 'cm' : 'ft / in'})
+            </label>
+            {formData.unitSystem === 'metric' ? (
+              <>
+                <input
+                  type="number"
+                  min="50"
+                  max="250"
+                  step="any"
+                  value={formData.heightCm > 0 ? Math.round(formData.heightCm * 10) / 10 : ''}
+                  onChange={(e) => {
+                    const nextCm = e.target.value ? Number(e.target.value) : 0;
+                    setFormData(p => ({ ...p, heightCm: nextCm }));
+                    const converted = cmToFtIn(nextCm);
+                    setHeightFtInput(converted.ft);
+                    setHeightInInput(converted.in);
+                  }}
+                  placeholder="e.g. 165"
+                  required
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
+                />
+                {debouncedFormData.heightCm > 0 && validateHeightCm(debouncedFormData.heightCm) && (
+                  <span className="text-[10px] text-rose-400 mt-1 block">
+                    {validateHeightCm(debouncedFormData.heightCm)}
+                  </span>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="1"
+                      max="8"
+                      value={heightFtInput}
+                      onChange={(e) => {
+                        const nextFt = e.target.value;
+                        setHeightFtInput(nextFt);
+                        const ft = parseFloat(nextFt);
+                        const inc = parseFloat(heightInInput || '0');
+                        if (!nextFt && !heightInInput) {
+                          setFormData(p => ({ ...p, heightCm: 0 }));
+                          return;
+                        }
+                        const totalInches = (!isNaN(ft) ? ft * 12 : 0) + (!isNaN(inc) ? inc : 0);
+                        const nextCm = totalInches > 0 ? Math.round(totalInches * 2.54 * 10) / 10 : 0;
+                        setFormData(p => ({ ...p, heightCm: nextCm }));
+                      }}
+                      placeholder="ft"
+                      aria-label="Height feet"
+                      required
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-2.5 py-2 pr-7 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
+                    />
+                    <span className="absolute right-2.5 top-2 text-[10px] font-mono text-zinc-500 pointer-events-none">
+                      ft
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="11"
+                      value={heightInInput}
+                      onChange={(e) => {
+                        const nextIn = e.target.value;
+                        setHeightInInput(nextIn);
+                        const ft = parseFloat(heightFtInput || '0');
+                        const inc = parseFloat(nextIn || '0');
+                        if (!heightFtInput && !nextIn) {
+                          setFormData(p => ({ ...p, heightCm: 0 }));
+                          return;
+                        }
+                        const totalInches = (!isNaN(ft) ? ft * 12 : 0) + (!isNaN(inc) ? inc : 0);
+                        const nextCm = totalInches > 0 ? Math.round(totalInches * 2.54 * 10) / 10 : 0;
+                        setFormData(p => ({ ...p, heightCm: nextCm }));
+                      }}
+                      placeholder="in"
+                      aria-label="Height inches"
+                      required
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-2.5 py-2 pr-7 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 font-mono"
+                    />
+                    <span className="absolute right-2.5 top-2 text-[10px] font-mono text-zinc-500 pointer-events-none">
+                      in
+                    </span>
+                  </div>
+                </div>
+                {heightFtInput !== '' && validateHeightImperial(heightFtInput, heightInInput || '0') && (
+                  <span className="text-[10px] text-rose-400 mt-1 block">
+                    {validateHeightImperial(heightFtInput, heightInInput || '0')}
+                  </span>
+                )}
+              </>
             )}
           </div>
 

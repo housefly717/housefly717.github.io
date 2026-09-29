@@ -19,10 +19,46 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('ErrorBoundary caught error:', error, errorInfo);
+    const msg = String(error?.message || '');
+    if (
+      (msg.includes("reading 'useState'") ||
+        msg.includes("reading 'useEffect'") ||
+        msg.includes('Invalid hook call')) &&
+      typeof window !== 'undefined' &&
+      !sessionStorage.getItem('caloriq_sw_cache_reset_done')
+    ) {
+      sessionStorage.setItem('caloriq_sw_cache_reset_done', '1');
+      const cleanup: Promise<any>[] = [];
+      if ('caches' in window) {
+        cleanup.push(
+          caches.keys().then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+        );
+      }
+      if ('serviceWorker' in navigator) {
+        cleanup.push(
+          navigator.serviceWorker
+            .getRegistrations()
+            .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+        );
+      }
+      Promise.all(cleanup)
+        .catch(() => {})
+        .finally(() => {
+          window.location.reload();
+        });
+    }
   }
 
   private handleReload = () => {
-    window.location.reload();
+    const win = window as Window;
+    if (win.caches) {
+      win.caches
+        .keys()
+        .then((keys) => Promise.all(keys.map((k) => win.caches.delete(k))))
+        .finally(() => win.location.reload());
+      return;
+    }
+    win.location.reload();
   };
 
   public render() {

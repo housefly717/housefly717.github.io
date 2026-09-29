@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'caloriq-shell-v1.0.0';
+const CACHE_VERSION = 'caloriq-shell-v1.0.2';
 const APP_SHELL_ASSETS = [
   '/',
   '/dashboard',
@@ -47,6 +47,17 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url);
 
+  // Never intercept or cache Vite dev server modules, node_modules pre-bundles, or HMR scripts
+  if (
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/node_modules/') ||
+    url.pathname.startsWith('/@') ||
+    url.searchParams.has('v') ||
+    url.searchParams.has('t')
+  ) {
+    return;
+  }
+
   // For API requests (diary, water, exercise, profile), try network first and fall back to cached response
   if (url.pathname.startsWith('/api/')) {
     event.respondWith(
@@ -77,19 +88,16 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Static assets: cache-first with background refresh
+  // Static assets: network-first with cache fallback for offline support
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const networkFetch = fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200 && response.type === 'basic') {
-            const clone = response.clone();
-            caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || networkFetch;
-    })
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200 && response.type === 'basic') {
+          const clone = response.clone();
+          caches.open(CACHE_VERSION).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

@@ -97,12 +97,45 @@ html.light-theme .bg-zinc-900\/40 {
   border-color: #e2e8f0 !important;
 }
 
+html.light-theme .bg-zinc-950\/95,
+html.light-theme .bg-zinc-950\/90,
 html.light-theme .bg-zinc-950\/80,
 html.light-theme .bg-zinc-950\/70,
 html.light-theme .bg-zinc-950\/60,
 html.light-theme .bg-zinc-950\/40 {
   background-color: #f1f5f9 !important;
   border-color: #cbd5e1 !important;
+}
+
+html.light-theme .bg-zinc-850,
+html.light-theme .bg-zinc-800,
+html.light-theme .bg-zinc-800\/80,
+html.light-theme .bg-zinc-800\/70 {
+  background-color: #e2e8f0 !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light-theme input:not([type="checkbox"]):not([type="radio"]),
+html.light-theme select,
+html.light-theme textarea {
+  background-color: #f8fafc !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light-theme .bg-teal-950\/60,
+html.light-theme .bg-teal-950\/40 {
+  background-color: #f0fdfa !important;
+  border-color: #99f6e4 !important;
+}
+
+html.light-theme .text-teal-200,
+html.light-theme .text-teal-300 {
+  color: #0f766e !important;
+}
+
+html.light-theme .text-teal-400 {
+  color: #0d9488 !important;
 }
 
 html.light-theme .text-zinc-100,
@@ -112,7 +145,8 @@ html.light-theme .text-zinc-200 {
 
 html.light-theme .text-zinc-300,
 html.light-theme .text-zinc-400,
-html.light-theme .text-zinc-500 {
+html.light-theme .text-zinc-500,
+html.light-theme .text-zinc-600 {
   color: #334155 !important;
 }
 

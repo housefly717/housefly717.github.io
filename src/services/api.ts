@@ -330,9 +330,13 @@ class ApiService {
       this.notifySaveStatus('saving');
     }
 
+    const savedUserEmail =
+      typeof localStorage !== 'undefined' ? localStorage.getItem(USER_EMAIL_KEY) || '' : '';
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'X-Device-Meta': JSON.stringify(getDeviceMetadata()),
+      ...(savedUserEmail ? { 'X-User-Email': savedUserEmail } : {}),
       ...(options.headers as Record<string, string>)
     };
 
@@ -459,9 +463,13 @@ class ApiService {
 
     try {
       const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
-      if (me.profile) {
-        this.saveLocalProfile(me.userId, me.profile);
-      }
+      const localProf = this.getLocalProfile(me.userId, me.email);
+      const mergedProfile: UserProfile =
+        localProf?.signupComplete && !me.profile?.signupComplete
+          ? { ...me.profile, ...localProf, signupComplete: true }
+          : { ...localProf, ...me.profile };
+      me.profile = mergedProfile;
+      this.saveLocalProfile(me.userId, mergedProfile);
       if (me.email) {
         localStorage.setItem(USER_EMAIL_KEY, me.email);
       }
@@ -1300,23 +1308,28 @@ class ApiService {
   }
 
   async updateProfile(updates: Partial<UserProfile>): Promise<UserProfile> {
+    const curr = this.token ? this.getLocalProfile(this.token) : ({} as UserProfile);
+    const optimistic = { ...curr, ...updates } as UserProfile;
     if (this.token) {
-      const curr = this.getLocalProfile(this.token);
-      this.saveLocalProfile(this.token, { ...curr, ...updates });
+      this.saveLocalProfile(this.token, optimistic);
     }
-    const updated = await this.request<UserProfile>('/api/profile', {
-      method: 'PUT',
-      body: JSON.stringify(updates)
-    });
-    const merged = {
-      ...(this.token ? this.getLocalProfile(this.token) : {}),
-      ...updates,
-      ...(updated || {})
-    } as UserProfile;
-    if (this.token) {
-      this.saveLocalProfile(this.token, merged);
+    try {
+      const updated = await this.request<UserProfile>('/api/profile', {
+        method: 'PUT',
+        body: JSON.stringify(updates)
+      });
+      const merged = {
+        ...optimistic,
+        ...(updated || {}),
+        ...updates
+      } as UserProfile;
+      if (this.token) {
+        this.saveLocalProfile(this.token, merged);
+      }
+      return merged;
+    } catch {
+      return optimistic;
     }
-    return merged;
   }
 
   async getStats(): Promise<UserStats> {
