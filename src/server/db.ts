@@ -139,6 +139,7 @@ export interface DatabaseSchema {
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const DB_FILE = path.join(DATA_DIR, 'caloriq-db.json');
+export const DEV_USERNAME = 'housefly';
 
 const INITIAL_DB: DatabaseSchema = {
   users: {},
@@ -444,8 +445,6 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
   }
   return undefined;
 }
-
-export const DEV_USERNAME = 'housefly';
 
 export function ensureDevUserExists(): UserRow {
   let devUser = Object.values(db.users).find(
