@@ -34,7 +34,10 @@ import {
   KeyRound,
   Mail,
   Bug,
-  LogOut
+  LogOut,
+  Terminal,
+  Flag,
+  RefreshCw
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
@@ -65,7 +68,7 @@ import {
   validateDateRange
 } from '../utils/validation.js';
 import type { SupportedLanguage } from '../utils/i18n.js';
-import type { UserProfile, ChatMessage } from '../types/index.js';
+import type { UserProfile, ChatMessage, CommunityPost, ReportedPostRecord } from '../types/index.js';
 
 function cmToFtIn(cm: number): { ft: string; in: string } {
   if (!cm || cm <= 0) return { ft: '', in: '' };
@@ -205,6 +208,60 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // #79, #80 Backup import state
   const [backupImportStatus, setBackupImportStatus] = useState<string | null>(null);
+
+  // Dev Tools & Community Moderation state (only for isDev = true / housefly)
+  const isDevAccount =
+    !isGuest &&
+    (Boolean(profile.isDev) ||
+      (userEmail || '').toLowerCase() === 'housefly' ||
+      userId === 'usr_dev_housefly');
+  const [reportedPosts, setReportedPosts] = useState<Array<ReportedPostRecord & { post: CommunityPost }>>([]);
+  const [isLoadingReports, setIsLoadingReports] = useState(false);
+  const [moderationNotice, setModerationNotice] = useState<string | null>(null);
+  const [devActionStatus, setDevActionStatus] = useState<string | null>(null);
+
+  const loadReportedPosts = async () => {
+    if (!isDevAccount) return;
+    setIsLoadingReports(true);
+    try {
+      const res = await api.devGetReportedPosts();
+      setReportedPosts(res.reports || []);
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingReports(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isDevAccount) {
+      loadReportedPosts();
+    }
+  }, [isDevAccount]);
+
+  const handleDeleteReportedPost = async (postId: string) => {
+    setModerationNotice(null);
+    try {
+      const res = await api.devDeleteCommunityPost(postId);
+      setReportedPosts(res.reports || []);
+      setModerationNotice('Reported post deleted.');
+      setTimeout(() => setModerationNotice(null), 3000);
+    } catch (err: any) {
+      setModerationNotice(err?.message || 'Could not delete post.');
+    }
+  };
+
+  const handleDismissPostReport = async (reportId: string) => {
+    setModerationNotice(null);
+    try {
+      const res = await api.devDismissCommunityReport(reportId);
+      setReportedPosts(res.reports || []);
+      setModerationNotice('Report dismissed.');
+      setTimeout(() => setModerationNotice(null), 3000);
+    } catch (err: any) {
+      setModerationNotice(err?.message || 'Could not dismiss report.');
+    }
+  };
 
   // Referral code state
   const myReferralCode =
@@ -2007,6 +2064,175 @@ export const MeTab: React.FC<MeTabProps> = ({
               ))}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* DEV TOOLS (Exclusively accessible to the dev account: housefly / isDev = true) */}
+      {isDevAccount && (
+        <div className="bg-zinc-900/90 border border-teal-500/40 rounded-2xl p-5 shadow-xl space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-teal-500/15 border border-teal-500/30 flex items-center justify-center text-teal-400">
+                <Terminal className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h4 className="text-sm font-semibold text-zinc-100">Dev Tools</h4>
+                  <span className="px-1.5 py-0.5 rounded bg-teal-500/20 border border-teal-500/40 text-[9px] font-mono font-bold text-teal-300 uppercase tracking-wider">
+                    isDev = true
+                  </span>
+                </div>
+                <span className="text-[11px] text-zinc-400 block">
+                  Locked to device · Signed in as @{userEmail || 'housefly'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Community moderation section */}
+          <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Flag className="w-4 h-4 text-amber-400" />
+                <div>
+                  <h5 className="text-xs font-bold text-zinc-100">Community moderation</h5>
+                  <span className="text-[10px] text-zinc-400 block">
+                    Review reported posts — delete violating posts or dismiss reports
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={loadReportedPosts}
+                disabled={isLoadingReports}
+                aria-label="Refresh reported posts"
+                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingReports ? 'animate-spin text-teal-400' : ''}`} />
+              </button>
+            </div>
+
+            {moderationNotice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="px-3 py-2 rounded-lg bg-teal-950/60 border border-teal-500/40 text-[11px] text-teal-200 font-medium"
+              >
+                {moderationNotice}
+              </div>
+            )}
+
+            {isLoadingReports ? (
+              <div className="space-y-2 py-2">
+                <div className="h-16 rounded-xl bg-zinc-900 animate-pulse" />
+              </div>
+            ) : reportedPosts.length === 0 ? (
+              <div className="py-5 text-center border border-dashed border-zinc-800 rounded-xl">
+                <p className="text-xs text-zinc-400 font-medium">No reported posts in queue</p>
+                <p className="text-[10px] text-zinc-500 mt-0.5">
+                  Posts reported by community members will appear here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {reportedPosts.map((report) => (
+                  <div
+                    key={report.id}
+                    className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-bold text-zinc-100">
+                            @{report.post?.username || 'user'}
+                          </span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                            Reported
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-zinc-500 block mt-0.5">
+                          Reported by @{report.reportedByUsername} ·{' '}
+                          {new Date(report.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-zinc-200 bg-zinc-950 border border-zinc-800/80 rounded-lg p-2.5 whitespace-pre-wrap break-words">
+                      {report.post?.text || ''}
+                    </p>
+
+                    {report.post?.imageUrl && (
+                      <div className="rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 max-h-36">
+                        <img
+                          src={report.post.imageUrl}
+                          alt="Reported post attachment"
+                          className="w-full h-full object-cover max-h-36"
+                        />
+                      </div>
+                    )}
+
+                    {report.reason && (
+                      <p className="text-[11px] text-amber-300/90">
+                        Reason: <span className="text-zinc-300">{report.reason}</span>
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteReportedPost(report.postId)}
+                        className="flex-1 py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Delete post
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDismissPostReport(report.id)}
+                        className="flex-1 py-2 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-colors"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5 text-teal-400" />
+                        Dismiss report
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Quick Dev Utilities */}
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={async () => {
+                setDevActionStatus('Seeding 7-day demo account...');
+                try {
+                  const res = await api.devSeedDemoAccount();
+                  setDevActionStatus(`Demo account ready: ${res.email} / ${res.password}`);
+                } catch (err: any) {
+                  setDevActionStatus(err?.message || 'Failed to seed demo account.');
+                }
+              }}
+              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-teal-300 flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-teal-400" />
+              Seed Demo Account
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                window.dispatchEvent(new CustomEvent('caloriq-open-dev-console'));
+              }}
+              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 transition-colors"
+            >
+              <Terminal className="w-3.5 h-3.5 text-teal-400" />
+              Open Dev Console
+            </button>
+          </div>
+          {devActionStatus && (
+            <p className="text-[11px] font-mono text-teal-300 text-center">{devActionStatus}</p>
+          )}
         </div>
       )}
 

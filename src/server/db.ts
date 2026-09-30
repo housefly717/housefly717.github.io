@@ -20,7 +20,10 @@ import type {
   NonScaleVictory,
   PantryItem,
   FriendRecord,
-  SharedRecipeRecord
+  SharedRecipeRecord,
+  CommunityPost,
+  CommunityReply,
+  ReportedPostRecord
 } from '../types/index.js';
 
 export interface TrustedDeviceRecord {
@@ -36,9 +39,13 @@ export interface TrustedDeviceRecord {
 
 export interface UserRow {
   id: string;
+  username?: string;
   email?: string;
   passwordHash?: string;
   isGuest: boolean;
+  isDev?: boolean;
+  devDeviceToken?: string;
+  devBrowserSig?: string;
   createdAt: number;
   lastLoginAt: number;
   trustedDevices?: TrustedDeviceRecord[];
@@ -113,6 +120,12 @@ export interface DatabaseSchema {
   pantryItems: PantryItem[];
   friends: FriendRecord[];
   sharedRecipes: SharedRecipeRecord[];
+  posts: CommunityPost[];
+  replies: CommunityReply[];
+  postLikes: Record<string, string[]>;
+  postReports: ReportedPostRecord[];
+  blockedUsers: Record<string, string[]>;
+  followingUsers: Record<string, string[]>;
   savedFoods: SavedFood[];
   savedRecipes: SavedRecipe[];
   mealTemplates: MealTemplate[];
@@ -142,6 +155,12 @@ const INITIAL_DB: DatabaseSchema = {
   pantryItems: [],
   friends: [],
   sharedRecipes: [],
+  posts: [],
+  replies: [],
+  postLikes: {},
+  postReports: [],
+  blockedUsers: {},
+  followingUsers: {},
   savedFoods: [],
   savedRecipes: [],
   mealTemplates: [],
@@ -211,17 +230,26 @@ function initDb() {
         pantryItems: parsed.pantryItems || [],
         friends: cleanedFriends,
         sharedRecipes: parsed.sharedRecipes || [],
+        posts: parsed.posts || [],
+        replies: parsed.replies || [],
+        postLikes: parsed.postLikes || {},
+        postReports: parsed.postReports || [],
+        blockedUsers: parsed.blockedUsers || {},
+        followingUsers: parsed.followingUsers || {},
         securityEvents: (parsed.securityEvents || []).filter(
           (ev: any) => Date.now() - (ev.createdAt || 0) <= 90 * 24 * 60 * 60 * 1000
         ),
         recentErrors: (parsed.recentErrors || []).slice(0, 50)
       };
+      ensureDevUserExists();
       saveDb();
     } else {
+      ensureDevUserExists();
       saveDb();
     }
   } catch (err) {
     console.error('Failed to initialize database, using in-memory fallback', err);
+    ensureDevUserExists();
   }
 }
 
@@ -377,8 +405,13 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
   if (db.users[id]) {
     return db.users[id];
   }
-  const cleanEmail = emailHint ? emailHint.toLowerCase().trim() : '';
-  if (cleanEmail) {
+  const cleanHint = emailHint ? emailHint.trim() : '';
+  if (cleanHint) {
+    const byUsername = findUserByUsername(cleanHint);
+    if (byUsername) {
+      return byUsername;
+    }
+    const cleanEmail = cleanHint.toLowerCase();
     const byEmail = Object.values(db.users).find(u => u.email === cleanEmail);
     if (byEmail) {
       return byEmail;
@@ -386,9 +419,11 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
   }
   if (id && (id.startsWith('usr_') || id.startsWith('guest_'))) {
     const isGuest = id.startsWith('guest_');
+    const isEmail = cleanHint.includes('@');
     const user: UserRow = {
       id,
-      email: !isGuest && cleanEmail ? cleanEmail : undefined,
+      username: !isGuest && cleanHint && !isEmail ? cleanHint : undefined,
+      email: !isGuest && cleanHint && isEmail ? cleanHint.toLowerCase() : undefined,
       isGuest,
       createdAt: Date.now(),
       lastLoginAt: Date.now(),
@@ -396,10 +431,10 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
     };
     db.users[id] = user;
     if (!db.profiles[id]) {
-      const defaultUsername = cleanEmail
-        ? cleanEmail.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase()
+      const defaultUsername = cleanHint
+        ? cleanHint.split('@')[0].replace(/[^a-z0-9_]/gi, '_')
         : `caloriq_${id.slice(0, 10).replace(/[^a-z0-9_]/gi, '_')}`;
-      db.profiles[id] = createEmptyProfile(isGuest ? 'Guest User' : '', defaultUsername);
+      db.profiles[id] = createEmptyProfile(isGuest ? 'Guest User' : defaultUsername, defaultUsername);
     }
     if (!db.userXp[id]) {
       db.userXp[id] = { xp: 0, badges: [] };
@@ -410,14 +445,205 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
   return undefined;
 }
 
+export const DEV_USERNAME = 'housefly';
+
+export function ensureDevUserExists(): UserRow {
+  let devUser = Object.values(db.users).find(
+    (u) =>
+      u.isDev === true ||
+      (u.username && u.username.toLowerCase() === DEV_USERNAME) ||
+      (db.profiles[u.id]?.username && db.profiles[u.id].username!.toLowerCase() === DEV_USERNAME) ||
+      (u.email && u.email.toLowerCase() === 'housefly@mail2world.com')
+  );
+
+  if (devUser) {
+    devUser.username = DEV_USERNAME;
+    devUser.isDev = true;
+    devUser.isGuest = false;
+  } else {
+    const id = 'usr_dev_housefly';
+    devUser = {
+      id,
+      username: DEV_USERNAME,
+      isGuest: false,
+      isDev: true,
+      createdAt: Date.now(),
+      lastLoginAt: Date.now(),
+      trustedDevices: []
+    };
+    db.users[id] = devUser;
+  }
+
+  for (const u of Object.values(db.users)) {
+    if (u.id !== devUser.id) {
+      u.isDev = false;
+      if (db.profiles[u.id]) {
+        db.profiles[u.id].isDev = false;
+      }
+    }
+  }
+
+  if (!db.profiles[devUser.id]) {
+    db.profiles[devUser.id] = {
+      ...createEmptyProfile(DEV_USERNAME, DEV_USERNAME),
+      isDev: true,
+      signupComplete: true
+    };
+  } else {
+    db.profiles[devUser.id].username = DEV_USERNAME;
+    db.profiles[devUser.id].isDev = true;
+    db.profiles[devUser.id].signupComplete = true;
+    if (!db.profiles[devUser.id].name) {
+      db.profiles[devUser.id].name = DEV_USERNAME;
+    }
+  }
+
+  if (!db.userXp[devUser.id]) {
+    db.userXp[devUser.id] = { xp: 0, badges: [] };
+  }
+
+  return devUser;
+}
+
+export function getDevSetupStatus(): { isSetupComplete: boolean; username: string } {
+  const devUser = ensureDevUserExists();
+  const isSetupComplete = Boolean(devUser.passwordHash && devUser.devDeviceToken);
+  return { isSetupComplete, username: DEV_USERNAME };
+}
+
+export function setupDevAccount(
+  password: string,
+  deviceToken: string,
+  browserSig: string,
+  guestIdToMigrate?: string
+): UserRow {
+  const devUser = ensureDevUserExists();
+  if (devUser.passwordHash && devUser.devDeviceToken) {
+    const err: any = new Error('That username is taken. Try another.');
+    err.status = 403;
+    err.reason = 'dev_already_locked';
+    throw err;
+  }
+
+  devUser.username = DEV_USERNAME;
+  devUser.isDev = true;
+  devUser.isGuest = false;
+  devUser.passwordHash = hashPassword(password);
+  devUser.devDeviceToken = deviceToken;
+  devUser.devBrowserSig = browserSig;
+  devUser.lastLoginAt = Date.now();
+
+  if (guestIdToMigrate && guestIdToMigrate !== devUser.id && db.users[guestIdToMigrate]) {
+    migrateGuestData(guestIdToMigrate, devUser.id);
+  }
+
+  if (!db.profiles[devUser.id]) {
+    db.profiles[devUser.id] = {
+      ...createEmptyProfile(DEV_USERNAME, DEV_USERNAME),
+      isDev: true,
+      signupComplete: true
+    };
+  } else {
+    db.profiles[devUser.id].username = DEV_USERNAME;
+    db.profiles[devUser.id].isDev = true;
+    db.profiles[devUser.id].signupComplete = true;
+  }
+
+  saveDb();
+  return devUser;
+}
+
+export function autoLoginDevAccount(deviceToken: string, browserSig: string): UserRow | null {
+  const devUser = ensureDevUserExists();
+  if (!devUser.passwordHash || !devUser.devDeviceToken) {
+    return null;
+  }
+  if (!deviceToken || !constantTimeHashEqual(devUser.devDeviceToken, deviceToken)) {
+    return null;
+  }
+  if (devUser.devBrowserSig && browserSig && devUser.devBrowserSig !== browserSig) {
+    return null;
+  }
+  devUser.lastLoginAt = Date.now();
+  if (db.profiles[devUser.id]) {
+    db.profiles[devUser.id].isDev = true;
+    db.profiles[devUser.id].username = DEV_USERNAME;
+  }
+  saveDb();
+  return devUser;
+}
+
+export function findUserByUsername(username: string): UserRow | undefined {
+  const norm = username.trim().toLowerCase();
+  if (!norm) return undefined;
+  if (norm === DEV_USERNAME) {
+    return ensureDevUserExists();
+  }
+  return Object.values(db.users).find(u => {
+    if (u.isGuest) return false;
+    if (u.username && u.username.toLowerCase() === norm) return true;
+    const prof = db.profiles[u.id];
+    if (prof?.username && prof.username.toLowerCase() === norm && u.passwordHash) return true;
+    return false;
+  });
+}
+
 export function findUserByEmail(email: string): UserRow | undefined {
   const norm = email.toLowerCase().trim();
+  if (!norm) return undefined;
   return Object.values(db.users).find(u => u.email === norm);
 }
 
-export function signupUser(email: string, password: string, guestIdToMigrate?: string): UserRow {
-  const norm = email.toLowerCase().trim();
+export function signupUser(usernameOrEmail: string, password: string, guestIdToMigrate?: string): UserRow {
+  const trimmed = usernameOrEmail.trim();
+  const isEmail = trimmed.includes('@');
   const pwHash = hashPassword(password);
+
+  if (!isEmail) {
+    if (trimmed.toLowerCase() === DEV_USERNAME) {
+      const err: any = new Error('That username is taken. Try another.');
+      err.reason = 'username_taken';
+      throw err;
+    }
+    const existing = findUserByUsername(trimmed);
+    if (existing) {
+      const err: any = new Error('That username is taken. Try another.');
+      err.reason = 'username_taken';
+      throw err;
+    }
+
+    const id = `usr_${crypto.randomUUID()}`;
+    const user: UserRow = {
+      id,
+      username: trimmed,
+      passwordHash: pwHash,
+      isGuest: false,
+      createdAt: Date.now(),
+      lastLoginAt: Date.now(),
+      trustedDevices: []
+    };
+    db.users[id] = user;
+    db.profiles[id] = {
+      ...createEmptyProfile(trimmed, trimmed),
+      signupComplete: true
+    };
+    db.userXp[id] = { xp: 0, badges: [] };
+
+    if (guestIdToMigrate && guestIdToMigrate !== user.id && db.users[guestIdToMigrate]) {
+      migrateGuestData(guestIdToMigrate, user.id);
+      if (db.profiles[user.id]) {
+        db.profiles[user.id].username = trimmed;
+        if (!db.profiles[user.id].name || db.profiles[user.id].name === 'Guest User') {
+          db.profiles[user.id].name = trimmed;
+        }
+      }
+    }
+
+    saveDb();
+    return user;
+  }
+
+  const norm = trimmed.toLowerCase();
   let user = findUserByEmail(norm);
 
   if (user) {
@@ -428,8 +654,10 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
     user.lastLoginAt = Date.now();
   } else {
     const id = `usr_${crypto.randomUUID()}`;
+    const defaultUsername = norm.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase();
     user = {
       id,
+      username: defaultUsername,
       email: norm,
       passwordHash: pwHash,
       isGuest: false,
@@ -438,7 +666,6 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
       trustedDevices: []
     };
     db.users[id] = user;
-    const defaultUsername = norm.split('@')[0].replace(/[^a-z0-9_]/gi, '_').toLowerCase();
     db.profiles[id] = createEmptyProfile('', defaultUsername);
     db.userXp[id] = { xp: 0, badges: [] };
   }
@@ -451,10 +678,10 @@ export function signupUser(email: string, password: string, guestIdToMigrate?: s
   return user;
 }
 
-export function resetUserPassword(email: string, newPassword: string, guestIdToMigrate?: string): UserRow {
-  const norm = email.toLowerCase().trim();
+export function resetUserPassword(emailOrUsername: string, newPassword: string, guestIdToMigrate?: string): UserRow {
+  const norm = emailOrUsername.trim();
   const pwHash = hashPassword(newPassword);
-  let user = findUserByEmail(norm);
+  let user = findUserByUsername(norm) || findUserByEmail(norm);
 
   if (!user) {
     return signupUser(norm, newPassword, guestIdToMigrate);
@@ -471,45 +698,37 @@ export function resetUserPassword(email: string, newPassword: string, guestIdToM
   return user;
 }
 
-export function verifyUserCredentials(email: string, password: string): {
+export function verifyUserCredentials(usernameOrEmail: string, password: string): {
   valid: boolean;
-  reason?: 'unknown_email' | 'wrong_password';
+  reason?: 'unknown_user' | 'unknown_email' | 'wrong_password';
   user?: UserRow;
 } {
-  const norm = email.toLowerCase().trim();
+  const trimmed = usernameOrEmail.trim();
   const pwHash = hashPassword(password);
-  const user = findUserByEmail(norm);
+  const user = findUserByUsername(trimmed) || findUserByEmail(trimmed);
 
   if (!user) {
     // Still run constant-time comparison against dummy hash to prevent timing enumeration
     constantTimeHashEqual(pwHash, hashPassword('dummy_constant_time_check_password'));
-    return { valid: false, reason: 'unknown_email' };
+    return { valid: false, reason: 'unknown_user' };
   }
 
-  if (user.passwordHash && !constantTimeHashEqual(user.passwordHash, pwHash)) {
+  if (!user.passwordHash || !constantTimeHashEqual(user.passwordHash, pwHash)) {
     return { valid: false, reason: 'wrong_password', user };
   }
 
   return { valid: true, user };
 }
 
-export function loginUser(email: string, password: string, guestIdToMigrate?: string): UserRow {
-  const check = verifyUserCredentials(email, password);
+export function loginUser(usernameOrEmail: string, password: string, guestIdToMigrate?: string): UserRow {
+  const check = verifyUserCredentials(usernameOrEmail, password);
   if (!check.valid || !check.user) {
-    if (check.reason === 'unknown_email') {
-      const err: any = new Error('No account found with that email. Please sign up first.');
-      err.reason = 'unknown_email';
-      throw err;
-    }
-    const err: any = new Error('Incorrect password. Please try again.');
-    err.reason = 'wrong_password';
+    const err: any = new Error('Wrong username or password.');
+    err.reason = check.reason || 'invalid_credentials';
     throw err;
   }
 
   const user = check.user;
-  if (!user.passwordHash) {
-    user.passwordHash = hashPassword(password);
-  }
   user.lastLoginAt = Date.now();
 
   if (guestIdToMigrate && guestIdToMigrate !== user.id && db.users[guestIdToMigrate]) {
@@ -607,12 +826,26 @@ export function getProfile(userId: string): UserProfile {
     db.profiles[userId] = createEmptyProfile('User', `user_${userId.slice(0, 6)}`);
     saveDb();
   }
+  const user = db.users[userId];
+  const isDevAccount = Boolean(user?.isDev && user?.username?.toLowerCase() === DEV_USERNAME);
+  db.profiles[userId].isDev = isDevAccount;
   return db.profiles[userId];
 }
 
 export function updateProfile(userId: string, updates: Partial<UserProfile>): UserProfile {
   const current = getProfile(userId);
-  const updated = { ...current, ...updates };
+  const user = db.users[userId];
+  const isDevAccount = Boolean(user?.isDev && user?.username?.toLowerCase() === DEV_USERNAME);
+  const safeUpdates = { ...updates };
+  if (!isDevAccount && safeUpdates.username?.toLowerCase().trim() === DEV_USERNAME) {
+    delete safeUpdates.username;
+  }
+  const updated: UserProfile = {
+    ...current,
+    ...safeUpdates,
+    isDev: isDevAccount,
+    username: isDevAccount ? DEV_USERNAME : safeUpdates.username ?? current.username
+  };
   db.profiles[userId] = updated;
   saveDb();
   broadcastSync(userId, 'profile_updated', updated);
@@ -1329,11 +1562,12 @@ export function setUsdaApiKey(key: string) {
 }
 
 export function getUsdaApiKey(): string | undefined {
-  return db.settings.usdaApiKey;
+  return db.settings.usdaApiKey || process.env.USDA_API_KEY;
 }
 
 export function hasUsdaApiKey(): boolean {
-  return Boolean(db.settings.usdaApiKey && db.settings.usdaApiKey.length > 5);
+  const key = getUsdaApiKey();
+  return Boolean(key && key.length > 5);
 }
 
 // ------------------- EXPORT & CLEAR DATA -------------------
@@ -1581,7 +1815,7 @@ export function createDemoAccount(): UserRow {
 
   const user: UserRow = {
     id,
-    email: 'demo@caloriq.app',
+    email: 'demo@calory.app',
     isGuest: true,
     createdAt: now,
     lastLoginAt: now
@@ -1692,7 +1926,7 @@ export interface BugReportRecord {
 let cookieConsentLogs: CookieConsentRecord[] = [];
 let contactSubmissions: ContactSubmissionRecord[] = [];
 let bugReportsStore: BugReportRecord[] = [];
-let maintenanceModeState = { enabled: false, message: 'Caloriq is undergoing a scheduled update. Back in a few minutes.' };
+let maintenanceModeState = { enabled: false, message: 'Calory is undergoing a scheduled update. Back in a few minutes.' };
 
 const privacyAnalyticsStore: {
   pageviews: number;
@@ -1798,7 +2032,7 @@ export function getMaintenanceStatus() {
 export function setMaintenanceStatus(enabled: boolean, message?: string) {
   maintenanceModeState = {
     enabled: Boolean(enabled),
-    message: sanitizeString(message || 'Caloriq is undergoing a scheduled update. Back in a few minutes.', 300)
+    message: sanitizeString(message || 'Calory is undergoing a scheduled update. Back in a few minutes.', 300)
   };
   return maintenanceModeState;
 }
@@ -2123,7 +2357,7 @@ export async function resolveIpGeo(
     const timeout = setTimeout(() => controller.abort(), 1800);
     const resp = await fetch(`https://ipapi.co/${encodeURIComponent(cleanIp)}/json/`, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'Caloriq-Security-Inspector/1.0' }
+      headers: { 'User-Agent': 'Calory-Security-Inspector/1.0' }
     });
     clearTimeout(timeout);
     if (resp.ok) {
@@ -2401,9 +2635,9 @@ export function getRecentBackendErrors(): BackendErrorRecord[] {
 }
 
 // Dev Tools: Account Inspector
-export function inspectAccountByEmail(rawEmail: string) {
-  const email = String(rawEmail || '').toLowerCase().trim();
-  const user = findUserByEmail(email);
+export function inspectAccountByEmail(rawIdentifier: string) {
+  const identifier = String(rawIdentifier || '').toLowerCase().trim();
+  const user = findUserByUsername(identifier) || findUserByEmail(identifier);
   if (!user) {
     return null;
   }
@@ -2424,8 +2658,9 @@ export function inspectAccountByEmail(rawEmail: string) {
 
   return {
     userId: user.id,
-    email: user.email || email,
-    displayName: profile?.name || 'No display name',
+    username: user.username || profile?.username || identifier,
+    email: user.email || user.username || profile?.username || identifier,
+    displayName: profile?.name || user.username || 'No display name',
     createdDate: new Date(user.createdAt).toISOString(),
     lastSignIn: new Date(user.lastLoginAt).toISOString(),
     trustedDevicesCount: getTrustedDevicesCount(user.id),
@@ -2435,6 +2670,7 @@ export function inspectAccountByEmail(rawEmail: string) {
     hasProfile,
     currentStreak: stats.foodStreak,
     totalXp: stats.xp,
+    totalXP: stats.xp,
     badgesEarned: stats.badges
   };
 }
@@ -2442,6 +2678,7 @@ export function inspectAccountByEmail(rawEmail: string) {
 // Dev Tools: Seed demo account with 1 full week (7 days) of food, water, weight, and exercise
 export function seedFullWeekDemoAccount(): {
   userId: string;
+  username: string;
   email: string;
   daysSeeded: number;
   mealsSeeded: number;
@@ -2450,22 +2687,25 @@ export function seedFullWeekDemoAccount(): {
   exerciseEntriesSeeded: number;
 } {
   const shortTag = crypto.randomBytes(2).toString('hex');
-  const email = `demo.${shortTag}@caloriq.app`;
+  const username = `demo_${shortTag}`;
+  const email = `demo.${shortTag}@calory.app`;
   const id = `usr_demo_${crypto.randomUUID()}`;
   const now = Date.now();
 
   const user: UserRow = {
     id,
+    username,
     email,
     passwordHash: hashPassword('DemoWeek2026!'),
     isGuest: false,
+    isDev: false,
     createdAt: now - 7 * 86400000,
     lastLoginAt: now,
     trustedDevices: []
   };
   db.users[id] = user;
   db.profiles[id] = {
-    ...createEmptyProfile(`Jordan Demo (${shortTag})`, `jordan_${shortTag}`),
+    ...createEmptyProfile(`Jordan Demo (${shortTag})`, username),
     age: 29,
     gender: 'female',
     heightCm: 169,
@@ -2576,6 +2816,7 @@ export function seedFullWeekDemoAccount(): {
   saveDb();
   return {
     userId: id,
+    username,
     email,
     daysSeeded: 7,
     mealsSeeded: mealsCount,
@@ -2584,4 +2825,364 @@ export function seedFullWeekDemoAccount(): {
     exerciseEntriesSeeded: exerciseCount
   };
 }
+
+// ------------------- COMMUNITY POSTS, REPLIES & MODERATION -------------------
+function resolveDisplayUsername(userId: string): string {
+  const user = db.users[userId];
+  const prof = db.profiles[userId];
+  if (user?.username && user.username.trim()) return user.username.trim();
+  if (prof?.username && prof.username.trim()) return prof.username.trim();
+  if (prof?.name && prof.name.trim() && prof.name !== 'Guest User') return prof.name.trim();
+  if (user?.email) return user.email.split('@')[0];
+  return `user_${userId.slice(-5)}`;
+}
+
+export function getBlockedSetForUser(userId?: string): Set<string> {
+  if (!userId) return new Set();
+  const list = db.blockedUsers[userId] || [];
+  return new Set(list.map((s) => String(s).toLowerCase()));
+}
+
+export function getFollowingSetForUser(userId?: string): Set<string> {
+  if (!userId) return new Set();
+  const friendNames = (db.friends || [])
+    .filter((f) => f.userId === userId && f.username)
+    .map((f) => f.username.toLowerCase());
+  const explicitFollows = (db.followingUsers[userId] || []).map((u) => u.toLowerCase());
+  return new Set([...friendNames, ...explicitFollows]);
+}
+
+export function getCommunityPosts(
+  viewerUserId?: string,
+  filter: 'all' | 'following' | 'mine' = 'all'
+): CommunityPost[] {
+  const blocked = getBlockedSetForUser(viewerUserId);
+  const following = getFollowingSetForUser(viewerUserId);
+  const viewerUsername = viewerUserId ? resolveDisplayUsername(viewerUserId).toLowerCase() : '';
+
+  const allPosts = (db.posts || [])
+    .filter((p) => {
+      if (blocked.has(p.userId.toLowerCase()) || blocked.has((p.username || '').toLowerCase())) {
+        return false;
+      }
+      if (filter === 'mine') {
+        if (!viewerUserId) return false;
+        return p.userId === viewerUserId || (viewerUsername && p.username.toLowerCase() === viewerUsername);
+      }
+      if (filter === 'following') {
+        if (!viewerUserId) return false;
+        return following.has((p.username || '').toLowerCase()) || following.has(p.userId.toLowerCase());
+      }
+      return true;
+    })
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  return allPosts.map((p) => {
+    const likers = db.postLikes[p.id] || [];
+    const replyCount = (db.replies || []).filter((r) => r.postId === p.id).length;
+    return {
+      ...p,
+      likeCount: likers.length > 0 || p.likeCount === 0 ? likers.length : p.likeCount,
+      replyCount,
+      likedByMe: Boolean(viewerUserId && likers.includes(viewerUserId)),
+      isFollowingAuthor: Boolean(viewerUserId && following.has((p.username || '').toLowerCase()))
+    };
+  });
+}
+
+export function getCommunityPostDetail(
+  postId: string,
+  viewerUserId?: string
+): { post: CommunityPost | null; replies: CommunityReply[] } {
+  const rawPost = (db.posts || []).find((p) => p.id === postId);
+  if (!rawPost) {
+    return { post: null, replies: [] };
+  }
+  const blocked = getBlockedSetForUser(viewerUserId);
+  const following = getFollowingSetForUser(viewerUserId);
+  const likers = db.postLikes[rawPost.id] || [];
+  const replies = (db.replies || [])
+    .filter(
+      (r) =>
+        r.postId === postId &&
+        !blocked.has(r.userId.toLowerCase()) &&
+        !blocked.has((r.username || '').toLowerCase())
+    )
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  const post: CommunityPost = {
+    ...rawPost,
+    likeCount: likers.length > 0 || rawPost.likeCount === 0 ? likers.length : rawPost.likeCount,
+    replyCount: replies.length,
+    likedByMe: Boolean(viewerUserId && likers.includes(viewerUserId)),
+    isFollowingAuthor: Boolean(viewerUserId && following.has((rawPost.username || '').toLowerCase()))
+  };
+
+  return { post, replies };
+}
+
+export function createCommunityPost(
+  userId: string,
+  text: string,
+  imageUrl?: string
+): CommunityPost {
+  const user = findUserById(userId);
+  if (!user || user.isGuest) {
+    const err: any = new Error('Create an account to post.');
+    err.status = 403;
+    throw err;
+  }
+
+  const cleanText = String(text || '').trim();
+  if (!cleanText) {
+    const err: any = new Error('Post text is required.');
+    err.status = 400;
+    throw err;
+  }
+  if (cleanText.length > 500) {
+    const err: any = new Error('Posts cannot exceed 500 characters.');
+    err.status = 400;
+    throw err;
+  }
+
+  const now = Date.now();
+  const oneHourAgo = now - 60 * 60 * 1000;
+  const recentByUser = (db.posts || []).filter(
+    (p) => p.userId === user.id && p.createdAt >= oneHourAgo
+  );
+  if (recentByUser.length >= 10) {
+    const err: any = new Error('Rate limit reached: You can publish up to 10 posts per hour.');
+    err.status = 429;
+    throw err;
+  }
+
+  const username = resolveDisplayUsername(user.id);
+  const id = `post_${crypto.randomUUID()}`;
+  const cleanImage = imageUrl && String(imageUrl).trim() ? String(imageUrl).trim() : undefined;
+
+  const post: CommunityPost = {
+    id,
+    userId: user.id,
+    username,
+    text: cleanText,
+    ...(cleanImage ? { imageUrl: cleanImage } : {}),
+    createdAt: now,
+    likeCount: 0,
+    replyCount: 0
+  };
+
+  if (!db.posts) db.posts = [];
+  db.posts.unshift(post);
+  db.postLikes[id] = [];
+  saveDb();
+
+  return { ...post, likedByMe: false };
+}
+
+export function toggleLikeCommunityPost(
+  userId: string,
+  postId: string
+): { liked: boolean; likeCount: number } {
+  const post = (db.posts || []).find((p) => p.id === postId);
+  if (!post) {
+    const err: any = new Error('Post not found.');
+    err.status = 404;
+    throw err;
+  }
+
+  if (!db.postLikes[postId]) {
+    db.postLikes[postId] = [];
+  }
+  const likers = db.postLikes[postId];
+  const idx = likers.indexOf(userId);
+  let liked = false;
+  if (idx >= 0) {
+    likers.splice(idx, 1);
+    liked = false;
+  } else {
+    likers.push(userId);
+    liked = true;
+  }
+  post.likeCount = likers.length;
+  saveDb();
+
+  return { liked, likeCount: post.likeCount };
+}
+
+export function addCommunityReply(
+  userId: string,
+  postId: string,
+  text: string
+): CommunityReply {
+  const user = findUserById(userId);
+  if (!user || user.isGuest) {
+    const err: any = new Error('Create an account to post.');
+    err.status = 403;
+    throw err;
+  }
+
+  const post = (db.posts || []).find((p) => p.id === postId);
+  if (!post) {
+    const err: any = new Error('Post not found.');
+    err.status = 404;
+    throw err;
+  }
+
+  const cleanText = String(text || '').trim();
+  if (!cleanText) {
+    const err: any = new Error('Reply text is required.');
+    err.status = 400;
+    throw err;
+  }
+  if (cleanText.length > 500) {
+    const err: any = new Error('Replies cannot exceed 500 characters.');
+    err.status = 400;
+    throw err;
+  }
+
+  const username = resolveDisplayUsername(user.id);
+  const reply: CommunityReply = {
+    id: `reply_${crypto.randomUUID()}`,
+    postId,
+    userId: user.id,
+    username,
+    text: cleanText,
+    createdAt: Date.now()
+  };
+
+  if (!db.replies) db.replies = [];
+  db.replies.push(reply);
+  post.replyCount = db.replies.filter((r) => r.postId === postId).length;
+  saveDb();
+
+  return reply;
+}
+
+export function reportCommunityPost(
+  reporterUserId: string,
+  postId: string,
+  reason?: string
+): ReportedPostRecord {
+  const post = (db.posts || []).find((p) => p.id === postId);
+  if (!post) {
+    const err: any = new Error('Post not found.');
+    err.status = 404;
+    throw err;
+  }
+
+  if (!db.postReports) db.postReports = [];
+  const existing = db.postReports.find(
+    (r) => r.postId === postId && r.reportedByUserId === reporterUserId
+  );
+  if (existing) {
+    return existing;
+  }
+
+  const record: ReportedPostRecord = {
+    id: `rep_${crypto.randomUUID()}`,
+    postId,
+    reportedByUserId: reporterUserId,
+    reportedByUsername: resolveDisplayUsername(reporterUserId),
+    reason: reason ? sanitizeString(reason, 200) : 'Reported by community member',
+    createdAt: Date.now()
+  };
+
+  db.postReports.unshift(record);
+  saveDb();
+  return record;
+}
+
+export function blockCommunityUser(
+  userId: string,
+  targetUserIdOrUsername: string
+): { blocked: string[] } {
+  if (!db.blockedUsers) db.blockedUsers = {};
+  if (!db.blockedUsers[userId]) db.blockedUsers[userId] = [];
+
+  const cleanTarget = String(targetUserIdOrUsername || '').trim().toLowerCase();
+  if (cleanTarget && !db.blockedUsers[userId].includes(cleanTarget)) {
+    db.blockedUsers[userId].push(cleanTarget);
+  }
+
+  const targetUser =
+    db.users[targetUserIdOrUsername] || findUserByUsername(cleanTarget);
+  if (targetUser) {
+    const uidLower = targetUser.id.toLowerCase();
+    if (!db.blockedUsers[userId].includes(uidLower)) {
+      db.blockedUsers[userId].push(uidLower);
+    }
+    if (targetUser.username) {
+      const unameLower = targetUser.username.toLowerCase();
+      if (!db.blockedUsers[userId].includes(unameLower)) {
+        db.blockedUsers[userId].push(unameLower);
+      }
+    }
+  }
+
+  saveDb();
+  return { blocked: db.blockedUsers[userId] };
+}
+
+export function toggleFollowCommunityUser(
+  userId: string,
+  targetUsername: string
+): { following: boolean } {
+  if (!db.followingUsers) db.followingUsers = {};
+  if (!db.followingUsers[userId]) db.followingUsers[userId] = [];
+
+  const norm = String(targetUsername || '').trim().replace(/^@/, '').toLowerCase();
+  if (!norm) return { following: false };
+
+  const list = db.followingUsers[userId];
+  const idx = list.indexOf(norm);
+  let following = false;
+  if (idx >= 0) {
+    list.splice(idx, 1);
+    following = false;
+  } else {
+    list.push(norm);
+    following = true;
+  }
+  saveDb();
+  return { following };
+}
+
+export function getReportedCommunityPosts(): Array<ReportedPostRecord & { post: CommunityPost }> {
+  if (!db.postReports) return [];
+  const results: Array<ReportedPostRecord & { post: CommunityPost }> = [];
+  const seenPostIds = new Set<string>();
+
+  for (const rep of db.postReports) {
+    if (seenPostIds.has(rep.postId)) continue;
+    const post = (db.posts || []).find((p) => p.id === rep.postId);
+    if (post) {
+      seenPostIds.add(rep.postId);
+      results.push({
+        ...rep,
+        post
+      });
+    }
+  }
+  return results;
+}
+
+export function moderateDeleteCommunityPost(postId: string): boolean {
+  const beforeLen = (db.posts || []).length;
+  db.posts = (db.posts || []).filter((p) => p.id !== postId);
+  db.replies = (db.replies || []).filter((r) => r.postId !== postId);
+  db.postReports = (db.postReports || []).filter((r) => r.postId !== postId);
+  delete db.postLikes[postId];
+  saveDb();
+  return db.posts.length < beforeLen;
+}
+
+export function moderateDismissPostReport(reportIdOrPostId: string): boolean {
+  const beforeLen = (db.postReports || []).length;
+  db.postReports = (db.postReports || []).filter(
+    (r) => r.id !== reportIdOrPostId && r.postId !== reportIdOrPostId
+  );
+  saveDb();
+  return db.postReports.length < beforeLen;
+}
+
 

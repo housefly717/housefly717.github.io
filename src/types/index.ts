@@ -225,6 +225,7 @@ export interface UserProfile {
   goal?: string;
   goalSpeedOverriddenAt?: number;
   signupComplete?: boolean;
+  isDev?: boolean;
   unitSystem: 'metric' | 'imperial';
   pinnedWhy?: string;
   themeMode?: 'dark' | 'light' | 'auto';
@@ -337,3 +338,36 @@ export interface UserSession {
   isGuest: boolean;
   token: string;
 }
+
+export interface CommunityPost {
+  id: string;
+  userId: string;
+  username: string;
+  text: string;
+  imageUrl?: string;
+  createdAt: number;
+  likeCount: number;
+  replyCount: number;
+  likedByMe?: boolean;
+  isFollowingAuthor?: boolean;
+}
+
+export interface CommunityReply {
+  id: string;
+  postId: string;
+  userId: string;
+  username: string;
+  text: string;
+  createdAt: number;
+}
+
+export interface ReportedPostRecord {
+  id: string;
+  postId: string;
+  reportedByUserId: string;
+  reportedByUsername: string;
+  reason?: string;
+  createdAt: number;
+  post?: CommunityPost;
+}
+

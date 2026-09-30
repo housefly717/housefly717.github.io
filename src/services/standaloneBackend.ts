@@ -26,7 +26,7 @@ import type {
 const STORAGE_KEY = 'caloriq_standalone_db_v1';
 
 interface StandaloneDb {
-  users: Record<string, { id: string; email?: string; passwordHash?: string; isGuest: boolean; createdAt: number; lastLoginAt: number }>;
+  users: Record<string, { id: string; username?: string; email?: string; passwordHash?: string; isGuest: boolean; isDev?: boolean; devDeviceToken?: string; devBrowserSig?: string; createdAt: number; lastLoginAt: number }>;
   profiles: Record<string, UserProfile>;
   diaryEntries: FoodItem[];
   waterEntries: Record<string, number>;
@@ -79,6 +79,20 @@ function uid(prefix: string): string {
   return `${prefix}_${rand}`;
 }
 
+function hashStandalonePassword(password: string): string {
+  let h1 = 0xdeadbeef ^ password.length;
+  let h2 = 0x41c6ce57 ^ password.length;
+  const salted = `caloriq_standalone_${password}`;
+  for (let i = 0; i < salted.length; i++) {
+    const ch = salted.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+
 function loadDb(): StandaloneDb {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -123,6 +137,31 @@ function loadDb(): StandaloneDb {
 }
 
 let db: StandaloneDb = loadDb();
+
+function ensureStandaloneDevUser() {
+  let devUser = Object.values(db.users).find(
+    u => u.isDev === true || (u.username && u.username.toLowerCase() === 'housefly')
+  );
+  if (!devUser) {
+    const id = 'usr_dev_housefly';
+    devUser = {
+      id,
+      username: 'housefly',
+      isGuest: false,
+      isDev: true,
+      createdAt: Date.now(),
+      lastLoginAt: Date.now()
+    };
+    db.users[id] = devUser;
+  } else {
+    devUser.username = 'housefly';
+    devUser.isDev = true;
+    devUser.isGuest = false;
+  }
+  return devUser;
+}
+
+ensureStandaloneDevUser();
 
 function saveDb() {
   try {
@@ -412,17 +451,219 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     return { userId: id, isGuest: true, token: id };
   }
 
+  if (
+    (pathname === '/api/auth/send-verification-code' || pathname === '/api/auth/request-signup-code') &&
+    method === 'POST'
+  ) {
+    return { sent: true, resendCooldownSeconds: 30 };
+  }
+
+  if (pathname === '/api/auth/dev-status' && method === 'GET') {
+    const devUser = ensureStandaloneDevUser();
+    return {
+      isSetupComplete: Boolean(devUser.passwordHash && devUser.devDeviceToken),
+      username: 'housefly'
+    };
+  }
+
+  if (pathname === '/api/auth/dev-setup' && method === 'POST') {
+    const devUser = ensureStandaloneDevUser();
+    if (devUser.passwordHash && devUser.devDeviceToken) {
+      throw new Error('That username is taken. Try another.');
+    }
+    const pwd = String(body.password || '');
+    if (!pwd) {
+      throw new Error('Please enter a password.');
+    }
+    const devToken = String(body.deviceToken || `dev_${Date.now()}`);
+    const browserSig = String(body.browserSig || '');
+    devUser.passwordHash = hashStandalonePassword(pwd);
+    devUser.devDeviceToken = devToken;
+    devUser.devBrowserSig = browserSig;
+    devUser.isDev = true;
+    devUser.isGuest = false;
+    devUser.lastLoginAt = Date.now();
+    if (!db.profiles[devUser.id]) {
+      db.profiles[devUser.id] = {
+        ...defaultProfile('housefly', 'housefly'),
+        isDev: true,
+        signupComplete: true
+      };
+    } else {
+      db.profiles[devUser.id].username = 'housefly';
+      db.profiles[devUser.id].isDev = true;
+      db.profiles[devUser.id].signupComplete = true;
+    }
+    saveDb();
+    return {
+      userId: devUser.id,
+      username: 'housefly',
+      email: 'housefly',
+      isGuest: false,
+      isDev: true,
+      token: devUser.id,
+      deviceToken: devToken
+    };
+  }
+
+  if (pathname === '/api/auth/dev-auto-login' && method === 'POST') {
+    const devUser = ensureStandaloneDevUser();
+    const devToken = String(body.deviceToken || '');
+    const browserSig = String(body.browserSig || '');
+    if (!devUser.passwordHash || !devUser.devDeviceToken || devUser.devDeviceToken !== devToken) {
+      throw new Error('Device lock does not match.');
+    }
+    if (devUser.devBrowserSig && browserSig && devUser.devBrowserSig !== browserSig) {
+      throw new Error('Device lock does not match.');
+    }
+    devUser.lastLoginAt = Date.now();
+    saveDb();
+    return {
+      userId: devUser.id,
+      username: 'housefly',
+      email: 'housefly',
+      isGuest: false,
+      isDev: true,
+      token: devUser.id
+    };
+  }
+
+  if (pathname === '/api/auth/signup' && method === 'POST') {
+    const cleanUsername = String(body.username || '').trim();
+    if (!/^[A-Za-z0-9_]{3,20}$/.test(cleanUsername)) {
+      throw new Error('Username must be 3–20 characters (letters, numbers, underscore only).');
+    }
+    if (cleanUsername.toLowerCase() === 'housefly') {
+      throw new Error('That username is taken. Try another.');
+    }
+    const existing = Object.values(db.users).find(
+      u => !u.isGuest && u.username && u.username.toLowerCase() === cleanUsername.toLowerCase()
+    );
+    if (existing) {
+      throw new Error('That username is taken. Try another.');
+    }
+    const id = `usr_${cleanUsername.toLowerCase()}`;
+    const pwHash = hashStandalonePassword(String(body.password || ''));
+    db.users[id] = {
+      id,
+      username: cleanUsername,
+      passwordHash: pwHash,
+      isGuest: false,
+      createdAt: Date.now(),
+      lastLoginAt: Date.now()
+    };
+    if (!db.profiles[id]) {
+      if (body.guestId && db.profiles[body.guestId]) {
+        db.profiles[id] = {
+          ...db.profiles[body.guestId],
+          username: cleanUsername,
+          name: db.profiles[body.guestId].name && db.profiles[body.guestId].name !== 'Guest User'
+            ? db.profiles[body.guestId].name
+            : cleanUsername,
+          signupComplete: true
+        };
+      } else {
+        db.profiles[id] = {
+          ...defaultProfile(cleanUsername, cleanUsername),
+          signupComplete: true
+        };
+      }
+    }
+    saveDb();
+    return {
+      userId: id,
+      username: cleanUsername,
+      email: cleanUsername,
+      isGuest: false,
+      token: id
+    };
+  }
+
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const identifier = String(body.username || body.email || '').trim();
+    const pwHash = hashStandalonePassword(String(body.password || ''));
+    const matched = Object.values(db.users).find(
+      u =>
+        !u.isGuest &&
+        ((u.username && u.username.toLowerCase() === identifier.toLowerCase()) ||
+          (u.email && u.email.toLowerCase() === identifier.toLowerCase()))
+    );
+    if (!matched || !matched.passwordHash || matched.passwordHash !== pwHash) {
+      throw new Error('Wrong username or password.');
+    }
+    matched.lastLoginAt = Date.now();
+    saveDb();
+    return {
+      userId: matched.id,
+      username: matched.username,
+      email: matched.email || matched.username,
+      isGuest: false,
+      isDev: Boolean(matched.isDev),
+      token: matched.id,
+      requiresVerification: false
+    };
+  }
+
+  if (
+    (pathname === '/api/auth/verify-signup' ||
+      pathname === '/api/auth/verify-login-device' ||
+      pathname === '/api/auth/reset-password') &&
+    method === 'POST'
+  ) {
+    const cleanEmail = String(body.email || 'user@calory.app').toLowerCase().trim();
+    const id = `usr_${cleanEmail.replace(/[^a-z0-9]/gi, '_')}`;
+    const existingUser = db.users[id];
+    db.users[id] = {
+      id,
+      email: cleanEmail,
+      passwordHash: body.newPassword ? hashStandalonePassword(String(body.newPassword)) : existingUser?.passwordHash,
+      isGuest: false,
+      createdAt: existingUser?.createdAt || Date.now(),
+      lastLoginAt: Date.now()
+    };
+    if (!db.profiles[id]) {
+      if (body.guestId && db.profiles[body.guestId]) {
+        db.profiles[id] = { ...db.profiles[body.guestId] };
+      } else {
+        db.profiles[id] = defaultProfile('', cleanEmail.split('@')[0]);
+      }
+    }
+    saveDb();
+    return {
+      userId: id,
+      email: cleanEmail,
+      isGuest: false,
+      token: id,
+      emailVerified: true
+    };
+  }
+
+  if (pathname === '/api/auth/forgot-password' && method === 'POST') {
+    return { sent: true, resendCooldownSeconds: 30 };
+  }
+
+  if (pathname === '/api/auth/check-email' && method === 'POST') {
+    const cleanEmail = String(body.email || '').toLowerCase().trim();
+    const id = `usr_${cleanEmail.replace(/[^a-z0-9]/gi, '_')}`;
+    return { exists: Boolean(db.users[id] && !db.users[id].isGuest) };
+  }
+
   if (pathname === '/api/auth/logout' && method === 'POST') {
     return { success: true };
   }
 
   if (pathname === '/api/auth/me' && method === 'GET') {
     const user = db.users[userId];
+    const prof = getProfile(userId);
+    const isDev = Boolean(user?.isDev && user?.username?.toLowerCase() === 'housefly');
+    prof.isDev = isDev;
     return {
       userId,
-      email: user?.email,
+      username: user?.username || prof.username,
+      email: user?.email || user?.username || prof.username,
       isGuest: user?.isGuest ?? true,
-      profile: getProfile(userId),
+      isDev,
+      profile: prof,
       stats: getUserStats(userId)
     };
   }
@@ -1103,7 +1344,7 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
   // PROFILE & STATS & EXPORT
   if (pathname === '/api/profile') {
     if (method === 'GET') return { profile: getProfile(userId), stats: getUserStats(userId) };
-    if (method === 'PUT') {
+    if (method === 'PUT' || method === 'POST' || method === 'PATCH') {
       db.profiles[userId] = { ...getProfile(userId), ...body };
       saveDb();
       return db.profiles[userId];
@@ -1276,7 +1517,7 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     ).map((f, idx) => ({
       fdcId: 10000 + idx,
       description: f.name.charAt(0).toUpperCase() + f.name.slice(1),
-      brandName: body.storeFilter || 'Caloriq Standard Reference',
+      brandName: body.storeFilter || 'Calory Standard Reference',
       calories: f.calories,
       protein: f.protein,
       fat: f.fat,
@@ -1300,29 +1541,55 @@ export async function standaloneFetch(input: RequestInfo | URL, init?: RequestIn
 
   // If opened directly from filesystem (file://), always use standalone local engine
   if (typeof window !== 'undefined' && window.location.protocol === 'file:') {
-    const data = await handleStandaloneApiRequest(urlStr, init);
-    return new Response(JSON.stringify(data), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    try {
+      const data = await handleStandaloneApiRequest(urlStr, init);
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: err?.message || 'Request failed' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
   }
 
   try {
     const response = await window.fetch(input, init);
-    if (response.status !== 404) {
+    const contentType = response.headers.get('content-type') || '';
+    if (
+      response.status !== 404 &&
+      response.status !== 405 &&
+      !contentType.includes('text/html')
+    ) {
       return response;
     }
-    // Fallback to standalone local engine only if backend endpoint is 404 absent
-    const data = await handleStandaloneApiRequest(urlStr, init);
-    return new Response(JSON.stringify(data), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    // Fallback to standalone local engine if backend endpoint is absent or returns static HTML
+    try {
+      const data = await handleStandaloneApiRequest(urlStr, init);
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: err?.message || 'Request failed' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
   } catch {
-    const data = await handleStandaloneApiRequest(urlStr, init);
-    return new Response(JSON.stringify(data), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' }
-    });
+    try {
+      const data = await handleStandaloneApiRequest(urlStr, init);
+      return new Response(JSON.stringify(data), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    } catch (err: any) {
+      return new Response(JSON.stringify({ error: err?.message || 'Request failed' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
   }
 }

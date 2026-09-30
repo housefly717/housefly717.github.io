@@ -35,6 +35,20 @@ export function validateEmail(email: string): string | null {
 }
 
 /**
+ * Username field — 3–20 characters, letters, numbers, underscore only.
+ */
+export function validateUsername(username: string): string | null {
+  const trimmed = username.trim();
+  if (trimmed.length < 3 || trimmed.length > 20) {
+    return 'Username must be between 3 and 20 characters.';
+  }
+  if (!/^[A-Za-z0-9_]+$/.test(trimmed)) {
+    return 'Username can only contain letters, numbers, and underscores.';
+  }
+  return null;
+}
+
+/**
  * #2 Age field — must be between 13 and 120.
  * If outside: "Enter an age between 13 and 120."
  */

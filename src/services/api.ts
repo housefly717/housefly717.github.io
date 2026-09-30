@@ -17,7 +17,10 @@ import type {
   NonScaleVictory,
   PantryItem,
   FriendRecord,
-  SharedRecipeRecord
+  SharedRecipeRecord,
+  CommunityPost,
+  CommunityReply,
+  ReportedPostRecord
 } from '../types/index.js';
 import { standaloneFetch } from './standaloneBackend.js';
 import { getClientDeviceFingerprint } from '../utils/validation.js';
@@ -36,6 +39,46 @@ const GUEST_KEY = 'caloriq_guest_id';
 const OFFLINE_QUEUE_KEY = 'caloriq_offline_queue';
 const CLIENT_USERS_KEY = 'caloriq_client_users';
 const USER_EMAIL_KEY = 'caloriq_user_email';
+export const DEV_DEVICE_KEY = 'calory_dev_device';
+
+export function getBrowserDevSignature(): string {
+  if (typeof navigator === 'undefined') return 'server';
+  return `${navigator.userAgent || ''}::${navigator.platform || ''}`;
+}
+
+export function getStoredDevDeviceRecord(): {
+  matchesBrowser: boolean;
+  deviceToken: string;
+  browserSig: string;
+} | null {
+  if (typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(DEV_DEVICE_KEY);
+    if (!raw) return null;
+    const currentSig = getBrowserDevSignature();
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const storedSig = String(parsed.browserSig || '');
+        const matches = !storedSig || storedSig === currentSig;
+        return {
+          matchesBrowser: matches,
+          deviceToken: String(parsed.deviceToken || raw),
+          browserSig: currentSig
+        };
+      }
+    } catch {
+      // Plain string stored in localStorage
+    }
+    return {
+      matchesBrowser: true,
+      deviceToken: raw,
+      browserSig: currentSig
+    };
+  } catch {
+    return null;
+  }
+}
 
 interface ClientUserRecord {
   userId: string;
@@ -113,7 +156,8 @@ class ApiService {
   private tabId = `tab_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
   constructor() {
-    this.token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    const savedToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    this.token = savedToken && savedToken !== 'undefined' && savedToken !== 'null' ? savedToken : null;
     if (typeof window !== 'undefined') {
       window.addEventListener('online', () => {
         this.flushOfflineQueue();
@@ -138,6 +182,7 @@ class ApiService {
   }
 
   setToken(token: string, isGuest: boolean, rememberMe: boolean = true) {
+    if (!token || token === 'undefined' || token === 'null') return;
     this.token = token;
     if (isGuest || rememberMe) {
       localStorage.setItem(TOKEN_KEY, token);
@@ -444,8 +489,125 @@ class ApiService {
     }
   }
 
-  async initSession(): Promise<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }> {
+  async tryDevDeviceAutoLogin(): Promise<boolean> {
+    const devRecord = getStoredDevDeviceRecord();
+    if (!devRecord || !devRecord.matchesBrowser) {
+      return false;
+    }
+    try {
+      const res = await standaloneFetch('/api/auth/dev-auto-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceToken: devRecord.deviceToken,
+          browserSig: devRecord.browserSig
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.token) {
+          localStorage.setItem(USER_EMAIL_KEY, 'housefly');
+          localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+          localStorage.setItem('caloriq_signup_complete', 'true');
+          localStorage.setItem(`caloriq_signup_complete_${data.userId}`, 'true');
+          this.setToken(data.token, false, true);
+          return true;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }
+
+  async checkDevDeviceOnLoad(): Promise<{
+    autoSignedIn: boolean;
+    needsOneTimeSetup: boolean;
+  }> {
+    const devRecord = getStoredDevDeviceRecord();
+    if (devRecord) {
+      if (devRecord.matchesBrowser) {
+        const ok = await this.tryDevDeviceAutoLogin();
+        return { autoSignedIn: ok, needsOneTimeSetup: false };
+      }
+      return { autoSignedIn: false, needsOneTimeSetup: false };
+    }
+
+    try {
+      const res = await standaloneFetch('/api/auth/dev-status', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (!data.isSetupComplete) {
+          return { autoSignedIn: false, needsOneTimeSetup: true };
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return { autoSignedIn: false, needsOneTimeSetup: false };
+  }
+
+  async setupDevAccount(password: string): Promise<{
+    userId: string;
+    username: string;
+    token: string;
+    isDev: boolean;
+  }> {
+    const browserSig = getBrowserDevSignature();
+    const rand =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+    const deviceToken = `dev_${rand}`;
+    const guestId = this.getGuestId();
+
+    const res = await standaloneFetch('/api/auth/dev-setup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Device-Meta': JSON.stringify(getDeviceMetadata())
+      },
+      body: JSON.stringify({
+        password,
+        deviceToken,
+        browserSig,
+        guestId
+      })
+    });
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({ error: 'Could not set up dev account.' }));
+      throw new Error(errBody.error || 'Could not set up dev account.');
+    }
+
+    const data = await res.json();
+    localStorage.setItem(
+      DEV_DEVICE_KEY,
+      JSON.stringify({
+        username: 'housefly',
+        deviceToken: data.deviceToken || deviceToken,
+        browserSig,
+        lockedAt: Date.now()
+      })
+    );
+    localStorage.setItem(USER_EMAIL_KEY, 'housefly');
+    localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+    localStorage.setItem('caloriq_signup_complete', 'true');
+    localStorage.setItem(`caloriq_signup_complete_${data.userId}`, 'true');
+    this.setToken(data.token, false, true);
+    return data;
+  }
+
+  async initSession(): Promise<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; profile: UserProfile; stats: UserStats }> {
     const defaultStats: UserStats = { xp: 0, level: 1, badges: [], foodStreak: 0, workoutStreak: 0 };
+
+    // On app load, check localStorage for "calory_dev_device". If it exists and matches this browser, auto-sign in as dev account.
+    if (!this.token || this.token.startsWith('guest_')) {
+      await this.tryDevDeviceAutoLogin();
+    }
 
     if (!this.token) {
       try {
@@ -457,21 +619,23 @@ class ApiService {
         const localGuestId = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
         this.setToken(localGuestId, true);
         const profile = this.getLocalProfile(localGuestId);
-        return { userId: localGuestId, isGuest: true, profile, stats: defaultStats };
+        return { userId: localGuestId, isGuest: true, isDev: false, profile, stats: defaultStats };
       }
     }
 
     try {
-      const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
+      const me = await this.request<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
       const localProf = this.getLocalProfile(me.userId, me.email);
+      const isDev = Boolean(me.isDev || me.profile?.isDev);
       const mergedProfile: UserProfile =
         localProf?.signupComplete && !me.profile?.signupComplete
-          ? { ...me.profile, ...localProf, signupComplete: true }
-          : { ...localProf, ...me.profile };
+          ? { ...me.profile, ...localProf, signupComplete: true, isDev }
+          : { ...localProf, ...me.profile, isDev };
       me.profile = mergedProfile;
+      me.isDev = isDev;
       this.saveLocalProfile(me.userId, mergedProfile);
-      if (me.email) {
-        localStorage.setItem(USER_EMAIL_KEY, me.email);
+      if (me.username || me.email) {
+        localStorage.setItem(USER_EMAIL_KEY, me.username || me.email || '');
       }
       this.initSse();
       return me;
@@ -484,6 +648,7 @@ class ApiService {
           userId: this.token,
           email: savedEmail,
           isGuest: false,
+          isDev: false,
           profile,
           stats: defaultStats
         };
@@ -495,14 +660,14 @@ class ApiService {
           method: 'POST'
         }, true);
         this.setToken(guestRes.token, true);
-        const me = await this.request<{ userId: string; email?: string; isGuest: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
+        const me = await this.request<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
         this.initSse();
         return me;
       } catch {
         const localGuestId = `guest_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
         this.setToken(localGuestId, true);
         const profile = this.getLocalProfile(localGuestId);
-        return { userId: localGuestId, isGuest: true, profile, stats: defaultStats };
+        return { userId: localGuestId, isGuest: true, isDev: false, profile, stats: defaultStats };
       }
     }
   }
@@ -533,12 +698,14 @@ class ApiService {
         })
       });
     } catch {
-      throw new Error("Couldn't send the code. Try again in a minute.");
+      throw new Error('Email sending is limited during testing. Use the developer account email to sign up.');
     }
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const err: any = new Error(errBody.error || "Couldn't send the code. Try again in a minute.");
+      const err: any = new Error(
+        errBody.error || 'Email sending is limited during testing. Use the developer account email to sign up.'
+      );
       err.retryAfterSeconds = errBody.retryAfterSeconds || errBody.cooldownSeconds;
       err.cooldownSeconds = errBody.cooldownSeconds || errBody.retryAfterSeconds;
       throw err;
@@ -569,12 +736,14 @@ class ApiService {
         })
       });
     } catch {
-      throw new Error("Couldn't send the code. Try again in a minute.");
+      throw new Error('Email sending is limited during testing. Use the developer account email to sign up.');
     }
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const err: any = new Error(errBody.error || "Couldn't send the code. Try again in a minute.");
+      const err: any = new Error(
+        errBody.error || 'Email sending is limited during testing. Use the developer account email to sign up.'
+      );
       err.retryAfterSeconds = errBody.retryAfterSeconds || errBody.cooldownSeconds;
       err.cooldownSeconds = errBody.cooldownSeconds || errBody.retryAfterSeconds;
       throw err;
@@ -597,7 +766,7 @@ class ApiService {
 
     let res: Response;
     try {
-      res = await fetch('/api/auth/verify-signup', {
+      res = await standaloneFetch('/api/auth/verify-signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -626,17 +795,24 @@ class ApiService {
     }
 
     const data = await res.json();
+    const resolvedUserId = data.userId || data.token || `usr_${cleanEmail.replace(/[^a-z0-9]/gi, '_')}`;
+    const resolvedToken = data.token || resolvedUserId;
     const users = getClientUsers();
     users[cleanEmail] = {
-      userId: data.userId,
+      userId: resolvedUserId,
       email: cleanEmail,
       passwordHash: pwHash,
       createdAt: Date.now()
     };
     saveClientUsers(users);
     localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
-    this.setToken(data.token, false, rememberMe);
-    return data;
+    this.setToken(resolvedToken, false, rememberMe);
+    return {
+      ...data,
+      userId: resolvedUserId,
+      email: data.email || cleanEmail,
+      token: resolvedToken
+    };
   }
 
   async verifyLoginDeviceCode(
@@ -709,12 +885,14 @@ class ApiService {
         body: JSON.stringify({ email: cleanEmail, appOrigin, deviceMeta })
       });
     } catch {
-      throw new Error("Couldn't send the code. Try again in a minute.");
+      throw new Error('Email sending is limited during testing. Use the developer account email to sign up.');
     }
 
     if (!res.ok) {
       const errBody = await res.json().catch(() => ({}));
-      const err: any = new Error(errBody.error || "Couldn't send the code. Try again in a minute.");
+      const err: any = new Error(
+        errBody.error || 'Email sending is limited during testing. Use the developer account email to sign up.'
+      );
       err.retryAfterSeconds = errBody.retryAfterSeconds || errBody.cooldownSeconds;
       throw err;
     }
@@ -779,72 +957,30 @@ class ApiService {
   }
 
   async signup(
-    email: string,
+    username: string,
     password: string,
     rememberMe: boolean = true,
-    code?: string
-  ): Promise<{ userId: string; email: string; token: string }> {
-    const cleanEmail = email.trim().toLowerCase();
+    confirmPassword?: string,
+    honeypot?: string
+  ): Promise<{ userId: string; username?: string; email?: string; token: string }> {
+    const cleanUsername = username.trim();
     const guestId = this.getGuestId();
     const pwHash = hashClientPassword(password);
-
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: cleanEmail, password, code, guestId })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const users = getClientUsers();
-      users[cleanEmail] = {
-        userId: data.userId,
-        email: cleanEmail,
-        passwordHash: pwHash,
-        createdAt: Date.now()
-      };
-      saveClientUsers(users);
-      localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
-      this.setToken(data.token, false, rememberMe);
-      return data;
-    }
-
-    const err = await res.json().catch(() => ({ error: 'Failed to create account.' }));
-    throw new Error(err.error || 'Failed to create account.');
-  }
-
-  async login(
-    email: string,
-    password: string,
-    rememberMe: boolean = true,
-    verificationCode?: string
-  ): Promise<{
-    userId?: string;
-    email?: string;
-    token?: string;
-    requiresVerification?: boolean;
-    resendCooldownSeconds?: number;
-    reason?: string;
-    message?: string;
-    cooldownSeconds?: number;
-  }> {
-    const cleanEmail = email.trim().toLowerCase();
-    const guestId = this.getGuestId();
-    const pwHash = hashClientPassword(password || '');
     const deviceMeta = getDeviceMetadata();
 
     let res: Response;
     try {
-      res = await fetch('/api/auth/login', {
+      res = await standaloneFetch('/api/auth/signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'X-Device-Meta': JSON.stringify(deviceMeta)
         },
         body: JSON.stringify({
-          email: cleanEmail,
-          password: password || '',
-          verificationCode: verificationCode ? verificationCode.trim() : undefined,
+          username: cleanUsername,
+          password,
+          confirmPassword: confirmPassword ?? password,
+          honeypot,
           guestId,
           deviceMeta
         })
@@ -855,25 +991,82 @@ class ApiService {
 
     if (res.ok) {
       const data = await res.json();
-      if (data.requiresVerification) {
-        return data;
-      }
       const users = getClientUsers();
-      users[cleanEmail] = {
+      users[cleanUsername.toLowerCase()] = {
         userId: data.userId,
-        email: cleanEmail,
+        email: cleanUsername,
         passwordHash: pwHash,
         createdAt: Date.now()
       };
       saveClientUsers(users);
-      localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+      localStorage.setItem(USER_EMAIL_KEY, data.username || cleanUsername);
       localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
       this.setToken(data.token, false, rememberMe);
       return data;
     }
 
-    const errBody = await res.json().catch(() => ({ error: 'Invalid email or password.' }));
-    const err: any = new Error(errBody.error || 'Invalid email or password.');
+    const err = await res.json().catch(() => ({ error: 'Failed to create account.' }));
+    throw new Error(err.error || 'Failed to create account.');
+  }
+
+  async login(
+    username: string,
+    password: string,
+    rememberMe: boolean = true
+  ): Promise<{
+    userId?: string;
+    username?: string;
+    email?: string;
+    token?: string;
+    requiresVerification?: boolean;
+    resendCooldownSeconds?: number;
+    reason?: string;
+    message?: string;
+    cooldownSeconds?: number;
+  }> {
+    const cleanUsername = username.trim();
+    const guestId = this.getGuestId();
+    const pwHash = hashClientPassword(password || '');
+    const deviceMeta = getDeviceMetadata();
+
+    let res: Response;
+    try {
+      res = await standaloneFetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Device-Meta': JSON.stringify(deviceMeta)
+        },
+        body: JSON.stringify({
+          username: cleanUsername,
+          email: cleanUsername,
+          password: password || '',
+          guestId,
+          deviceMeta
+        })
+      });
+    } catch {
+      throw new Error("Can't reach the server right now. Please try again.");
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      const users = getClientUsers();
+      users[cleanUsername.toLowerCase()] = {
+        userId: data.userId,
+        email: data.username || data.email || cleanUsername,
+        passwordHash: pwHash,
+        createdAt: Date.now()
+      };
+      saveClientUsers(users);
+      localStorage.setItem(USER_EMAIL_KEY, data.username || data.email || cleanUsername);
+      localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+      this.setToken(data.token, false, rememberMe);
+      return data;
+    }
+
+    const errBody = await res.json().catch(() => ({ error: 'Wrong username or password.' }));
+    const err: any = new Error(errBody.error || 'Wrong username or password.');
     err.reason = errBody.reason;
     err.locked = Boolean(errBody.locked);
     err.unlockAt = errBody.unlockAt;
@@ -1308,6 +1501,18 @@ class ApiService {
   }
 
   async updateProfile(updates: Partial<UserProfile>): Promise<UserProfile> {
+    if (!this.token) {
+      const savedToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+      if (savedToken && savedToken !== 'undefined' && savedToken !== 'null') {
+        this.token = savedToken;
+      } else {
+        const savedEmail = localStorage.getItem(USER_EMAIL_KEY);
+        const fallbackId = savedEmail
+          ? `usr_${savedEmail.toLowerCase().trim().replace(/[^a-z0-9]/gi, '_')}`
+          : `guest_${Date.now()}`;
+        this.setToken(fallbackId, !savedEmail, true);
+      }
+    }
     const curr = this.token ? this.getLocalProfile(this.token) : ({} as UserProfile);
     const optimistic = { ...curr, ...updates } as UserProfile;
     if (this.token) {
@@ -1760,6 +1965,83 @@ class ApiService {
     if (params?.limit) qs.set('limit', String(params.limit));
     const queryStr = qs.toString();
     return this.request(`/api/dev/security-events${queryStr ? `?${queryStr}` : ''}`);
+  }
+
+  // === COMMUNITY FEED & MODERATION ===
+  async getCommunityPosts(filter: 'all' | 'following' | 'mine' = 'all'): Promise<{ posts: CommunityPost[] }> {
+    return this.request(`/api/community/posts?filter=${encodeURIComponent(filter)}`);
+  }
+
+  async getCommunityPostDetail(postId: string): Promise<{ post: CommunityPost; replies: CommunityReply[] }> {
+    return this.request(`/api/community/posts/${encodeURIComponent(postId)}`);
+  }
+
+  async createCommunityPost(text: string, imageUrl?: string): Promise<{ post: CommunityPost }> {
+    return this.request('/api/community/posts', {
+      method: 'POST',
+      body: JSON.stringify({ text, imageUrl })
+    });
+  }
+
+  async toggleLikeCommunityPost(postId: string): Promise<{ liked: boolean; likeCount: number }> {
+    return this.request(`/api/community/posts/${encodeURIComponent(postId)}/like`, {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+  }
+
+  async addCommunityReply(postId: string, text: string): Promise<{ reply: CommunityReply }> {
+    return this.request(`/api/community/posts/${encodeURIComponent(postId)}/replies`, {
+      method: 'POST',
+      body: JSON.stringify({ text })
+    });
+  }
+
+  async reportCommunityPost(postId: string, reason?: string): Promise<{ reported: boolean; report: ReportedPostRecord }> {
+    return this.request(`/api/community/posts/${encodeURIComponent(postId)}/report`, {
+      method: 'POST',
+      body: JSON.stringify({ reason })
+    });
+  }
+
+  async blockCommunityUser(targetUserIdOrUsername: string): Promise<{ blocked: boolean }> {
+    return this.request('/api/community/block', {
+      method: 'POST',
+      body: JSON.stringify({ targetUserId: targetUserIdOrUsername, username: targetUserIdOrUsername })
+    });
+  }
+
+  async toggleFollowCommunityUser(username: string): Promise<{ following: boolean }> {
+    return this.request('/api/community/follow', {
+      method: 'POST',
+      body: JSON.stringify({ username })
+    });
+  }
+
+  async devGetReportedPosts(): Promise<{ reports: Array<ReportedPostRecord & { post: CommunityPost }> }> {
+    return this.request('/api/dev/reported-posts');
+  }
+
+  async devDeleteCommunityPost(postId: string): Promise<{
+    success: boolean;
+    deleted: boolean;
+    reports: Array<ReportedPostRecord & { post: CommunityPost }>;
+  }> {
+    return this.request('/api/dev/moderation/delete-post', {
+      method: 'POST',
+      body: JSON.stringify({ postId })
+    });
+  }
+
+  async devDismissCommunityReport(reportIdOrPostId: string): Promise<{
+    success: boolean;
+    dismissed: boolean;
+    reports: Array<ReportedPostRecord & { post: CommunityPost }>;
+  }> {
+    return this.request('/api/dev/moderation/dismiss-report', {
+      method: 'POST',
+      body: JSON.stringify({ reportId: reportIdOrPostId, postId: reportIdOrPostId })
+    });
   }
 }
 

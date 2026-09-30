@@ -161,35 +161,6 @@ export async function sendResendEmailDetailed(payload: {
       };
     }
 
-    // If Resend is in onboarding@resend.dev sandbox mode and only allows sending to the owner's email,
-    // forward the verification email to the Resend account owner address via Resend so it still sends.
-    const errMsg = String(data?.message || '');
-    if (
-      response.status === 403 &&
-      errMsg.toLowerCase().includes('only send testing emails to your own email address')
-    ) {
-      const match = errMsg.match(/\(([^)]+@[^)]+)\)/);
-      const fallbackRecipient = (match && match[1] ? match[1] : DEVELOPER_EMAIL).trim();
-      if (fallbackRecipient && fallbackRecipient.toLowerCase() !== payload.to.toLowerCase()) {
-        const forwardedSubject = `${payload.subject} (${payload.to})`;
-        const retryRes = await postResendEmail(
-          apiKey,
-          fallbackRecipient,
-          forwardedSubject,
-          payload.text,
-          payload.html
-        );
-        if (retryRes.response.ok) {
-          return {
-            ok: true,
-            messageId: retryRes.data?.id,
-            statusCode: retryRes.response.status,
-            response: retryRes.data
-          };
-        }
-      }
-    }
-
     return {
       ok: false,
       statusCode: response.status,
@@ -292,10 +263,12 @@ export async function createAndSendVerificationCode(
   if (!sendResult.ok) {
     verificationStore.delete(email);
     saveVerificationStore();
-    const sendErr: any = new Error("Couldn't send the code. Try again in a minute.");
+    const sendErr: any = new Error(
+      'Email sending is limited during testing. Use the developer account email to sign up.'
+    );
     sendErr.reason = 'resend_failed';
     sendErr.resendError = sendResult.error;
-    sendErr.status = 502;
+    sendErr.status = 403;
     throw sendErr;
   }
 

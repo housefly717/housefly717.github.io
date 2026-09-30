@@ -38,13 +38,13 @@ export const LegalFooter: React.FC<LegalFooterProps> = ({
         <span className="font-medium tracking-wide">Self-guided nutrition &amp; activity tracking tools</span>
       </div>
       <p className="leading-relaxed">
-        Caloriq provides weight-management tracking tools and is not a medical provider. Speak to your doctor before changing how you eat or train.
+        Calory provides weight-management tracking tools and is not a medical provider. Speak to your doctor before changing how you eat or train.
       </p>
       <p className="text-zinc-300 leading-relaxed">
-        If you&apos;re under 18, use Caloriq with a parent or guardian. Not intended for children under 13.
+        If you&apos;re under 18, use Calory with a parent or guardian. Not intended for children under 13.
       </p>
       <p className="text-zinc-400 leading-relaxed">
-        Caloriq uses local storage to keep you signed in and remember your theme. It does not use tracking cookies. See our{' '}
+        Calory uses local storage to keep you signed in and remember your theme. It does not use tracking cookies. See our{' '}
         <a
           href="/privacy"
           onClick={(e) => handleNav(e, '/privacy', onOpenPrivacy)}
@@ -112,7 +112,7 @@ export const LegalFooter: React.FC<LegalFooterProps> = ({
         </a>
       </div>
       <div className="pt-1 text-[11px] font-mono text-zinc-400">
-        Caloriq {APP_VERSION}
+        &copy; {new Date().getFullYear()} Calory {APP_VERSION}
       </div>
     </footer>
   );

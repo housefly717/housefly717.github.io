@@ -1,10 +1,16 @@
+import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
 import {
   createGuestUser,
   findUserById,
+  findUserByUsername,
   findUserByEmail,
+  DEV_USERNAME,
+  getDevSetupStatus,
+  setupDevAccount,
+  autoLoginDevAccount,
   signupUser,
   resetUserPassword,
   loginUser,
@@ -104,7 +110,18 @@ import {
   getRecentBackendErrors,
   inspectAccountByEmail,
   seedFullWeekDemoAccount,
-  resolveIpGeo
+  resolveIpGeo,
+  getCommunityPosts,
+  getCommunityPostDetail,
+  createCommunityPost,
+  toggleLikeCommunityPost,
+  addCommunityReply,
+  reportCommunityPost,
+  blockCommunityUser,
+  toggleFollowCommunityUser,
+  getReportedCommunityPosts,
+  moderateDeleteCommunityPost,
+  moderateDismissPostReport
 } from './src/server/db.js';
 import {
   createAndSendVerificationCode,
@@ -119,7 +136,7 @@ import {
   sendDevTestEmail,
   constantTimeStringEqual
 } from './src/server/emailService.js';
-import { validatePasswordRules, getPasswordStrength } from './src/utils/validation.js';
+import { validateUsername, validatePasswordRules, getPasswordStrength } from './src/utils/validation.js';
 import { parseIngredientLine } from './src/server/foodData.js';
 import { searchUsdaFoods } from './src/server/usda.js';
 import { generateWeekPlanWithGemini } from './src/server/aiPlanner.js';
@@ -136,7 +153,7 @@ import {
   generateWeeklyInsightsWithGemini
 } from './src/server/aiFeatures.js';
 
-dotenv.config();
+dotenv.config({ path: ['.env.local', '.env'], quiet: true });
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -364,10 +381,18 @@ function authenticateUser(req: Request, res: Response, next: NextFunction) {
 
 const DEV_EMAIL = 'housefly@mail2world.com';
 
+function isDevAccountUser(user: any): boolean {
+  if (!user || user.isGuest) return false;
+  if (user.isDev === true && String(user.username || '').toLowerCase().trim() === DEV_USERNAME) {
+    return true;
+  }
+  return false;
+}
+
 function authenticateDev(req: Request, res: Response, next: NextFunction) {
   authenticateUser(req, res, () => {
     const user = (req as any).user;
-    if (!user || user.isGuest || String(user.email || '').toLowerCase().trim() !== DEV_EMAIL) {
+    if (!isDevAccountUser(user)) {
       res.status(403).json({ error: 'Forbidden: Dev Tools access restricted.' });
       return;
     }
@@ -376,6 +401,104 @@ function authenticateDev(req: Request, res: Response, next: NextFunction) {
 }
 
 // ------------------- AUTH ROUTES -------------------
+app.get('/api/auth/dev-status', (_req, res) => {
+  res.json(getDevSetupStatus());
+});
+
+app.post('/api/auth/dev-setup', rateLimitAuth, async (req, res) => {
+  const ip = getClientIp(req);
+  const fp = extractRequestDeviceFingerprint(req);
+  const { password, deviceToken, browserSig, guestId } = req.body || {};
+
+  try {
+    if (!password || String(password).length === 0) {
+      res.status(400).json({ error: 'Please enter a password.' });
+      return;
+    }
+    if (!deviceToken || typeof deviceToken !== 'string') {
+      res.status(400).json({ error: 'Device lock token is required.' });
+      return;
+    }
+
+    const user = setupDevAccount(
+      String(password),
+      String(deviceToken),
+      String(browserSig || fp.rawFingerprint || ''),
+      guestId
+    );
+    const geo = await resolveIpGeo(ip, req.headers);
+    trustDeviceForUser(user.id, {
+      fingerprintHash: fp.fingerprintHash,
+      rawFingerprint: fp.rawFingerprint,
+      deviceName: fp.deviceName,
+      userAgent: fp.userAgent,
+      ip,
+      city: geo.city
+    });
+    const session = recordUserSession(user.id, fp.userAgent, `${geo.city}, ${geo.country}`, ip);
+
+    await logSecurityEvent({
+      eventType: 'dev_action',
+      userEmail: DEV_USERNAME,
+      ip,
+      headers: req.headers,
+      deviceFingerprint: fp.rawFingerprint,
+      deviceName: fp.deviceName,
+      userAgent: fp.userAgent,
+      requestPath: req.path,
+      summary: `Dev account @${DEV_USERNAME} set up and locked to device (${fp.deviceName})`,
+      metadata: { action: 'dev_account_setup', userId: user.id }
+    });
+
+    res.json({
+      userId: user.id,
+      username: DEV_USERNAME,
+      email: user.email || DEV_USERNAME,
+      isGuest: false,
+      isDev: true,
+      token: user.id,
+      deviceToken: user.devDeviceToken,
+      sessionId: session.id
+    });
+  } catch (err: any) {
+    res.status(err.status || 400).json({
+      error: err.message || 'Could not set up dev account.',
+      reason: err.reason
+    });
+  }
+});
+
+app.post('/api/auth/dev-auto-login', async (req, res) => {
+  const ip = getClientIp(req);
+  const fp = extractRequestDeviceFingerprint(req);
+  const { deviceToken, browserSig } = req.body || {};
+
+  try {
+    const user = autoLoginDevAccount(
+      String(deviceToken || ''),
+      String(browserSig || '')
+    );
+    if (!user) {
+      res.status(403).json({ error: 'Device lock does not match.' });
+      return;
+    }
+
+    const geo = await resolveIpGeo(ip, req.headers);
+    const session = recordUserSession(user.id, fp.userAgent, `${geo.city}, ${geo.country}`, ip);
+
+    res.json({
+      userId: user.id,
+      username: DEV_USERNAME,
+      email: user.email || DEV_USERNAME,
+      isGuest: false,
+      isDev: true,
+      token: user.id,
+      sessionId: session.id
+    });
+  } catch (err: any) {
+    res.status(403).json({ error: err.message || 'Auto-login failed.' });
+  }
+});
 app.post('/api/auth/guest', (req, res) => {
   try {
     const user = createGuestUser();
@@ -526,7 +649,7 @@ app.post('/api/auth/send-verification-code', rateLimitAuth, async (req, res) => 
     }
     const status = err.status || 400;
     res.status(status).json({
-      error: err.message || "Couldn't send the code. Try again in a minute.",
+      error: err.message || 'Email sending is limited during testing. Use the developer account email to sign up.',
       retryAfterSeconds: err.retryAfterSeconds
     });
   }
@@ -751,7 +874,7 @@ app.post('/api/auth/forgot-password', rateLimitAuth, async (req, res) => {
     }
     const status = err.status || 400;
     res.status(status).json({
-      error: err.message || "Couldn't send the code. Try again in a minute.",
+      error: err.message || 'Email sending is limited during testing. Use the developer account email to sign up.',
       retryAfterSeconds: err.retryAfterSeconds
     });
   }
@@ -883,30 +1006,53 @@ app.post('/api/auth/reset-password', rateLimitAuth, async (req, res) => {
   }
 });
 
-app.post('/api/auth/signup', async (req, res) => {
+app.post('/api/auth/signup', rateLimitAuth, async (req, res) => {
   const ip = getClientIp(req);
   const fp = extractRequestDeviceFingerprint(req);
-  const { email, password, code, guestId } = req.body || {};
-  const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+  const { username, password, confirmPassword, honeypot, websiteUrl, guestId } = req.body || {};
+  const cleanUsername = typeof username === 'string' ? username.trim() : '';
 
   try {
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      res.status(400).json({ error: 'Please enter a valid email address.' });
-      return;
-    }
-    const pwError = validatePasswordRules(String(password || ''), cleanEmail);
-    if (pwError) {
-      res.status(400).json({ error: pwError });
-      return;
-    }
-    if (!code) {
-      res.status(400).json({ error: 'Verification code is required.' });
+    if (honeypot || websiteUrl) {
+      const filledField = honeypot ? 'company_website_hp' : 'websiteUrl';
+      await logSecurityEvent({
+        eventType: 'honeypot_triggered',
+        userEmail: cleanUsername,
+        ip,
+        headers: req.headers,
+        deviceFingerprint: fp.rawFingerprint,
+        deviceName: fp.deviceName,
+        userAgent: fp.userAgent,
+        requestPath: req.path,
+        summary: `Honeypot field "${filledField}" triggered during signup from ${ip}`,
+        metadata: { filledField, honeypotValue: String(honeypot || websiteUrl).slice(0, 100) }
+      });
+      res.status(400).json({ error: 'Could not create account.' });
       return;
     }
 
-    validateVerificationCode(cleanEmail, String(code), true);
+    const usernameErr = validateUsername(cleanUsername);
+    if (usernameErr) {
+      res.status(400).json({ error: usernameErr });
+      return;
+    }
 
-    const user = signupUser(cleanEmail, String(password), guestId);
+    if (!password || String(password).length === 0) {
+      res.status(400).json({ error: 'Please enter a password.' });
+      return;
+    }
+
+    if (confirmPassword !== undefined && String(password) !== String(confirmPassword)) {
+      res.status(400).json({ error: 'Passwords do not match.' });
+      return;
+    }
+
+    if (cleanUsername.toLowerCase() === DEV_USERNAME || findUserByUsername(cleanUsername)) {
+      res.status(400).json({ error: 'That username is taken. Try another.' });
+      return;
+    }
+
+    const user = signupUser(cleanUsername, String(password), guestId);
     const geo = await resolveIpGeo(ip, req.headers);
     trustDeviceForUser(user.id, {
       fingerprintHash: fp.fingerprintHash,
@@ -916,21 +1062,33 @@ app.post('/api/auth/signup', async (req, res) => {
       ip,
       city: geo.city
     });
-    sendWelcomeEmail(cleanEmail).catch(() => {});
+    const session = recordUserSession(user.id, fp.userAgent, `${geo.city}, ${geo.country}`, ip);
+
+    await logSecurityEvent({
+      eventType: 'signup_attempt',
+      userEmail: cleanUsername,
+      ip,
+      headers: req.headers,
+      deviceFingerprint: fp.rawFingerprint,
+      deviceName: fp.deviceName,
+      userAgent: fp.userAgent,
+      requestPath: req.path,
+      summary: `Signup succeeded for @${cleanUsername} from ${ip} (${geo.city})`,
+      metadata: { outcome: 'success', userId: user.id, username: cleanUsername }
+    });
 
     res.json({
       userId: user.id,
+      username: user.username || cleanUsername,
       email: user.email,
       isGuest: false,
-      token: user.id
+      token: user.id,
+      sessionId: session.id
     });
   } catch (err: any) {
-    await logCodeValidationFailure(err, cleanEmail, ip, req, fp);
     res.status(400).json({
       error: err.message || 'Failed to create account.',
-      reason: err.reason,
-      locked: Boolean(err.locked),
-      attemptsRemaining: err.attemptsRemaining
+      reason: err.reason
     });
   }
 });
@@ -938,203 +1096,96 @@ app.post('/api/auth/signup', async (req, res) => {
 app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
   const ip = getClientIp(req);
   const fp = extractRequestDeviceFingerprint(req);
-  const { email, password, verificationCode, code, guestId } = req.body || {};
-  const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
-  const submittedCode = verificationCode || code;
+  const { username, email, password, guestId } = req.body || {};
+  const identifier =
+    typeof username === 'string' && username.trim()
+      ? username.trim()
+      : typeof email === 'string'
+      ? email.trim()
+      : '';
 
   try {
-    if (!checkRateLimit(`login_ip_hr:${ip}`, 40, ONE_HOUR_MS)) {
-      await logSecurityEvent({
-        eventType: 'rate_limit_hit',
-        userEmail: cleanEmail,
-        ip,
-        headers: req.headers,
-        deviceFingerprint: fp.rawFingerprint,
-        deviceName: fp.deviceName,
-        userAgent: fp.userAgent,
-        requestPath: req.path,
-        summary: `Login IP rate limit hit (40/hr) for IP ${ip}`,
-        metadata: { limit: 'per IP (40 login attempts/hr)', endpoint: req.path, throttledIp: ip, email: cleanEmail }
-      });
-      res.status(429).json({ error: 'Too many login attempts from this IP. Try again in an hour.' });
-      return;
-    }
-
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+    if (!identifier || !password || String(password).length === 0) {
       await logSecurityEvent({
         eventType: 'failed_login',
-        userEmail: cleanEmail,
+        userEmail: identifier,
         ip,
         headers: req.headers,
         deviceFingerprint: fp.rawFingerprint,
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
         requestPath: req.path,
-        summary: `Failed login: missing or invalid email from ${ip}`,
+        summary: `Failed login: missing username or password from ${ip}`,
         metadata: { reason: 'missing_fields' }
       });
-      res.status(400).json({ error: 'Please enter a valid email address.' });
+      res.status(400).json({ error: 'Wrong username or password.' });
       return;
     }
 
-    // Check if email is currently locked out (5 failed attempts in 15 mins -> 15 min lock)
-    const lockStatus = getEmailLockoutStatus(cleanEmail);
-    if (lockStatus.locked && lockStatus.unlocksAt) {
-      const unlockTimeFormatted = new Date(lockStatus.unlocksAt).toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit'
-      });
+    const credCheck = verifyUserCredentials(identifier, String(password));
+    if (!credCheck.valid || !credCheck.user) {
       await logSecurityEvent({
-        eventType: 'rate_limit_hit',
-        userEmail: cleanEmail,
+        eventType: 'failed_login',
+        userEmail: identifier,
         ip,
         headers: req.headers,
         deviceFingerprint: fp.rawFingerprint,
         deviceName: fp.deviceName,
         userAgent: fp.userAgent,
         requestPath: req.path,
-        summary: `Blocked login attempt on locked account ${cleanEmail} (unlocks at ${unlockTimeFormatted})`,
-        metadata: { limit: 'per email (account lockout)', throttledEmail: cleanEmail, unlocksAt: new Date(lockStatus.unlocksAt).toISOString() }
+        summary: `Failed login for ${identifier} from ${ip}`,
+        metadata: { reason: credCheck.reason || 'invalid_credentials' }
       });
-      res.status(429).json({
-        error: `Too many attempts. Try again in 15 minutes, or reset your password. Account unlocks at ${unlockTimeFormatted}.`,
-        locked: true,
-        unlocksAt: new Date(lockStatus.unlocksAt).toISOString()
-      });
+      res.status(400).json({ error: 'Wrong username or password.' });
       return;
     }
 
-    const existingUser = findUserByEmail(cleanEmail);
-    if (existingUser && existingUser.passwordHash && password) {
-      const credCheck = verifyUserCredentials(cleanEmail, String(password));
-      if (!credCheck.valid) {
-        await logSecurityEvent({
-          eventType: 'failed_login',
-          userEmail: cleanEmail,
-          ip,
-          headers: req.headers,
-          deviceFingerprint: fp.rawFingerprint,
-          deviceName: fp.deviceName,
-          userAgent: fp.userAgent,
-          requestPath: req.path,
-          summary: `Failed login (Wrong password) for ${cleanEmail} from ${ip}`,
-          metadata: { reason: 'wrong_password' }
-        });
+    clearFailedLoginsForEmail(identifier);
 
-        const failRecord = recordFailedLoginForEmail(cleanEmail);
-        if (failRecord.justLocked && failRecord.unlocksAt) {
-          const unlockTimeFormatted = new Date(failRecord.unlocksAt).toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit'
-          });
-          await logSecurityEvent({
-            eventType: 'account_lockout',
-            userEmail: cleanEmail,
-            ip,
-            headers: req.headers,
-            deviceFingerprint: fp.rawFingerprint,
-            deviceName: fp.deviceName,
-            userAgent: fp.userAgent,
-            requestPath: req.path,
-            summary: `Account locked for 15 minutes (${cleanEmail}) after 5 failed logins. Unlocks at ${unlockTimeFormatted}`,
-            metadata: {
-              emailLocked: cleanEmail,
-              duration: '15 minutes',
-              trigger: '5 failed logins',
-              unlocksAt: new Date(failRecord.unlocksAt).toISOString()
-            }
-          });
-          sendSuspiciousLoginAlertEmail(cleanEmail).catch(() => {});
+    const previousLoginAt = credCheck.user.lastLoginAt;
+    const user = loginUser(identifier, String(password), guestId);
+    const geo = await resolveIpGeo(ip, req.headers);
+    trustDeviceForUser(user.id, {
+      fingerprintHash: fp.fingerprintHash,
+      rawFingerprint: fp.rawFingerprint,
+      deviceName: fp.deviceName,
+      userAgent: fp.userAgent,
+      ip,
+      city: geo.city
+    });
+    const session = recordUserSession(user.id, fp.userAgent, `${geo.city}, ${geo.country}`, ip);
 
-          res.status(429).json({
-            error: `Too many attempts. Try again in 15 minutes, or reset your password. Account unlocks at ${unlockTimeFormatted}.`,
-            locked: true,
-            unlocksAt: new Date(failRecord.unlocksAt).toISOString()
-          });
-          return;
-        }
-
-        res.status(400).json({
-          error: 'Incorrect password. Please try again.'
-        });
-        return;
-      }
-    }
-
-    clearFailedLoginsForEmail(cleanEmail);
-
-    // If a verification code was submitted with login, validate it strictly against stored code
-    if (submittedCode !== undefined && String(submittedCode).trim() !== '') {
-      validateVerificationCode(cleanEmail, String(submittedCode), true);
-      const previousLoginAt = existingUser?.lastLoginAt;
-      const user = existingUser
-        ? loginUser(cleanEmail, String(password || ''), guestId)
-        : signupUser(cleanEmail, String(password || ''), guestId);
-      const geo = await resolveIpGeo(ip, req.headers);
-      trustDeviceForUser(user.id, {
-        fingerprintHash: fp.fingerprintHash,
-        rawFingerprint: fp.rawFingerprint,
-        deviceName: fp.deviceName,
-        userAgent: fp.userAgent,
-        ip,
-        city: geo.city
-      });
-      const session = recordUserSession(user.id, fp.userAgent, `${geo.city}, ${geo.country}`, ip);
-      res.json({
-        userId: user.id,
-        email: user.email,
-        isGuest: false,
-        token: user.id,
-        lastLoginAt: previousLoginAt || user.lastLoginAt,
-        sessionId: session.id,
-        requiresVerification: false
-      });
-      return;
-    }
-
-    // Send 6-digit verification code via Resend and store with 10-minute expiry
-    const codeRes = await createAndSendVerificationCode(cleanEmail, 'new_device');
     await logSecurityEvent({
-      eventType: 'code_requested',
-      userEmail: cleanEmail,
+      eventType: 'login_known_device',
+      userEmail: user.username || user.email || identifier,
       ip,
       headers: req.headers,
       deviceFingerprint: fp.rawFingerprint,
       deviceName: fp.deviceName,
       userAgent: fp.userAgent,
       requestPath: req.path,
-      summary: `Sign-in verification code sent to ${cleanEmail} from ${ip}`,
-      metadata: { purpose: 'new_device_login' }
+      summary: `Successful login (${fp.deviceName}) for ${user.username || user.email || identifier} in ${geo.city}, ${geo.country} (${ip})`,
+      metadata: {
+        fingerprintHash: fp.fingerprintHash,
+        city: geo.city,
+        country: geo.country
+      }
     });
 
     res.json({
-      requiresVerification: true,
-      email: cleanEmail,
-      resendCooldownSeconds: codeRes.resendCooldownSeconds
+      userId: user.id,
+      username: user.username,
+      email: user.email,
+      isGuest: false,
+      isDev: Boolean(user.isDev),
+      token: user.id,
+      lastLoginAt: previousLoginAt || user.lastLoginAt,
+      sessionId: session.id,
+      requiresVerification: false
     });
   } catch (err: any) {
-    await logCodeValidationFailure(err, cleanEmail, ip, req, fp);
-    if (err.reason === 'code_rate_limit') {
-      await logSecurityEvent({
-        eventType: 'code_rate_limit',
-        userEmail: cleanEmail,
-        ip,
-        headers: req.headers,
-        deviceFingerprint: fp.rawFingerprint,
-        deviceName: fp.deviceName,
-        userAgent: fp.userAgent,
-        requestPath: req.path,
-        summary: `Too many login verification codes requested for ${cleanEmail}`,
-        metadata: { limit: '30 codes per email per hour', throttledEmail: cleanEmail }
-      });
-    }
-    const status = err.status || 400;
-    res.status(status).json({
-      error: err.message || 'Invalid email or password.',
-      reason: err.reason,
-      locked: Boolean(err.locked),
-      attemptsRemaining: err.attemptsRemaining,
-      retryAfterSeconds: err.retryAfterSeconds
+    res.status(400).json({
+      error: 'Wrong username or password.'
     });
   }
 });
@@ -1265,7 +1316,7 @@ app.post('/api/auth/resend-login-code', rateLimitAuth, async (req, res) => {
       });
     }
     res.status(err.status || 400).json({
-      error: err.message || "Couldn't send the code. Try again in a minute.",
+      error: err.message || 'Email sending is limited during testing. Use the developer account email to sign up.',
       retryAfterSeconds: err.retryAfterSeconds
     });
   }
@@ -1448,9 +1499,9 @@ app.post('/api/auth/change-email', authenticateUser, rateLimitAuth, async (req, 
 app.post('/api/dev/send-test-email', authenticateDev, async (req, res) => {
   const ip = getClientIp(req);
   const fp = extractRequestDeviceFingerprint(req);
-  const devEmail = (req as any).user?.email || DEV_EMAIL;
-  const { toEmail, templateType } = req.body || {};
-  const cleanTo = String(toEmail || '').trim().toLowerCase();
+  const devEmail = (req as any).user?.username || DEV_USERNAME;
+  const { toEmail, recipientEmail, templateType } = req.body || {};
+  const cleanTo = String(toEmail || recipientEmail || '').trim().toLowerCase();
 
   if (!cleanTo || !cleanTo.includes('@')) {
     res.status(400).json({ error: 'Enter a valid recipient email address.' });
@@ -1462,9 +1513,11 @@ app.post('/api/dev/send-test-email', authenticateDev, async (req, res) => {
     'password_reset',
     'welcome',
     'weekly_recap',
-    'suspicious_login'
+    'suspicious_login',
+    'suspicious_login_alert'
   ]);
-  const selectedType = allowedTypes.has(templateType) ? templateType : 'verification_code';
+  const rawType = templateType === 'suspicious_login_alert' ? 'suspicious_login' : templateType;
+  const selectedType = allowedTypes.has(rawType) ? rawType : 'verification_code';
 
   const result = await sendDevTestEmail(cleanTo, selectedType);
 
@@ -1481,7 +1534,13 @@ app.post('/api/dev/send-test-email', authenticateDev, async (req, res) => {
     metadata: { action: 'send_test_email', toEmail: cleanTo, templateType: selectedType, ok: result.ok }
   });
 
-  res.json(result);
+  res.json({
+    success: Boolean(result.ok),
+    recipientEmail: cleanTo,
+    templateType: selectedType,
+    resendResult: result,
+    ...result
+  });
 });
 
 // B. Account inspector
@@ -1515,11 +1574,11 @@ app.get('/api/dev/inspect-account', authenticateDev, async (req, res) => {
   }
 
   if (!inspected) {
-    res.status(404).json({ error: 'No account found for that email.' });
+    res.status(404).json({ found: false, error: 'No account found for that username or email.' });
     return;
   }
 
-  res.json({ account: inspected });
+  res.json({ found: true, account: inspected });
 });
 
 // C. Send verification code manually
@@ -1555,7 +1614,7 @@ app.post('/api/dev/send-verification-code', authenticateDev, async (req, res) =>
     });
   } catch (err: any) {
     res.status(err.status || 400).json({
-      error: err.message || "Couldn't send the code. Try again in a minute.",
+      error: err.message || 'Email sending is limited during testing. Use the developer account email to sign up.',
       resendError: err.resendError
     });
   }
@@ -1574,14 +1633,18 @@ app.post('/api/dev/delete-user', authenticateDev, async (req, res) => {
     return;
   }
 
-  if (email === DEV_EMAIL) {
+  if (email === DEV_EMAIL || email === DEV_USERNAME) {
     res.status(400).json({ error: "The developer's own account cannot be deleted." });
     return;
   }
 
-  const targetUser = findUserByEmail(email);
+  const targetUser = findUserByUsername(email) || findUserByEmail(email);
   if (!targetUser) {
-    res.status(404).json({ error: 'No account found with that email.' });
+    res.status(404).json({ error: 'No account found with that username or email.' });
+    return;
+  }
+  if (targetUser.isDev) {
+    res.status(400).json({ error: "The developer's own account cannot be deleted." });
     return;
   }
 
@@ -1651,15 +1714,83 @@ app.get('/api/dev/security-events', authenticateDev, (req, res) => {
   res.json(data);
 });
 
+// H. Community Moderation (Reported Posts)
+app.get('/api/dev/reported-posts', authenticateDev, (_req, res) => {
+  res.json({
+    reports: getReportedCommunityPosts()
+  });
+});
+
+app.post('/api/dev/moderation/delete-post', authenticateDev, async (req, res) => {
+  const ip = getClientIp(req);
+  const fp = extractRequestDeviceFingerprint(req);
+  const devEmail = (req as any).user?.username || DEV_USERNAME;
+  const postId = String(req.body?.postId || '').trim();
+  if (!postId) {
+    res.status(400).json({ error: 'postId is required.' });
+    return;
+  }
+  const deleted = moderateDeleteCommunityPost(postId);
+  await logSecurityEvent({
+    eventType: 'dev_action',
+    userEmail: devEmail,
+    ip,
+    headers: req.headers,
+    deviceFingerprint: fp.rawFingerprint,
+    deviceName: fp.deviceName,
+    userAgent: fp.userAgent,
+    requestPath: req.path,
+    summary: `Dev action: Deleted reported community post ${postId}`,
+    metadata: { action: 'moderate_delete_post', postId, deleted }
+  });
+  res.json({
+    success: true,
+    deleted,
+    reports: getReportedCommunityPosts()
+  });
+});
+
+app.post('/api/dev/moderation/dismiss-report', authenticateDev, async (req, res) => {
+  const ip = getClientIp(req);
+  const fp = extractRequestDeviceFingerprint(req);
+  const devEmail = (req as any).user?.username || DEV_USERNAME;
+  const targetId = String(req.body?.reportId || req.body?.postId || '').trim();
+  if (!targetId) {
+    res.status(400).json({ error: 'reportId or postId is required.' });
+    return;
+  }
+  const dismissed = moderateDismissPostReport(targetId);
+  await logSecurityEvent({
+    eventType: 'dev_action',
+    userEmail: devEmail,
+    ip,
+    headers: req.headers,
+    deviceFingerprint: fp.rawFingerprint,
+    deviceName: fp.deviceName,
+    userAgent: fp.userAgent,
+    requestPath: req.path,
+    summary: `Dev action: Dismissed community report ${targetId}`,
+    metadata: { action: 'moderate_dismiss_report', targetId, dismissed }
+  });
+  res.json({
+    success: true,
+    dismissed,
+    reports: getReportedCommunityPosts()
+  });
+});
+
 app.get('/api/auth/me', authenticateUser, (req, res) => {
   const user = (req as any).user;
   const profile = getProfile(user.id);
   const stats = getUserStats(user.id);
+  const isDev = isDevAccountUser(user);
   res.json({
     userId: user.id,
-    email: user.email,
+    username: user.username || profile.username,
+    email: user.email || user.username || profile.username,
     isGuest: user.isGuest,
-    profile,
+    isDev,
+    profile: { ...profile, isDev },
     stats
   });
 });
@@ -2040,6 +2171,118 @@ app.post('/api/social/share-recipe', authenticateUser, (req, res) => {
   res.json(shared);
 });
 
+// ------------------- COMMUNITY FEED (POSTS & REPLIES) -------------------
+function resolveOptionalViewerId(req: Request): string | undefined {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice(7).trim()
+    : (req.query.token as string | undefined);
+  if (!token) return undefined;
+  const emailHint =
+    typeof req.headers['x-user-email'] === 'string' ? req.headers['x-user-email'] : undefined;
+  const user = findUserById(token, emailHint);
+  return user?.id;
+}
+
+app.get('/api/community/posts', (req, res) => {
+  const viewerId = resolveOptionalViewerId(req);
+  const rawFilter = String(req.query.filter || 'all').toLowerCase();
+  const filter: 'all' | 'following' | 'mine' =
+    rawFilter === 'following' ? 'following' : rawFilter === 'mine' ? 'mine' : 'all';
+  const posts = getCommunityPosts(viewerId, filter);
+  res.json({ posts });
+});
+
+app.get('/api/community/posts/:id', (req, res) => {
+  const viewerId = resolveOptionalViewerId(req);
+  const detail = getCommunityPostDetail(req.params.id, viewerId);
+  if (!detail.post) {
+    res.status(404).json({ error: 'Post not found.' });
+    return;
+  }
+  res.json(detail);
+});
+
+app.post('/api/community/posts', authenticateUser, (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (!user || user.isGuest) {
+      res.status(403).json({ error: 'Create an account to post.' });
+      return;
+    }
+    const { text, imageUrl } = req.body || {};
+    const post = createCommunityPost(user.id, String(text || ''), imageUrl ? String(imageUrl) : undefined);
+    res.json({ post });
+  } catch (err: any) {
+    res.status(err.status || 400).json({ error: err.message || 'Could not publish post.' });
+  }
+});
+
+app.post('/api/community/posts/:id/like', authenticateUser, (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const result = toggleLikeCommunityPost(userId, req.params.id);
+    res.json(result);
+  } catch (err: any) {
+    res.status(err.status || 400).json({ error: err.message || 'Could not update like.' });
+  }
+});
+
+app.post('/api/community/posts/:id/replies', authenticateUser, (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (!user || user.isGuest) {
+      res.status(403).json({ error: 'Create an account to post.' });
+      return;
+    }
+    const { text } = req.body || {};
+    const reply = addCommunityReply(user.id, req.params.id, String(text || ''));
+    res.json({ reply });
+  } catch (err: any) {
+    res.status(err.status || 400).json({ error: err.message || 'Could not post reply.' });
+  }
+});
+
+app.post('/api/community/posts/:id/report', authenticateUser, (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const report = reportCommunityPost(userId, req.params.id, req.body?.reason);
+    res.json({ reported: true, report });
+  } catch (err: any) {
+    res.status(err.status || 400).json({ error: err.message || 'Could not report post.' });
+  }
+});
+
+app.post('/api/community/block', authenticateUser, (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const target = String(req.body?.targetUserId || req.body?.username || '').trim();
+    if (!target) {
+      res.status(400).json({ error: 'Target user is required.' });
+      return;
+    }
+    const result = blockCommunityUser(userId, target);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not block user.' });
+  }
+});
+
+app.post('/api/community/follow', authenticateUser, (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const username = String(req.body?.username || '').trim();
+    if (!username) {
+      res.status(400).json({ error: 'Username is required.' });
+      return;
+    }
+    const result = toggleFollowCommunityUser(userId, username);
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not update follow status.' });
+  }
+});
+
 // ------------------- GEMINI AI ENDPOINTS -------------------
 app.post('/api/ai/voice-log', authenticateUser, async (req, res) => {
   try {
@@ -2333,7 +2576,7 @@ app.post('/api/developer-chat', authenticateUser, (req, res) => {
     addChatMessage(
       userId,
       'developer',
-      "Thanks for reaching out! I'm the developer behind Caloriq. Your feedback and logs are saved directly to our system. If you spotted an issue with food parsing or want to suggest a feature, let me know!"
+      "Thanks for reaching out! I'm the developer behind Calory. Your feedback and logs are saved directly to our system. If you spotted an issue with food parsing or want to suggest a feature, let me know!"
     );
   }, 1000);
 
@@ -2349,6 +2592,18 @@ app.get('/api/profile', authenticateUser, (req, res) => {
 });
 
 app.put('/api/profile', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const profile = updateProfile(userId, req.body);
+  res.json(profile);
+});
+
+app.post('/api/profile', authenticateUser, (req, res) => {
+  const userId = (req as any).userId;
+  const profile = updateProfile(userId, req.body);
+  res.json(profile);
+});
+
+app.patch('/api/profile', authenticateUser, (req, res) => {
   const userId = (req as any).userId;
   const profile = updateProfile(userId, req.body);
   res.json(profile);

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, Suspense } from 'react';
+import { Lock, Shield, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { AppProvider, useApp } from './context/AppContext.js';
 import { DevBanner } from './components/DevBanner.js';
 import { Navigation, TabType } from './components/Navigation.js';
@@ -9,7 +10,14 @@ import { WeeklyRecapModal } from './components/WeeklyRecapModal.js';
 import { LegalFooter } from './components/LegalFooter.js';
 import { DesktopScrollbar } from './components/DesktopScrollbar.js';
 import { ErrorBoundary } from './components/ErrorBoundary.js';
-import { RouteErrorBoundary } from './components/PublicInfoPages.js';
+import {
+  RouteErrorBoundary,
+  CookiesPolicyPage,
+  FaqPage,
+  ContactPage,
+  PressKitPage,
+  NotFoundPage
+} from './components/PublicInfoPages.js';
 import {
   GuestLockSheet,
   GuestExpiredOverlay,
@@ -17,52 +25,18 @@ import {
   KeyboardShortcutsModal,
   MilestoneConfettiModal
 } from './components/GuestModals.js';
+import { FitnessTab } from './components/FitnessTab.js';
+import { CommunityTab } from './components/CommunityTab.js';
+import { PlanTab } from './components/PlanTab.js';
+import { ReportsTab } from './components/ReportsTab.js';
+import { MeTab } from './components/MeTab.js';
+import { AddFoodModal } from './components/AddFoodModal.js';
+import { DescriptionPage } from './components/DescriptionPage.js';
+import { PrivacyPolicyPage } from './components/PrivacyPolicyPage.js';
+import { TermsOfServicePage } from './components/TermsOfServicePage.js';
+import { AdminSetupPage } from './components/AdminSetupPage.js';
 import { api } from './services/api.js';
 import { trackPageview } from './utils/analytics.js';
-
-// #11 & #12 Lazy-load routes & split AI log bundle so Diary loads first
-const FitnessTab = React.lazy(() =>
-  import('./components/FitnessTab.js').then((m) => ({ default: m.FitnessTab }))
-);
-const PlanTab = React.lazy(() =>
-  import('./components/PlanTab.js').then((m) => ({ default: m.PlanTab }))
-);
-const ReportsTab = React.lazy(() =>
-  import('./components/ReportsTab.js').then((m) => ({ default: m.ReportsTab }))
-);
-const MeTab = React.lazy(() =>
-  import('./components/MeTab.js').then((m) => ({ default: m.MeTab }))
-);
-const AddFoodModal = React.lazy(() =>
-  import('./components/AddFoodModal.js').then((m) => ({ default: m.AddFoodModal }))
-);
-const DescriptionPage = React.lazy(() =>
-  import('./components/DescriptionPage.js').then((m) => ({ default: m.DescriptionPage }))
-);
-const PrivacyPolicyPage = React.lazy(() =>
-  import('./components/PrivacyPolicyPage.js').then((m) => ({ default: m.PrivacyPolicyPage }))
-);
-const TermsOfServicePage = React.lazy(() =>
-  import('./components/TermsOfServicePage.js').then((m) => ({ default: m.TermsOfServicePage }))
-);
-const AdminSetupPage = React.lazy(() =>
-  import('./components/AdminSetupPage.js').then((m) => ({ default: m.AdminSetupPage }))
-);
-const CookiesPolicyPage = React.lazy(() =>
-  import('./components/PublicInfoPages.js').then((m) => ({ default: m.CookiesPolicyPage }))
-);
-const FaqPage = React.lazy(() =>
-  import('./components/PublicInfoPages.js').then((m) => ({ default: m.FaqPage }))
-);
-const ContactPage = React.lazy(() =>
-  import('./components/PublicInfoPages.js').then((m) => ({ default: m.ContactPage }))
-);
-const PressKitPage = React.lazy(() =>
-  import('./components/PublicInfoPages.js').then((m) => ({ default: m.PressKitPage }))
-);
-const NotFoundPage = React.lazy(() =>
-  import('./components/PublicInfoPages.js').then((m) => ({ default: m.NotFoundPage }))
-);
 
 // #17 Skeleton loader for lazy routes
 const RouteSkeleton: React.FC = () => (
@@ -298,6 +272,13 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
             </Suspense>
           </RouteErrorBoundary>
         )}
+        {currentTab === 'community' && (
+          <RouteErrorBoundary routeName="Community">
+            <Suspense fallback={<RouteSkeleton />}>
+              <CommunityTab />
+            </Suspense>
+          </RouteErrorBoundary>
+        )}
         {currentTab === 'plan' && (
           <RouteErrorBoundary routeName="Plan">
             <Suspense fallback={<RouteSkeleton />}>
@@ -474,6 +455,57 @@ export default function App() {
   // #83 Maintenance mode check
   const [maintenanceInfo, setMaintenanceInfo] = useState<{ active: boolean; message: string } | null>(null);
 
+  // One-time dev account setup & device lock state
+  const [showDevSetupScreen, setShowDevSetupScreen] = useState(false);
+  const [devSetupPassword, setDevSetupPassword] = useState('');
+  const [showDevPassword, setShowDevPassword] = useState(false);
+  const [devSetupLoading, setDevSetupLoading] = useState(false);
+  const [devSetupError, setDevSetupError] = useState('');
+  const [devSessionKey, setDevSessionKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.checkDevDeviceOnLoad().then((res) => {
+      if (cancelled) return;
+      if (res.autoSignedIn) {
+        setDevSessionKey((k) => k + 1);
+        if (window.location.pathname === '/') {
+          setActiveView('app');
+          setPathname('/dashboard');
+          window.history.replaceState({}, '', '/dashboard');
+        }
+      } else if (res.needsOneTimeSetup) {
+        setShowDevSetupScreen(true);
+      }
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleCompleteDevSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!devSetupPassword) {
+      setDevSetupError('Please enter a password.');
+      return;
+    }
+    setDevSetupError('');
+    setDevSetupLoading(true);
+    try {
+      await api.setupDevAccount(devSetupPassword);
+      setDevSetupPassword('');
+      setShowDevSetupScreen(false);
+      setDevSessionKey((k) => k + 1);
+      setActiveView('app');
+      setPathname('/dashboard');
+      window.history.replaceState({}, '', '/dashboard');
+    } catch (err: any) {
+      setDevSetupError(err?.message || 'Could not set up dev account.');
+    } finally {
+      setDevSetupLoading(false);
+    }
+  };
+
   // #59 & #62 Capture global errors and console.error ring buffer for bug reports
   useEffect(() => {
     const w = window as any;
@@ -556,7 +588,7 @@ export default function App() {
         if (data?.maintenanceMode) {
           setMaintenanceInfo({
             active: true,
-            message: data.maintenanceMessage || 'Caloriq is undergoing scheduled maintenance.'
+            message: data.maintenanceMessage || 'Calory is undergoing scheduled maintenance.'
           });
         }
       })
@@ -754,7 +786,7 @@ export default function App() {
       )}
 
       {activeView === 'app' && (
-        <AppProvider>
+        <AppProvider key={devSessionKey}>
           <MainAppContent
             onOpenDescription={handleOpenDescription}
             onOpenPrivacy={handleOpenPrivacy}
@@ -769,6 +801,77 @@ export default function App() {
           />
           <DesktopScrollbar />
         </AppProvider>
+      )}
+
+      {/* One-time Dev Account Setup Screen (shown only on this device before first lock) */}
+      {showDevSetupScreen && (
+        <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 shrink-0">
+                <Shield className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="text-base font-bold text-zinc-100">
+                  Set up your dev account
+                </h2>
+                <p className="text-xs text-zinc-400 font-mono">
+                  Username: <span className="text-teal-400 font-semibold">housefly</span>
+                </p>
+              </div>
+            </div>
+
+            {devSetupError && (
+              <div role="alert" className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
+                {devSetupError}
+              </div>
+            )}
+
+            <form onSubmit={handleCompleteDevSetup} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Password
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+                  <input
+                    type={showDevPassword ? 'text' : 'password'}
+                    value={devSetupPassword}
+                    onChange={(e) => setDevSetupPassword(e.target.value)}
+                    placeholder="Choose a password"
+                    autoComplete="new-password"
+                    autoFocus
+                    required
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowDevPassword((prev) => !prev)}
+                    aria-label={showDevPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-200"
+                  >
+                    {showDevPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={devSetupLoading}
+                className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
+              >
+                {devSetupLoading ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Locking to this device...
+                  </>
+                ) : (
+                  'Lock to this device'
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* #24 Service Worker Update Toast */}
@@ -796,11 +899,11 @@ export default function App() {
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 z-[80] max-w-md w-[94%] bg-zinc-900 border border-teal-500/40 rounded-2xl p-4 shadow-2xl space-y-2.5 no-print">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h4 className="text-xs font-bold text-zinc-100">Install Caloriq to Home Screen</h4>
+              <h4 className="text-xs font-bold text-zinc-100">Install Calory to Home Screen</h4>
               <p className="text-[11px] text-zinc-300 mt-0.5 leading-relaxed">
                 {isIosSafari
                   ? 'On iOS Safari: tap the Share button at the bottom of your screen, then choose "Add to Home Screen".'
-                  : 'Install Caloriq for instant offline logging and a clean full-screen experience.'}
+                  : 'Install Calory for instant offline logging and a clean full-screen experience.'}
               </p>
             </div>
             <button
@@ -832,7 +935,7 @@ export default function App() {
           className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[85] max-w-lg w-[94%] bg-zinc-900/95 backdrop-blur-md border border-zinc-800 rounded-2xl p-3.5 shadow-2xl flex flex-col sm:flex-row items-center justify-between gap-3 no-print"
         >
           <p className="text-xs text-zinc-300 leading-relaxed text-center sm:text-left">
-            Caloriq uses local storage to keep you signed in and remember your preferences. No tracking cookies.{' '}
+            Calory uses local storage to keep you signed in and remember your preferences. No tracking cookies.{' '}
             <a
               href="/cookies"
               onClick={(e) => {

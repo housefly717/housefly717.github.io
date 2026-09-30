@@ -31,6 +31,7 @@ interface AppContextType {
   userId: string;
   userEmail?: string;
   isGuest: boolean;
+  isDev: boolean;
   guestRemainingMs: number;
   isGuestExpired: boolean;
   guestAiUsed: boolean;
@@ -158,6 +159,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [userId, setUserId] = useState<string>('');
   const [userEmail, setUserEmail] = useState<string | undefined>(undefined);
   const [isGuest, setIsGuest] = useState<boolean>(true);
+  const [isDev, setIsDev] = useState<boolean>(false);
   const [activeDate, setActiveDateState] = useState<string>(getTodayStr());
 
   // Guest 24-hour clock & 1-call AI limit
@@ -455,6 +457,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setUserId(session.userId);
           setUserEmail(session.email);
           setIsGuest(session.isGuest);
+          setIsDev(Boolean(session.isDev || session.profile?.isDev));
           if (session.profile) setProfile(session.profile);
           if (session.stats) setStats(session.stats);
         });
@@ -557,6 +560,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setUserId(session.userId);
         setUserEmail(session.email);
         setIsGuest(session.isGuest);
+        setIsDev(Boolean(session.isDev || session.profile?.isDev));
         if (session.profile) setProfile(session.profile);
         if (session.stats) setStats(session.stats);
 
@@ -860,12 +864,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUserId(session.userId);
     setUserEmail(session.email);
     setIsGuest(session.isGuest);
+    setIsDev(Boolean(session.isDev || session.profile?.isDev));
     setIsGuestLockOpen(false);
     if (session.profile) {
       setProfile(prev =>
         prev.signupComplete && !session.profile.signupComplete
-          ? { ...session.profile, ...prev, signupComplete: true }
-          : { ...prev, ...session.profile }
+          ? { ...session.profile, ...prev, signupComplete: true, isDev: Boolean(session.isDev || session.profile?.isDev) }
+          : { ...prev, ...session.profile, isDev: Boolean(session.isDev || session.profile?.isDev) }
       );
     }
     if (session.stats) setStats(session.stats);
@@ -894,6 +899,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         userId,
         userEmail,
         isGuest,
+        isDev,
         guestRemainingMs,
         isGuestExpired: isGuest && guestRemainingMs <= 0,
         guestAiUsed,

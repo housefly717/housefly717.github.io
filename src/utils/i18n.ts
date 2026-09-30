@@ -84,13 +84,13 @@ export const STRINGS: Record<SupportedLocale, Record<TranslationKey, string>> = 
     'me.signOutAll': 'Sign out all devices',
     'me.changeEmail': 'Change email address',
     'me.changePassword': 'Change password',
-    'me.version': 'Caloriq v1.0.0',
+    'me.version': 'Calory v1.0.0',
     'error.404Title': "This page doesn't exist.",
     'error.404Body': "This page doesn't exist. Back to your diary.",
     'error.500Body': "Something's wrong on our end. Try again in a minute.",
-    'pwa.installTitle': 'Install Caloriq',
-    'pwa.installBody': 'Add Caloriq to your home screen for instant offline access and full-screen tracking.',
-    'pwa.installBtn': 'Install Caloriq',
+    'pwa.installTitle': 'Install Calory',
+    'pwa.installBody': 'Add Calory to your home screen for instant offline access and full-screen tracking.',
+    'pwa.installBtn': 'Install Calory',
     'cookie.bannerText': 'We use essential local storage for sign-in and optional privacy-friendly analytics (no tracking cookies or health data).',
     'cookie.accept': 'Accept',
     'cookie.decline': 'Decline',
@@ -127,13 +127,13 @@ export const STRINGS: Record<SupportedLocale, Record<TranslationKey, string>> = 
     'me.signOutAll': 'Cerrar sesión en todos los dispositivos',
     'me.changeEmail': 'Cambiar correo electrónico',
     'me.changePassword': 'Cambiar contraseña',
-    'me.version': 'Caloriq v1.0.0',
+    'me.version': 'Calory v1.0.0',
     'error.404Title': 'Esta página no existe.',
     'error.404Body': 'Esta página no existe. Volver a tu diario.',
     'error.500Body': 'Algo salió mal de nuestro lado. Inténtalo de nuevo en un minuto.',
-    'pwa.installTitle': 'Instalar Caloriq',
-    'pwa.installBody': 'Añade Caloriq a tu pantalla de inicio para acceso sin conexión y pantalla completa.',
-    'pwa.installBtn': 'Instalar Caloriq',
+    'pwa.installTitle': 'Instalar Calory',
+    'pwa.installBody': 'Añade Calory a tu pantalla de inicio para acceso sin conexión y pantalla completa.',
+    'pwa.installBtn': 'Instalar Calory',
     'cookie.bannerText': 'Usamos almacenamiento local esencial para iniciar sesión y analíticas privadas opcionales (sin cookies de rastreo ni datos de salud).',
     'cookie.accept': 'Aceptar',
     'cookie.decline': 'Rechazar',
@@ -170,13 +170,13 @@ export const STRINGS: Record<SupportedLocale, Record<TranslationKey, string>> = 
     'me.signOutAll': 'Se déconnecter de tous les appareils',
     'me.changeEmail': "Changer d'adresse e-mail",
     'me.changePassword': 'Changer le mot de passe',
-    'me.version': 'Caloriq v1.0.0',
+    'me.version': 'Calory v1.0.0',
     'error.404Title': "Cette page n'existe pas.",
     'error.404Body': "Cette page n'existe pas. Retour à votre journal.",
     'error.500Body': 'Un problème est survenu de notre côté. Réessayez dans une minute.',
-    'pwa.installTitle': 'Installer Caloriq',
-    'pwa.installBody': "Ajoutez Caloriq à votre écran d'accueil pour un suivi hors ligne en plein écran.",
-    'pwa.installBtn': 'Installer Caloriq',
+    'pwa.installTitle': 'Installer Calory',
+    'pwa.installBody': "Ajoutez Calory à votre écran d'accueil pour un suivi hors ligne en plein écran.",
+    'pwa.installBtn': 'Installer Calory',
     'cookie.bannerText': 'Nous utilisons le stockage local essentiel pour la connexion et des analyses respectueuses de la vie privée (sans cookies de suivi).',
     'cookie.accept': 'Accepter',
     'cookie.decline': 'Refuser',
@@ -213,13 +213,13 @@ export const STRINGS: Record<SupportedLocale, Record<TranslationKey, string>> = 
     'me.signOutAll': 'Auf allen Geräten abmelden',
     'me.changeEmail': 'E-Mail-Adresse ändern',
     'me.changePassword': 'Passwort ändern',
-    'me.version': 'Caloriq v1.0.0',
+    'me.version': 'Calory v1.0.0',
     'error.404Title': 'Diese Seite existiert nicht.',
     'error.404Body': 'Diese Seite existiert nicht. Zurück zu deinem Tagebuch.',
     'error.500Body': 'Auf unserer Seite ist etwas schiefgelaufen. Versuche es in einer Minute erneut.',
-    'pwa.installTitle': 'Caloriq installieren',
-    'pwa.installBody': 'Füge Caloriq zu deinem Startbildschirm hinzu für Offline-Nutzung im Vollbildmodus.',
-    'pwa.installBtn': 'Caloriq installieren',
+    'pwa.installTitle': 'Calory installieren',
+    'pwa.installBody': 'Füge Calory zu deinem Startbildschirm hinzu für Offline-Nutzung im Vollbildmodus.',
+    'pwa.installBtn': 'Calory installieren',
     'cookie.bannerText': 'Wir verwenden lokalen Speicher für die Anmeldung und optionale datenschutzfreundliche Analysen (keine Tracking-Cookies).',
     'cookie.accept': 'Akzeptieren',
     'cookie.decline': 'Ablehnen',
@@ -265,20 +265,22 @@ export function syncHtmlLangAttribute(lang?: SupportedLocale): SupportedLocale {
   return locale;
 }
 
-export function t(key: TranslationKey | 'diary' | 'fitness' | 'plan' | 'reports' | 'me', locale?: SupportedLocale): string {
+export function t(key: TranslationKey | 'diary' | 'fitness' | 'community' | 'plan' | 'reports' | 'me', locale?: SupportedLocale): string {
   const active = locale || detectDeviceLocale();
   const mappedKey: TranslationKey =
     key === 'diary'
       ? 'nav.diary'
       : key === 'fitness'
         ? 'diary.exercise'
-        : key === 'plan'
-          ? 'nav.plan'
-          : key === 'reports'
-            ? 'nav.reports'
-            : key === 'me'
-              ? 'nav.me'
-              : key;
+        : key === 'community'
+          ? 'nav.community'
+          : key === 'plan'
+            ? 'nav.plan'
+            : key === 'reports'
+              ? 'nav.reports'
+              : key === 'me'
+                ? 'nav.me'
+                : key;
   return STRINGS[active]?.[mappedKey] || STRINGS.en[mappedKey] || String(key);
 }
 

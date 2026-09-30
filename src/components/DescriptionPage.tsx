@@ -54,7 +54,7 @@ const CATALOG = [
     name: 'Foundations',
     tagline: 'Eight weeks of measured fat loss',
     description:
-      'The core Caloriq program for losing weight without guessing. You set your targets from your own measurements, log against them, and the weekly report shows whether the plan is working. Nothing is banned, and nothing is promised that your own data cannot show.',
+      'The core Calory program for losing weight without guessing. You set your targets from your own measurements, log against them, and the weekly report shows whether the plan is working. Nothing is banned, and nothing is promised that your own data cannot show.',
     category: 'program',
     goal: 'lose',
     durationWeeks: 8,
@@ -160,7 +160,7 @@ const CAPABILITIES = [
   {
     icon: MessagesSquare,
     title: 'Chat with the developer',
-    body: 'Suggestions, bugs and requests go straight to the person who builds Caloriq, not into a support queue.'
+    body: 'Suggestions, bugs and requests go straight to the person who builds Calory, not into a support queue.'
   },
   {
     icon: Users,
@@ -183,7 +183,7 @@ const STANDARDS = [
   {
     icon: ShieldCheck,
     title: 'No claims we cannot show you',
-    body: 'Caloriq is a tracking tool. We do not diagnose, treat or promise an outcome, and we do not describe anything in the app as clinical.'
+    body: 'Calory is a tracking tool. We do not diagnose, treat or promise an outcome, and we do not describe anything in the app as clinical.'
   },
   {
     icon: Info,
@@ -209,9 +209,9 @@ const FAQ = [
       'Nothing. The diary, calorie ring, macronutrients, water tracking, weekly reporting, the BMR calculator and the community are free, and every program and guide in the catalog is free too. There is no card to enter and nothing that renews.'
   },
   {
-    question: 'Is Caloriq medical treatment?',
+    question: 'Is Calory medical treatment?',
     answer:
-      'It is not. Caloriq is a calorie and macronutrient tracker with a target calculated from your own body. It does not diagnose or treat anything, and it is not a substitute for advice from your doctor.'
+      'It is not. Calory is a calorie and macronutrient tracker with a target calculated from your own body. It does not diagnose or treat anything, and it is not a substitute for advice from your doctor.'
   },
   {
     question: 'Who sets my targets?',
@@ -225,7 +225,7 @@ const FAQ = [
   }
 ];
 
-export const DescriptionPage: React.FC<DescriptionPageProps> = ({
+export function DescriptionPage({
   onOpenApp,
   onOpenPrivacy,
   onOpenTerms,
@@ -233,10 +233,10 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
   onOpenFaq,
   onOpenContact,
   onOpenPress
-}) => {
+}: DescriptionPageProps) {
   const [selectedGoal, setSelectedGoal] = useState<string>('all');
   const [openFaq, setOpenFaq] = useState<string | null>(null);
-  const [isLoadingDemo, setIsLoadingDemo] = useState(false);
+  const [isLoadingDemo, setIsLoadingDemo] = useState<boolean>(false);
 
   const filteredCatalog = CATALOG.filter((item) => {
     if (selectedGoal === 'all') return true;
@@ -271,7 +271,7 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
               C
             </span>
             <span className="font-display text-xl font-semibold tracking-tight text-zinc-100">
-              Caloriq
+              Calory
             </span>
           </div>
 
@@ -759,7 +759,7 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
                 Asked before joining
               </h2>
               <p className="mt-4 text-sm leading-relaxed text-zinc-400">
-                Clear answers about cost, safety, target calculation, and who builds Caloriq.
+                Clear answers about cost, safety, target calculation, and who builds Calory.
               </p>
             </div>
 
@@ -812,7 +812,7 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
                 onClick={() => onOpenApp('guest')}
                 className="flex h-12 items-center gap-2 rounded-xl bg-teal-500 px-6 font-semibold text-zinc-950 shadow-lg shadow-teal-500/25 transition-all hover:bg-teal-400 active:scale-95"
               >
-                <span>Open Caloriq Tracker</span>
+                <span>Open Calory Tracker</span>
                 <ArrowRight className="size-4" />
               </button>
             </div>
@@ -826,7 +826,7 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
               <span className="flex size-6 items-center justify-center rounded-full border border-teal-500/30 bg-teal-500/10 text-[10px] font-semibold text-teal-400">
                 C
               </span>
-              <span className="text-zinc-300">Caloriq — calorie and macro tracking.</span>
+              <span className="text-zinc-300">&copy; {new Date().getFullYear()} Calory — calorie and macro tracking.</span>
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-zinc-400">
@@ -912,13 +912,13 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
 
           <div className="space-y-1.5 text-zinc-400">
             <p className="leading-relaxed">
-              Caloriq provides weight-management tracking tools and is not a medical provider. Speak to your doctor before changing how you eat or train.
+              Calory provides weight-management tracking tools and is not a medical provider. Speak to your doctor before changing how you eat or train.
             </p>
             <p className="leading-relaxed">
-              If you&apos;re under 18, use Caloriq with a parent or guardian.
+              If you&apos;re under 18, use Calory with a parent or guardian.
             </p>
             <p className="leading-relaxed">
-              Caloriq uses local storage to keep you signed in and remember your theme. It does not use tracking cookies. See our{' '}
+              Calory uses local storage to keep you signed in and remember your theme. It does not use tracking cookies. See our{' '}
               <a
                 href="/privacy"
                 onClick={(e) => {
@@ -938,4 +938,4 @@ export const DescriptionPage: React.FC<DescriptionPageProps> = ({
       </div>
     </div>
   );
-};
+}

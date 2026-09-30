@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Mail, Lock, ArrowRight, ArrowLeft, X, RefreshCw, Shield, LogOut, Check, Eye, EyeOff } from 'lucide-react';
+import { Mail, Lock, User, ArrowRight, ArrowLeft, X, RefreshCw, Shield, LogOut, Check, Eye, EyeOff } from 'lucide-react';
 import { api } from '../services/api.js';
 import { trackEvent } from '../utils/analytics.js';
 import { useApp } from '../context/AppContext.js';
@@ -14,12 +14,12 @@ import {
 import {
   useDebounce,
   validateEmail,
+  validateUsername,
   validateAge,
   validateHeightCm,
   validateHeightImperial,
   validateWeight,
-  getPasswordStrength,
-  validatePasswordRules
+  getPasswordStrength
 } from '../utils/validation.js';
 import type { UserProfile } from '../types/index.js';
 
@@ -29,8 +29,6 @@ interface AuthModalProps {
 
 type SignupFlowStage =
   | 'credentials'
-  | 'verify_code'
-  | 'verify_login_device'
   | 'forgot_password'
   | 'reset_password'
   | 'intro'
@@ -86,16 +84,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   } = useApp();
 
   const [mode, setMode] = useState<'signup' | 'login'>('signup');
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [honeypot, setHoneypot] = useState('');
-  const [confirmedAgeGate, setConfirmedAgeGate] = useState(false);
-  const [isGoogleInputOpen, setIsGoogleInputOpen] = useState(false);
-  const [googleEmailInput, setGoogleEmailInput] = useState('');
-  const [referralCode, setReferralCode] = useState('');
   const [draft, setDraft] = useState<SignupDraft>(EMPTY_DRAFT);
-  const debouncedEmail = useDebounce(email, 400);
+  const debouncedUsername = useDebounce(username, 400);
   const debouncedDraft = useDebounce(draft, 400);
   const [rememberMe, setRememberMe] = useState<boolean>(() => {
     const saved = localStorage.getItem('caloriq_remember_me');
@@ -104,14 +101,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Email verification & password reset state
+  // Password reset state
   const [verificationCode, setVerificationCode] = useState('');
   const [resendCooldown, setResendCooldown] = useState(0);
-  const [isCodeLocked, setIsCodeLocked] = useState(false);
   const [resetToken, setResetToken] = useState('');
   const [newResetPassword, setNewResetPassword] = useState('');
   const [resetSentSuccess, setResetSentSuccess] = useState(false);
-  const [accountUnlockTime, setAccountUnlockTime] = useState<string | null>(null);
 
   // Multi-step signup state
   const [flowStage, setFlowStage] = useState<SignupFlowStage>('credentials');
@@ -120,7 +115,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const [showClosePrompt, setShowClosePrompt] = useState(false);
   const [saveButtonPhase, setSaveButtonPhase] = useState<'idle' | 'saving' | 'saved'>('idle');
 
-  // 30-second countdown timer for Resend button
+  // 30-second countdown timer for Resend button (password reset)
   useEffect(() => {
     if (resendCooldown <= 0) return;
     const timer = setInterval(() => {
@@ -130,9 +125,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   }, [resendCooldown]);
 
   const draftStorageKey = useMemo(() => {
-    const keyId = userId || email.trim().toLowerCase() || 'pending';
+    const keyId = userId || username.trim().toLowerCase() || 'pending';
     return `caloriq_signup_draft_${keyId}`;
-  }, [userId, email]);
+  }, [userId, username]);
 
   // Load saved draft if user is signed in, or check URL for password reset link
   useEffect(() => {
@@ -173,7 +168,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
           setDraft(merged);
           setFlowStage(
             merged.flowStage === 'credentials' ||
-              merged.flowStage === 'verify_code' ||
               merged.flowStage === 'forgot_password' ||
               merged.flowStage === 'reset_password'
               ? 'intro'
@@ -301,23 +295,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanEmail = email.trim();
-    const emailErr = validateEmail(cleanEmail);
-    if (emailErr) {
-      setErrorMsg(emailErr);
-      return;
-    }
+    const cleanUsername = username.trim();
+
     if (mode === 'signup') {
-      if (!password || password.length < 6) {
-        setErrorMsg('Password must be at least 6 characters.');
+      const usernameErr = validateUsername(cleanUsername);
+      if (usernameErr) {
+        setErrorMsg(usernameErr);
         return;
       }
-      if (!confirmedAgeGate) {
-        setErrorMsg('Please confirm that you are 13 years of age or older.');
+      if (!password) {
+        setErrorMsg('Please enter a password.');
         return;
       }
-      if (getPasswordStrength(password).score < 2) {
-        setErrorMsg('Password must be at least Fair strength.');
+      if (password !== confirmPassword) {
+        setErrorMsg('Passwords do not match.');
+        return;
+      }
+    } else {
+      if (!cleanUsername || !password) {
+        setErrorMsg('Wrong username or password.');
         return;
       }
     }
@@ -328,133 +324,41 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
     try {
       if (mode === 'signup') {
-        const res = await api.sendSignupVerificationCode(cleanEmail, password, honeypot, false);
-        setVerificationCode('');
-        setIsCodeLocked(false);
-        setResendCooldown(res.resendCooldownSeconds || 30);
-        setFlowStage('verify_code');
-        return;
-      } else {
-        const loginRes = await api.login(cleanEmail, password, rememberMe);
-        if (loginRes.requiresVerification) {
-          setVerificationCode('');
-          setIsCodeLocked(false);
-          setResendCooldown(loginRes.resendCooldownSeconds || 30);
-          setFlowStage('verify_login_device');
-          return;
+        const signupRes = await api.signup(cleanUsername, password, rememberMe, confirmPassword, honeypot);
+        if (signupRes?.userId) {
+          try {
+            localStorage.setItem('caloriq_signup_complete', 'true');
+            localStorage.setItem(`caloriq_signup_complete_${signupRes.userId}`, 'true');
+          } catch {
+            // ignore
+          }
         }
+        trackEvent('signup');
+      } else {
+        await api.login(cleanUsername, password, rememberMe);
       }
 
       await onAuthSuccess();
 
-      setEmail('');
+      setUsername('');
       setPassword('');
-      setReferralCode('');
+      setConfirmPassword('');
       setErrorMsg('');
 
       closeAuthModal();
       if (typeof window !== 'undefined') {
         window.history.pushState({}, '', '/dashboard');
+        window.dispatchEvent(new PopStateEvent('popstate'));
       }
       if (onAuthComplete) {
         onAuthComplete();
       }
     } catch (err: any) {
       setErrorMsg(
-        err.message ||
-          (mode === 'signup'
-            ? "Couldn't send the code. Try again in a minute."
-            : 'Invalid email or password.')
+        mode === 'login'
+          ? 'Wrong username or password.'
+          : err.message || 'Failed to create account.'
       );
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleVerifySignupCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanCode = verificationCode.trim();
-    if (!cleanCode || cleanCode.length !== 6) {
-      setErrorMsg("That code isn't right. Check your email and try again.");
-      return;
-    }
-
-    setErrorMsg('');
-    setIsLoading(true);
-    try {
-      if (flowStage === 'verify_login_device') {
-        await api.verifyLoginDeviceCode(email.trim(), password, cleanCode, rememberMe);
-        await onAuthSuccess();
-
-        setEmail('');
-        setPassword('');
-        setVerificationCode('');
-        setReferralCode('');
-        setErrorMsg('');
-
-        closeAuthModal();
-        if (typeof window !== 'undefined') {
-          window.history.pushState({}, '', '/dashboard');
-          window.dispatchEvent(new PopStateEvent('popstate'));
-        }
-        if (onAuthComplete) {
-          onAuthComplete();
-        }
-        return;
-      }
-
-      await api.verifySignupCode(email.trim(), password, cleanCode, rememberMe);
-      await onAuthSuccess();
-
-      if (referralCode.trim()) {
-        const cleanRef = referralCode.trim().toUpperCase();
-        const used = profile.usedReferrals || [];
-        if (!used.includes(cleanRef)) {
-          await updateUserProfile({
-            xp: (profile.xp || 0) + 500,
-            usedReferrals: [...used, cleanRef]
-          });
-        }
-      }
-
-      setEmail('');
-      setPassword('');
-      setVerificationCode('');
-      setReferralCode('');
-      setErrorMsg('');
-
-      const freshDraft: SignupDraft = { ...EMPTY_DRAFT, flowStage: 'intro', questionStep: 1 };
-      saveDraftState(freshDraft, 'intro', 1);
-      setFlowStage('intro');
-      setQuestionStep(1);
-    } catch (err: any) {
-      const msg = err.message || "That code isn't right. Check your email and try again.";
-      if (err.reason === 'expired' || msg.toLowerCase().includes('expired')) {
-        setResendCooldown(0);
-      }
-      setErrorMsg(msg);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleResendVerificationCode = async () => {
-    if (isLoading) return;
-    setErrorMsg('');
-    setIsLoading(true);
-    try {
-      const res =
-        flowStage === 'verify_login_device'
-          ? await api.sendLoginDeviceVerificationCode(email.trim(), true)
-          : await api.sendSignupVerificationCode(email.trim(), password, honeypot, true);
-      setVerificationCode('');
-      setIsCodeLocked(false);
-      setResendCooldown(res.resendCooldownSeconds || 30);
-    } catch (err: any) {
-      if (err.retryAfterSeconds) {
-        setResendCooldown(err.retryAfterSeconds);
-      }
-      setErrorMsg(err.message || "Couldn't send the code. Try again in a minute.");
     } finally {
       setIsLoading(false);
     }
@@ -478,7 +382,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       setResetSentSuccess(true);
       setFlowStage('reset_password');
     } catch (err: any) {
-      setErrorMsg(err.message || "Couldn't send the code. Try again in a minute.");
+      setErrorMsg(
+        err.message || 'Email sending is limited during testing. Use the developer account email to sign up.'
+      );
     } finally {
       setIsLoading(false);
     }
@@ -628,21 +534,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
     setSaveButtonPhase('saving');
     setErrorMsg('');
     try {
-      if (isGuest && email.trim() && password) {
+      if (isGuest && username.trim() && password) {
         try {
-          await api.signup(email.trim(), password, rememberMe);
+          await api.signup(username.trim(), password, rememberMe, confirmPassword || password, honeypot);
         } catch {
           // ignore if already signed up
         }
       }
 
+      const resolvedUserId = userId || api.getToken() || '';
       try {
         localStorage.setItem('caloriq_signup_complete', 'true');
         localStorage.setItem('caloriq_onboarding_complete_v1', 'true');
         localStorage.setItem('caloriq_onboarding_completed', 'true');
-        if (userId) {
-          localStorage.setItem(`caloriq_signup_complete_${userId}`, 'true');
-          localStorage.removeItem(`caloriq_signup_draft_${userId}`);
+        if (resolvedUserId) {
+          localStorage.setItem(`caloriq_signup_complete_${resolvedUserId}`, 'true');
+          localStorage.removeItem(`caloriq_signup_draft_${resolvedUserId}`);
         }
         localStorage.removeItem(draftStorageKey);
       } catch {
@@ -668,10 +575,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       });
 
       if (candidateProfile.currentWeightKg > 0) {
-        addWeightLog(candidateProfile.currentWeightKg).catch(() => {});
+        await addWeightLog(candidateProfile.currentWeightKg).catch(() => {});
       }
 
-      onAuthSuccess().catch(() => {});
+      await onAuthSuccess().catch(() => {});
 
       setSaveButtonPhase('saved');
       setShowClosePrompt(false);
@@ -690,7 +597,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
       if (onAuthComplete) {
         onAuthComplete();
       }
-    } catch {
+    } catch (err) {
+      console.error('[Calory] Save and start failed:', err);
       setErrorMsg("Couldn't save your profile. Try again.");
       setSaveButtonPhase('idle');
     } finally {
@@ -764,7 +672,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
             </div>
 
             <div className="space-y-3 text-xs text-zinc-300 leading-relaxed bg-zinc-950/80 border border-zinc-800 rounded-xl p-4">
-              <p>Caloriq needs a few details about your body to work.</p>
+              <p>Calory needs a few details about your body to work.</p>
               <p>
                 We use them for one thing: calculating your daily calorie target and how many calories you burn during exercise. That&apos;s the Mifflin-St Jeor formula — the standard way to work out how much energy your body needs at rest.
               </p>
@@ -894,7 +802,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                 )}
                 {draft.age !== '' && Number(draft.age) >= 13 && Number(draft.age) < 18 && (
                   <div className="p-2.5 bg-amber-950/40 border border-amber-800/50 rounded-xl text-xs text-amber-300">
-                    Use Caloriq with a parent or guardian.
+                    Use Calory with a parent or guardian.
                   </div>
                 )}
               </div>
@@ -1444,91 +1352,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
           </div>
         )}
 
-        {/* ==================== EMAIL VERIFICATION CODE SCREEN ==================== */}
-        {!isInSignupQuestionnaire &&
-          (flowStage === 'verify_code' || flowStage === 'verify_login_device') && (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between pr-6">
-              <button
-                type="button"
-                onClick={() => {
-                  setErrorMsg('');
-                  setFlowStage('credentials');
-                }}
-                className="text-zinc-400 hover:text-zinc-200 flex items-center gap-1 text-xs font-medium"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                Back
-              </button>
-              <span className="font-mono text-xs text-teal-400 font-semibold">Verify Email</span>
-            </div>
-
-            <div className="space-y-1">
-              <h3 className="text-base font-bold text-zinc-100">
-                Enter your verification code
-              </h3>
-              <p className="text-xs text-zinc-400">
-                We sent a 6-digit code to <span className="text-zinc-200 font-medium">{email}</span>. This code expires in 10 minutes.
-              </p>
-            </div>
-
-            {errorMsg && (
-              <div className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
-                {errorMsg}
-              </div>
-            )}
-
-            <form onSubmit={handleVerifySignupCode} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  6-digit code
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  value={verificationCode}
-                  onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  placeholder="000000"
-                  disabled={isLoading}
-                  autoFocus
-                  required
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-center text-lg font-mono tracking-[0.35em] text-zinc-100 placeholder:text-zinc-700 focus:outline-none focus:border-teal-500 disabled:opacity-50"
-                />
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading || verificationCode.trim().length !== 6}
-                className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
-              >
-                {isLoading ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Verifying...
-                  </>
-                ) : (
-                  <>
-                    Verify and continue
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </>
-                )}
-              </button>
-            </form>
-
-            <div className="text-center pt-1">
-              <button
-                type="button"
-                disabled={isLoading}
-                onClick={handleResendVerificationCode}
-                className="text-xs font-medium text-teal-400 hover:text-teal-300 disabled:text-zinc-500 disabled:no-underline underline transition-colors"
-              >
-                {resendCooldown > 0 ? `Resend (${resendCooldown}s)` : 'Resend'}
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* ==================== FORGOT PASSWORD SCREEN ==================== */}
         {!isInSignupQuestionnaire && flowStage === 'forgot_password' && (
           <div className="space-y-4">
@@ -1718,7 +1541,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                       setVerificationCode('');
                       setResendCooldown(res.resendCooldownSeconds || 30);
                     } catch (err: any) {
-                      setErrorMsg(err.message || "Couldn't send the code. Try again in a minute.");
+                      setErrorMsg(
+                        err.message ||
+                          'Email sending is limited during testing. Use the developer account email to sign up.'
+                      );
                     } finally {
                       setIsLoading(false);
                     }
@@ -1744,7 +1570,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                   {isGuest ? (mode === 'signup' ? 'Create Account' : 'Member Sign In') : 'Account Details'}
                 </h3>
                 <p className="text-xs text-zinc-400">
-                  {isGuest ? 'Your guest data will automatically transfer.' : `Signed in as ${userEmail}`}
+                  {isGuest
+                    ? 'Your guest data will automatically transfer.'
+                    : `Signed in as ${profile?.username || userEmail}`}
                 </p>
               </div>
             </div>
@@ -1752,8 +1580,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
             {!isGuest ? (
               <div className="space-y-4">
                 <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-300 space-y-1">
-                  <span className="text-[10px] font-mono uppercase text-zinc-500 block">Signed-in Email</span>
-                  <span className="font-semibold text-zinc-100">{userEmail}</span>
+                  <span className="text-[10px] font-mono uppercase text-zinc-500 block">Signed-in Username</span>
+                  <span className="font-semibold text-zinc-100">{profile?.username || userEmail}</span>
                 </div>
                 <button
                   type="button"
@@ -1801,36 +1629,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
                 <form onSubmit={handleCredentialsSubmit} className="space-y-4">
                   {/* #32 Hidden Honeypot Field */}
-                  <div className="sr-only" aria-hidden="true">
-                    <label htmlFor="caloriq-company-hp">Leave this field blank</label>
+                  <div
+                    className="caloriq-honeypot absolute -left-[9999px] h-0 w-0 opacity-0 overflow-hidden pointer-events-none"
+                    aria-hidden="true"
+                  >
+                    <label htmlFor="caloriq-company-hp" aria-hidden="true">
+                      Leave this field blank
+                    </label>
                     <input
                       id="caloriq-company-hp"
                       type="text"
                       name="company_website_hp"
                       tabIndex={-1}
+                      aria-hidden="true"
                       autoComplete="off"
                       value={honeypot}
                       onChange={(e) => setHoneypot(e.target.value)}
                     />
                   </div>
+
                   <div>
                     <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                      Email Address
+                      Username
                     </label>
                     <div className="relative">
-                      <Mail className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+                      <User className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
                       <input
-                        type="email"
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        placeholder="name@example.com"
+                        type="text"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder={mode === 'signup' ? '3–20 characters (letters, numbers, _)' : 'Enter your username'}
+                        minLength={mode === 'signup' ? 3 : undefined}
+                        maxLength={20}
+                        autoComplete="username"
                         required
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                       />
                     </div>
-                    {debouncedEmail.trim() !== '' && validateEmail(debouncedEmail) && (
+                    {mode === 'signup' && debouncedUsername.trim() !== '' && validateUsername(debouncedUsername) && (
                       <p className="text-[11px] text-rose-400 mt-1">
-                        {validateEmail(debouncedEmail)}
+                        {validateUsername(debouncedUsername)}
                       </p>
                     )}
                   </div>
@@ -1860,9 +1698,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                         type={showPassword ? 'text' : 'password'}
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        placeholder={mode === 'login' ? 'Password (optional for email code)' : 'At least 6 characters'}
-                        minLength={mode === 'signup' ? 6 : undefined}
-                        required={mode === 'signup'}
+                        placeholder={mode === 'login' ? 'Enter your password' : 'Enter a password'}
+                        autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                        required
                         className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
                       />
                       {/* #23 Show/hide password toggle */}
@@ -1875,87 +1713,39 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                         {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
                     </div>
-                    {/* #22 Password strength meter on signup */}
-                    {mode === 'signup' && password.length > 0 && (() => {
-                      const { strength, score } = getPasswordStrength(password);
-                      return (
-                        <div className="mt-2 space-y-1">
-                          <div className="grid grid-cols-3 gap-1.5 h-1.5">
-                            <div
-                              className={`rounded-full transition-colors ${
-                                score >= 1
-                                  ? score === 1
-                                    ? 'bg-rose-500'
-                                    : score === 2
-                                    ? 'bg-amber-400'
-                                    : 'bg-teal-400'
-                                  : 'bg-zinc-800'
-                              }`}
-                            />
-                            <div
-                              className={`rounded-full transition-colors ${
-                                score >= 2
-                                  ? score === 2
-                                    ? 'bg-amber-400'
-                                    : 'bg-teal-400'
-                                  : 'bg-zinc-800'
-                              }`}
-                            />
-                            <div
-                              className={`rounded-full transition-colors ${
-                                score >= 3 ? 'bg-teal-400' : 'bg-zinc-800'
-                              }`}
-                            />
-                          </div>
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span
-                              className={`font-mono font-semibold ${
-                                score === 1
-                                  ? 'text-rose-400'
-                                  : score === 2
-                                  ? 'text-amber-300'
-                                  : 'text-teal-400'
-                              }`}
-                            >
-                              {strength}
-                            </span>
-                            {score < 2 && (
-                              <span className="text-zinc-500">Minimum: Fair</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()}
                   </div>
 
                   {mode === 'signup' && (
                     <div>
                       <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                        Referral Code (Optional — +500 XP)
+                        Confirm Password
                       </label>
-                      <input
-                        type="text"
-                        value={referralCode}
-                        onChange={(e) => setReferralCode(e.target.value)}
-                        placeholder="e.g. CQ7A9B2"
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono uppercase placeholder:normal-case text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
-                      />
+                      <div className="relative">
+                        <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
+                        <input
+                          type={showConfirmPassword ? 'text' : 'password'}
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
+                          placeholder="Confirm your password"
+                          autoComplete="new-password"
+                          required
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowConfirmPassword((prev) => !prev)}
+                          aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                          className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-200"
+                        >
+                          {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                      {confirmPassword.length > 0 && password !== confirmPassword && (
+                        <p className="text-[11px] text-rose-400 mt-1">
+                          Passwords do not match.
+                        </p>
+                      )}
                     </div>
-                  )}
-
-                  {mode === 'signup' && (
-                    <label className="flex items-start gap-2.5 p-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-300 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={confirmedAgeGate}
-                        onChange={(e) => setConfirmedAgeGate(e.target.checked)}
-                        aria-label="Are you 13 or older?"
-                        className="mt-0.5 accent-teal-500 rounded w-3.5 h-3.5 shrink-0"
-                      />
-                      <span>
-                        Are you 13 or older? I confirm I am at least 13 years of age (if under 18, use Caloriq with a parent or guardian).
-                      </span>
-                    </label>
                   )}
 
                   <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer select-none">
@@ -1970,10 +1760,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
                   <button
                     type="submit"
-                    disabled={
-                      isLoading ||
-                      (mode === 'signup' && (getPasswordStrength(password).score < 2 || !confirmedAgeGate))
-                    }
+                    disabled={isLoading}
                     className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
                   >
                     {isLoading ? (
@@ -1983,83 +1770,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
                       </>
                     ) : (
                       <>
-                        {mode === 'signup' ? 'Sign up' : 'Log in'}
+                        {mode === 'signup' ? 'Create account' : 'Log in'}
                         <ArrowRight className="w-3.5 h-3.5" />
                       </>
                     )}
                   </button>
-
-                  {/* #54 Google Sign-In alongside email/password */}
-                  <div className="pt-2 space-y-2">
-                    <div className="relative flex items-center justify-center">
-                      <div className="border-t border-zinc-800 w-full" />
-                      <span className="bg-zinc-900 px-2.5 text-[10px] font-mono uppercase text-zinc-400">
-                        or
-                      </span>
-                      <div className="border-t border-zinc-800 w-full" />
-                    </div>
-
-                    {!isGoogleInputOpen ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (mode === 'signup' && !confirmedAgeGate) {
-                            setErrorMsg('Please confirm you are 13 or older first.');
-                            return;
-                          }
-                          setIsGoogleInputOpen(true);
-                        }}
-                        aria-label="Continue with Google"
-                        className="w-full py-2.5 px-3 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 rounded-xl text-xs font-semibold text-zinc-200 flex items-center justify-center gap-2 transition-colors"
-                      >
-                        <span className="w-4 h-4 rounded-full bg-teal-500/20 text-teal-300 font-bold text-[10px] flex items-center justify-center">
-                          G
-                        </span>
-                        <span>Continue with Google</span>
-                      </button>
-                    ) : (
-                      <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl space-y-2">
-                        <label className="block text-[11px] font-medium text-zinc-300">
-                          Enter your Google email address
-                        </label>
-                        <div className="flex gap-2">
-                          <input
-                            type="email"
-                            value={googleEmailInput}
-                            onChange={(e) => setGoogleEmailInput(e.target.value)}
-                            placeholder="you@gmail.com"
-                            aria-label="Google email address"
-                            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-teal-500"
-                          />
-                          <button
-                            type="button"
-                            disabled={isLoading || !googleEmailInput.includes('@')}
-                            onClick={async () => {
-                              setErrorMsg('');
-                              setIsLoading(true);
-                              try {
-                                const cleanG = googleEmailInput.trim().toLowerCase();
-                                const res = await api.googleSignIn(cleanG, cleanG.split('@')[0]);
-                                if (res.isNewUser) {
-                                  trackEvent('signup');
-                                }
-                                await onAuthSuccess();
-                                closeAuthModal();
-                                if (onAuthComplete) onAuthComplete();
-                              } catch (e: any) {
-                                setErrorMsg(e?.message || 'Google sign-in failed');
-                              } finally {
-                                setIsLoading(false);
-                              }
-                            }}
-                            className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-bold rounded-lg text-xs"
-                          >
-                            Continue
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
                 </form>
               </>
             )}

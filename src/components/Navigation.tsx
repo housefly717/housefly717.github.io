@@ -2,6 +2,7 @@ import React from 'react';
 import {
   BookOpen,
   Activity,
+  Users,
   CalendarCheck,
   BarChart3,
   User,
@@ -14,7 +15,7 @@ import { useApp } from '../context/AppContext.js';
 import { t } from '../utils/i18n.js';
 import { getDateBounds } from '../utils/validation.js';
 
-export type TabType = 'diary' | 'fitness' | 'plan' | 'reports' | 'me';
+export type TabType = 'diary' | 'fitness' | 'community' | 'plan' | 'reports' | 'me';
 
 interface NavigationProps {
   currentTab: TabType;
@@ -77,7 +78,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
   const navItems = [
     { id: 'diary' as TabType, label: t('diary', language), icon: BookOpen },
     { id: 'fitness' as TabType, label: t('fitness', language), icon: Activity },
-    { id: 'plan' as TabType, label: t('plan', language), icon: CalendarCheck },
+    { id: 'community' as TabType, label: t('community', language), icon: Users },
     { id: 'reports' as TabType, label: t('reports', language), icon: BarChart3 },
     { id: 'me' as TabType, label: t('me', language), icon: User }
   ];
@@ -100,12 +101,12 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
           <div className="flex items-center gap-2">
             <button
               onClick={onOpenDescription}
-              title="View Caloriq description and overview"
-              aria-label="View Caloriq description and overview"
+              title="View Calory description and overview"
+              aria-label="View Calory description and overview"
               className="font-bold text-base tracking-tight text-zinc-100 flex items-center gap-1.5 hover:text-teal-400 transition-colors cursor-pointer"
             >
               <span className="w-2 h-2 rounded-full bg-teal-400 inline-block"></span>
-              <span>Caloriq</span>
+              <span>Calory</span>
             </button>
             {/* #19 Auto-save indicator dot */}
             <span

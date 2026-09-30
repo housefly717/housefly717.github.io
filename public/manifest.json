@@ -1,6 +1,6 @@
 {
-  "name": "Caloriq — Calorie & Macro Tracker",
-  "short_name": "Caloriq",
+  "name": "Calory — Calorie & Macro Tracker",
+  "short_name": "Calory",
   "description": "Free calorie, macro, water, and exercise tracking calculated from your own body.",
   "start_url": "/dashboard",
   "scope": "/",
