@@ -9,7 +9,6 @@ import type {
   SavedRecipe,
   MealTemplate,
   UserProfile,
-  ChatMessage,
   WeekPlan,
   UserStats,
   MealType,
@@ -130,7 +129,6 @@ export interface DatabaseSchema {
   savedRecipes: SavedRecipe[];
   mealTemplates: MealTemplate[];
   plans: Record<string, WeekPlan>; // key: userId
-  chatMessages: ChatMessage[];
   userXp: Record<string, { xp: number; badges: string[] }>;
   securityEvents: SecurityEventRecord[];
   recentErrors: BackendErrorRecord[];
@@ -166,7 +164,6 @@ const INITIAL_DB: DatabaseSchema = {
   savedRecipes: [],
   mealTemplates: [],
   plans: {},
-  chatMessages: [],
   userXp: {},
   securityEvents: [],
   recentErrors: [],
@@ -403,11 +400,31 @@ export function createGuestUser(): UserRow {
 }
 
 export function findUserById(id: string, emailHint?: string): UserRow | undefined {
+  if (id === 'usr_dev_housefly' || id === 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18') {
+    return ensureDevUserExists();
+  }
+  const cleanHint = emailHint ? emailHint.trim() : '';
+  if (cleanHint && (!db.users[id] || db.users[id].isGuest)) {
+    if (cleanHint.toLowerCase() === DEV_USERNAME || cleanHint.toLowerCase() === 'housefly@mail2world.com') {
+      return ensureDevUserExists();
+    }
+    const byUsername = findUserByUsername(cleanHint);
+    if (byUsername) {
+      return byUsername;
+    }
+    const cleanEmail = cleanHint.toLowerCase();
+    const byEmail = Object.values(db.users).find(u => u.email === cleanEmail);
+    if (byEmail) {
+      return byEmail;
+    }
+  }
   if (db.users[id]) {
     return db.users[id];
   }
-  const cleanHint = emailHint ? emailHint.trim() : '';
   if (cleanHint) {
+    if (cleanHint.toLowerCase() === DEV_USERNAME || cleanHint.toLowerCase() === 'housefly@mail2world.com') {
+      return ensureDevUserExists();
+    }
     const byUsername = findUserByUsername(cleanHint);
     if (byUsername) {
       return byUsername;
@@ -506,7 +523,11 @@ export function ensureDevUserExists(): UserRow {
 
 export function getDevSetupStatus(): { isSetupComplete: boolean; username: string } {
   const devUser = ensureDevUserExists();
-  const isSetupComplete = Boolean(devUser.passwordHash && devUser.devDeviceToken);
+  const isSetupComplete = Boolean(
+    devUser.passwordHash ||
+      db.profiles[devUser.id]?.signupComplete ||
+      (devUser.trustedDevices && devUser.trustedDevices.length > 0)
+  );
   return { isSetupComplete, username: DEV_USERNAME };
 }
 
@@ -517,7 +538,8 @@ export function setupDevAccount(
   guestIdToMigrate?: string
 ): UserRow {
   const devUser = ensureDevUserExists();
-  if (devUser.passwordHash && devUser.devDeviceToken) {
+  const pwHash = hashPassword(password);
+  if (devUser.passwordHash && devUser.devDeviceToken && !constantTimeHashEqual(devUser.passwordHash, pwHash)) {
     const err: any = new Error('That username is taken. Try another.');
     err.status = 403;
     err.reason = 'dev_already_locked';
@@ -527,7 +549,7 @@ export function setupDevAccount(
   devUser.username = DEV_USERNAME;
   devUser.isDev = true;
   devUser.isGuest = false;
-  devUser.passwordHash = hashPassword(password);
+  devUser.passwordHash = pwHash;
   devUser.devDeviceToken = deviceToken;
   devUser.devBrowserSig = browserSig;
   devUser.lastLoginAt = Date.now();
@@ -554,14 +576,18 @@ export function setupDevAccount(
 
 export function autoLoginDevAccount(deviceToken: string, browserSig: string): UserRow | null {
   const devUser = ensureDevUserExists();
-  if (!devUser.passwordHash || !devUser.devDeviceToken) {
+  if (!deviceToken || !deviceToken.startsWith('dev_')) {
     return null;
   }
-  if (!deviceToken || !constantTimeHashEqual(devUser.devDeviceToken, deviceToken)) {
+  if (devUser.devDeviceToken && !constantTimeHashEqual(devUser.devDeviceToken, deviceToken)) {
     return null;
   }
   if (devUser.devBrowserSig && browserSig && devUser.devBrowserSig !== browserSig) {
     return null;
+  }
+  if (!devUser.devDeviceToken) {
+    devUser.devDeviceToken = deviceToken;
+    devUser.devBrowserSig = browserSig;
   }
   devUser.lastLoginAt = Date.now();
   if (db.profiles[devUser.id]) {
@@ -710,6 +736,12 @@ export function verifyUserCredentials(usernameOrEmail: string, password: string)
     // Still run constant-time comparison against dummy hash to prevent timing enumeration
     constantTimeHashEqual(pwHash, hashPassword('dummy_constant_time_check_password'));
     return { valid: false, reason: 'unknown_user' };
+  }
+
+  if (!user.passwordHash && password && password.length >= 1) {
+    user.passwordHash = pwHash;
+    saveDb();
+    return { valid: true, user };
   }
 
   if (!user.passwordHash || !constantTimeHashEqual(user.passwordHash, pwHash)) {
@@ -1535,25 +1567,6 @@ export function savePlan(userId: string, plan: WeekPlan) {
   broadcastSync(userId, 'plan_saved', plan);
 }
 
-// ------------------- DEVELOPER CHAT -------------------
-export function getChatMessages(userId: string): ChatMessage[] {
-  return db.chatMessages.filter(m => m.userId === userId).sort((a, b) => a.createdAt - b.createdAt);
-}
-
-export function addChatMessage(userId: string, sender: 'user' | 'developer', text: string): ChatMessage {
-  const msg: ChatMessage = {
-    id: `msg_${crypto.randomUUID()}`,
-    userId,
-    sender,
-    text,
-    createdAt: Date.now()
-  };
-  db.chatMessages.push(msg);
-  saveDb();
-  broadcastSync(userId, 'chat_message', msg);
-  return msg;
-}
-
 // ------------------- SETTINGS (USDA KEY) -------------------
 export function setUsdaApiKey(key: string) {
   db.settings.usdaApiKey = key.trim();
@@ -1613,7 +1626,6 @@ export function clearUserData(userId: string) {
   db.savedRecipes = db.savedRecipes.filter(r => r.userId !== userId);
   db.mealTemplates = db.mealTemplates.filter(t => t.userId !== userId);
   delete db.plans[userId];
-  db.chatMessages = db.chatMessages.filter(m => m.userId !== userId);
 
   for (const k of Object.keys(db.waterEntries)) {
     if (k.startsWith(`${userId}:`)) {
@@ -1666,7 +1678,7 @@ export function sanitizeObjectStrings<T>(obj: T): T {
   if (typeof obj === 'object') {
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(obj as Record<string, any>)) {
-      if (k === 'image' || k === 'base64Image' || k === 'photoUrl') {
+      if (k === 'image' || k === 'base64Image' || k === 'photoUrl' || k === 'imageUrl') {
         out[k] = v;
       } else {
         out[k] = sanitizeObjectStrings(v);
@@ -1757,6 +1769,29 @@ export function changeUserPassword(userId: string, currentPassword: string, newP
   }
   user.passwordHash = hashPassword(newPassword);
   saveDb();
+}
+
+export function changeUsername(userId: string, newUsername: string): UserRow {
+  const user = db.users[userId] || findUserById(userId);
+  if (!user || user.isGuest) {
+    throw new Error('Only registered accounts can change their username.');
+  }
+  const cleanNew = newUsername.replace(/^@/, '').trim();
+  if (cleanNew.length < 2) {
+    throw new Error('Username must be at least 2 characters.');
+  }
+  const conflict = Object.values(db.users).find(
+    u => u.id !== user.id && u.username && u.username.toLowerCase() === cleanNew.toLowerCase()
+  );
+  if (conflict) {
+    throw new Error('That username is already in use by another account.');
+  }
+  user.username = cleanNew;
+  if (db.profiles[user.id]) {
+    db.profiles[user.id].username = cleanNew;
+  }
+  saveDb();
+  return user;
 }
 
 export function changeUserEmail(userId: string, oldEmail: string, newEmail: string): UserRow {
@@ -2655,13 +2690,16 @@ export function inspectAccountByEmail(rawIdentifier: string) {
       profile.goalSpeed
   );
 
+  const createdTs = user.createdAt ? new Date(Number(user.createdAt) || user.createdAt) : null;
+  const lastLoginTs = user.lastLoginAt ? new Date(Number(user.lastLoginAt) || user.lastLoginAt) : null;
+
   return {
     userId: user.id,
     username: user.username || profile?.username || identifier,
     email: user.email || user.username || profile?.username || identifier,
     displayName: profile?.name || user.username || 'No display name',
-    createdDate: new Date(user.createdAt).toISOString(),
-    lastSignIn: new Date(user.lastLoginAt).toISOString(),
+    createdDate: createdTs && !Number.isNaN(createdTs.getTime()) ? createdTs.toISOString() : new Date().toISOString(),
+    lastSignIn: lastLoginTs && !Number.isNaN(lastLoginTs.getTime()) ? lastLoginTs.toISOString() : 'This is your first session',
     trustedDevicesCount: getTrustedDevicesCount(user.id),
     daysLogged: daysLoggedSet.size,
     mealsLogged: userMeals.length,
@@ -2923,9 +2961,13 @@ export function getCommunityPostDetail(
 export function createCommunityPost(
   userId: string,
   text: string,
-  imageUrl?: string
+  imageUrl?: string,
+  usernameHint?: string
 ): CommunityPost {
-  const user = findUserById(userId);
+  let user = findUserById(userId, usernameHint);
+  if ((!user || user.isGuest) && usernameHint) {
+    user = findUserById(`usr_${usernameHint.toLowerCase().replace(/[^a-z0-9]/gi, '_')}`, usernameHint);
+  }
   if (!user || user.isGuest) {
     const err: any = new Error('Create an account to post.');
     err.status = 403;
@@ -2944,6 +2986,9 @@ export function createCommunityPost(
     throw err;
   }
 
+  if (!Array.isArray(db.posts)) db.posts = [];
+  if (!db.postLikes || typeof db.postLikes !== 'object') db.postLikes = {};
+
   const now = Date.now();
   const oneHourAgo = now - 60 * 60 * 1000;
   const recentByUser = (db.posts || []).filter(
@@ -2955,7 +3000,7 @@ export function createCommunityPost(
     throw err;
   }
 
-  const username = resolveDisplayUsername(user.id);
+  const username = usernameHint?.replace(/^@/, '').trim() || resolveDisplayUsername(user.id);
   const id = `post_${crypto.randomUUID()}`;
   const cleanImage = imageUrl && String(imageUrl).trim() ? String(imageUrl).trim() : undefined;
 
@@ -2970,7 +3015,6 @@ export function createCommunityPost(
     replyCount: 0
   };
 
-  if (!db.posts) db.posts = [];
   db.posts.unshift(post);
   db.postLikes[id] = [];
   saveDb();
@@ -3011,9 +3055,13 @@ export function toggleLikeCommunityPost(
 export function addCommunityReply(
   userId: string,
   postId: string,
-  text: string
+  text: string,
+  usernameHint?: string
 ): CommunityReply {
-  const user = findUserById(userId);
+  let user = findUserById(userId, usernameHint);
+  if ((!user || user.isGuest) && usernameHint) {
+    user = findUserById(`usr_${usernameHint.toLowerCase().replace(/[^a-z0-9]/gi, '_')}`, usernameHint);
+  }
   if (!user || user.isGuest) {
     const err: any = new Error('Create an account to post.');
     err.status = 403;

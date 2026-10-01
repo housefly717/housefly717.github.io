@@ -71,7 +71,10 @@ export const CommunityTab: React.FC = () => {
     setIsLoading(true);
     try {
       const res = await api.getCommunityPosts(selectedFilter);
-      setPosts(res.posts || []);
+      const validPosts = Array.isArray(res?.posts)
+        ? res.posts.filter((p): p is CommunityPost => Boolean(p && typeof p === 'object' && p.id))
+        : [];
+      setPosts(validPosts);
     } catch {
       setPosts([]);
     } finally {
@@ -149,7 +152,27 @@ export const CommunityTab: React.FC = () => {
     setNewPostError(null);
     try {
       const res = await api.createCommunityPost(trimmed, newPostImage);
-      setPosts((prev) => [res.post, ...prev]);
+      const fallbackUsername = (profile?.username || userEmail || 'housefly')
+        .replace(/^@/, '')
+        .split('@')[0];
+      const createdPost: CommunityPost =
+        res?.post && typeof res.post === 'object' && res.post.id
+          ? res.post
+          : {
+              id: `post_${Date.now()}`,
+              userId: userId || 'usr_dev_housefly',
+              username: fallbackUsername || 'housefly',
+              text: trimmed,
+              ...(newPostImage ? { imageUrl: newPostImage } : {}),
+              createdAt: Date.now(),
+              likeCount: 0,
+              replyCount: 0,
+              likedByMe: false
+            };
+      setPosts((prev) => [
+        createdPost,
+        ...prev.filter((p): p is CommunityPost => Boolean(p && p.id && p.id !== createdPost.id))
+      ]);
       setNewPostText('');
       setNewPostImage(undefined);
       setIsNewPostOpen(false);
@@ -209,7 +232,9 @@ export const CommunityTab: React.FC = () => {
     setIsSubmittingReply(true);
     try {
       const res = await api.addCommunityReply(activePost.id, trimmed);
-      setReplies((prev) => [...prev, res.reply]);
+      if (res?.reply && res.reply.id) {
+        setReplies((prev) => [...prev.filter(Boolean), res.reply]);
+      }
       setReplyText('');
       setActivePost((prev) =>
         prev ? { ...prev, replyCount: prev.replyCount + 1 } : prev
@@ -252,8 +277,9 @@ export const CommunityTab: React.FC = () => {
       setPosts((prev) =>
         prev.filter(
           (p) =>
+            p &&
             p.userId !== post.userId &&
-            p.username.toLowerCase() !== post.username.toLowerCase()
+            (p.username || '').toLowerCase() !== (post.username || '').toLowerCase()
         )
       );
       if (activePost && (activePost.userId === post.userId || activePost.username === post.username)) {
@@ -280,12 +306,12 @@ export const CommunityTab: React.FC = () => {
       const res = await api.toggleFollowCommunityUser(post.username);
       setPosts((prev) =>
         prev.map((p) =>
-          p.username.toLowerCase() === post.username.toLowerCase()
+          p && (p.username || '').toLowerCase() === (post.username || '').toLowerCase()
             ? { ...p, isFollowingAuthor: res.following }
             : p
         )
       );
-      if (activePost && activePost.username.toLowerCase() === post.username.toLowerCase()) {
+      if (activePost && (activePost.username || '').toLowerCase() === (post.username || '').toLowerCase()) {
         setActivePost((prev) => (prev ? { ...prev, isFollowingAuthor: res.following } : prev));
       }
     } catch {
@@ -431,7 +457,7 @@ export const CommunityTab: React.FC = () => {
 
               {!isGuest &&
                 activePost.userId !== userId &&
-                activePost.username.toLowerCase() !== myUsername && (
+                (activePost.username || '').toLowerCase() !== myUsername && (
                   <button
                     type="button"
                     onClick={(e) => handleToggleFollow(activePost, e)}
@@ -637,7 +663,7 @@ export const CommunityTab: React.FC = () => {
               </p>
             </div>
           ) : (
-            posts.map((post) => (
+            posts.filter((post): post is CommunityPost => Boolean(post && post.id)).map((post) => (
               <article
                 key={post.id}
                 onClick={() => openPostDetail(post, false)}
@@ -650,17 +676,17 @@ export const CommunityTab: React.FC = () => {
                     </div>
                     <div>
                       <span className="text-xs font-bold text-zinc-100 block">
-                        @{post.username}
+                        @{post.username || 'member'}
                       </span>
                       <span className="text-[10px] font-mono text-zinc-500">
-                        {formatRelativeTime(post.createdAt)}
+                        {formatRelativeTime(post.createdAt || Date.now())}
                       </span>
                     </div>
                   </div>
 
                   {!isGuest &&
                     post.userId !== userId &&
-                    post.username.toLowerCase() !== myUsername && (
+                    (post.username || '').toLowerCase() !== myUsername && (
                       <button
                         type="button"
                         onClick={(e) => handleToggleFollow(post, e)}

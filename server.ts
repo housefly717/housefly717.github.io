@@ -70,8 +70,6 @@ import {
   restoreMealTemplate,
   getPlan,
   savePlan,
-  getChatMessages,
-  addChatMessage,
   setUsdaApiKey,
   hasUsdaApiKey,
   exportUserData,
@@ -85,6 +83,7 @@ import {
   revokeAllUserSessions,
   verifyUserPassword,
   changeUserPassword,
+  changeUsername,
   changeUserEmail,
   loginOrSignupWithGoogle,
   createDemoAccount,
@@ -150,7 +149,10 @@ import {
   suggestPantryMealsWithGemini,
   estimatePortionWithGemini,
   generateCravingPatternWithGemini,
-  generateWeeklyInsightsWithGemini
+  generateWeeklyInsightsWithGemini,
+  rateExerciseWithGemini,
+  recommendDailyWorkoutWithGemini,
+  generateCoachSuggestionWithGemini
 } from './src/server/aiFeatures.js';
 
 dotenv.config({ path: ['.env.local', '.env'], quiet: true });
@@ -372,6 +374,13 @@ function authenticateUser(req: Request, res: Response, next: NextFunction) {
     }
     res.status(401).json({ error: 'Session expired. Please sign in again.' });
     return;
+  }
+
+  if (!user.isGuest) {
+    const existingSessions = getUserSessions(user.id, req.headers['user-agent'] || '');
+    if (existingSessions.length === 0) {
+      recordUserSession(user.id, req.headers['user-agent'] || '', 'Active Session', getClientIp(req));
+    }
   }
 
   (req as any).user = user;
@@ -1456,6 +1465,29 @@ app.post('/api/auth/change-password', authenticateUser, rateLimitAuth, (req, res
   }
 });
 
+app.post('/api/auth/change-username', authenticateUser, rateLimitAuth, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const { newUsername, password } = req.body || {};
+    if (!newUsername || !String(newUsername).trim()) {
+      res.status(400).json({ error: 'New username is required.' });
+      return;
+    }
+    if (password && !verifyUserPassword(userId, String(password))) {
+      res.status(400).json({ error: 'Current password is incorrect.' });
+      return;
+    }
+    const updatedUser = changeUsername(userId, String(newUsername));
+    res.json({
+      success: true,
+      username: updatedUser.username,
+      message: `Username updated to @${updatedUser.username}.`
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not update username.' });
+  }
+});
+
 // #49 Email change flow: verify old email, then new email, then update
 app.post('/api/auth/change-email', authenticateUser, rateLimitAuth, async (req, res) => {
   const ip = getClientIp(req);
@@ -1790,6 +1822,8 @@ app.get('/api/auth/me', authenticateUser, (req, res) => {
     email: user.email || user.username || profile.username,
     isGuest: user.isGuest,
     isDev,
+    lastSignedInAt: user.lastLoginAt || null,
+    createdAt: user.createdAt || null,
     profile: { ...profile, isDev },
     stats
   });
@@ -1851,6 +1885,8 @@ app.post('/api/diary', authenticateUser, (req, res) => {
       iron,
       calcium,
       vitaminD,
+      caffeineMg,
+      standardDrinks,
       serving,
       note,
       unusualQuantity,
@@ -1877,6 +1913,8 @@ app.post('/api/diary', authenticateUser, (req, res) => {
       iron: iron !== undefined ? Number(iron) : undefined,
       calcium: calcium !== undefined ? Number(calcium) : undefined,
       vitaminD: vitaminD !== undefined ? Number(vitaminD) : undefined,
+      caffeineMg: caffeineMg !== undefined ? Math.round(Number(caffeineMg)) : undefined,
+      standardDrinks: standardDrinks !== undefined ? Math.round(Number(standardDrinks) * 10) / 10 : undefined,
       serving: serving || '1 serving',
       note: note ? String(note).trim() : undefined,
       unusualQuantity: Boolean(unusualQuantity),
@@ -2206,12 +2244,16 @@ app.get('/api/community/posts/:id', (req, res) => {
 app.post('/api/community/posts', authenticateUser, (req, res) => {
   try {
     const user = (req as any).user;
-    if (!user || user.isGuest) {
-      res.status(403).json({ error: 'Create an account to post.' });
-      return;
-    }
+    const headerHint = typeof req.headers['x-user-email'] === 'string' ? req.headers['x-user-email'].trim() : '';
+    const bodyUsername = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+    const usernameHint = bodyUsername || headerHint || undefined;
     const { text, imageUrl } = req.body || {};
-    const post = createCommunityPost(user.id, String(text || ''), imageUrl ? String(imageUrl) : undefined);
+    const post = createCommunityPost(
+      user?.id || '',
+      String(text || ''),
+      imageUrl ? String(imageUrl) : undefined,
+      usernameHint
+    );
     res.json({ post });
   } catch (err: any) {
     res.status(err.status || 400).json({ error: err.message || 'Could not publish post.' });
@@ -2231,12 +2273,11 @@ app.post('/api/community/posts/:id/like', authenticateUser, (req, res) => {
 app.post('/api/community/posts/:id/replies', authenticateUser, (req, res) => {
   try {
     const user = (req as any).user;
-    if (!user || user.isGuest) {
-      res.status(403).json({ error: 'Create an account to post.' });
-      return;
-    }
+    const headerHint = typeof req.headers['x-user-email'] === 'string' ? req.headers['x-user-email'].trim() : '';
+    const bodyUsername = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+    const usernameHint = bodyUsername || headerHint || undefined;
     const { text } = req.body || {};
-    const reply = addCommunityReply(user.id, req.params.id, String(text || ''));
+    const reply = addCommunityReply(user?.id || '', req.params.id, String(text || ''), usernameHint);
     res.json({ reply });
   } catch (err: any) {
     res.status(err.status || 400).json({ error: err.message || 'Could not post reply.' });
@@ -2377,6 +2418,53 @@ app.post('/api/ai/craving-pattern', authenticateUser, async (req, res) => {
 app.post('/api/ai/weekly-insights', authenticateUser, async (req, res) => {
   try {
     const result = await generateWeeklyInsightsWithGemini(req.body);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ai/exercise-rating', authenticateUser, async (req, res) => {
+  try {
+    const result = await rateExerciseWithGemini(req.body || {});
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ai/exercise-recommendation', authenticateUser, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const result = await recommendDailyWorkoutWithGemini({
+      ...(req.body || {}),
+      userId: req.body?.userId || userId
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ai/coach-suggestion', authenticateUser, async (req, res) => {
+  try {
+    const userId = (req as any).userId;
+    const rawDays = Array.isArray(req.body?.days) ? req.body.days : [];
+    const enrichedDays = rawDays.map((d: any) => {
+      const dbWater = d?.date ? getWaterGlasses(userId, String(d.date)) : 0;
+      const waterGlasses = Math.max(Number(d?.waterGlasses) || 0, dbWater);
+      const hasAnyLog = Boolean(d?.hasAnyLog || waterGlasses > 0);
+      return {
+        ...d,
+        waterGlasses,
+        hasAnyLog
+      };
+    });
+    const result = await generateCoachSuggestionWithGemini({
+      ...(req.body || {}),
+      userId: req.body?.userId || userId,
+      days: enrichedDays
+    });
     res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -2553,34 +2641,6 @@ app.post('/api/plan/save', authenticateUser, (req, res) => {
   }
   savePlan(userId, plan);
   res.json({ success: true, plan });
-});
-
-// ------------------- DEVELOPER CHAT -------------------
-app.get('/api/developer-chat', authenticateUser, (req, res) => {
-  const userId = (req as any).userId;
-  const messages = getChatMessages(userId);
-  res.json({ messages });
-});
-
-app.post('/api/developer-chat', authenticateUser, (req, res) => {
-  const userId = (req as any).userId;
-  const { text } = req.body;
-  if (!text || !text.trim()) {
-    res.status(400).json({ error: 'Message cannot be empty' });
-    return;
-  }
-
-  const userMsg = addChatMessage(userId, 'user', text.trim());
-
-  setTimeout(() => {
-    addChatMessage(
-      userId,
-      'developer',
-      "Thanks for reaching out! I'm the developer behind Calory. Your feedback and logs are saved directly to our system. If you spotted an issue with food parsing or want to suggest a feature, let me know!"
-    );
-  }, 1000);
-
-  res.json(userMsg);
 });
 
 // ------------------- PROFILE & ME -------------------

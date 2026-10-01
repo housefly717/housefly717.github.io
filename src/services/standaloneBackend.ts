@@ -8,7 +8,6 @@ import type {
   SavedRecipe,
   MealTemplate,
   UserProfile,
-  ChatMessage,
   WeekPlan,
   UserStats,
   MealType,
@@ -20,6 +19,9 @@ import type {
   PantryItem,
   FriendRecord,
   SharedRecipeRecord,
+  CommunityPost,
+  CommunityReply,
+  ReportedPostRecord,
   PlanDay
 } from '../types/index.js';
 
@@ -40,11 +42,16 @@ interface StandaloneDb {
   pantryItems: PantryItem[];
   friends: FriendRecord[];
   sharedRecipes: SharedRecipeRecord[];
+  posts: CommunityPost[];
+  replies: CommunityReply[];
+  postLikes: Record<string, string[]>;
+  postReports: ReportedPostRecord[];
+  blockedUsers: Record<string, string[]>;
+  followingUsers: Record<string, string[]>;
   savedFoods: SavedFood[];
   savedRecipes: SavedRecipe[];
   mealTemplates: MealTemplate[];
   plans: Record<string, WeekPlan>;
-  chatMessages: ChatMessage[];
   userXp: Record<string, { xp: number; badges: string[] }>;
   usdaApiKey?: string;
 }
@@ -64,11 +71,16 @@ const DEFAULT_DB: StandaloneDb = {
   pantryItems: [],
   friends: [],
   sharedRecipes: [],
+  posts: [],
+  replies: [],
+  postLikes: {},
+  postReports: [],
+  blockedUsers: {},
+  followingUsers: {},
   savedFoods: [],
   savedRecipes: [],
   mealTemplates: [],
   plans: {},
-  chatMessages: [],
   userXp: {}
 };
 
@@ -461,7 +473,11 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
   if (pathname === '/api/auth/dev-status' && method === 'GET') {
     const devUser = ensureStandaloneDevUser();
     return {
-      isSetupComplete: Boolean(devUser.passwordHash && devUser.devDeviceToken),
+      isSetupComplete: Boolean(
+        devUser.passwordHash ||
+          db.profiles[devUser.id]?.signupComplete ||
+          localStorage.getItem('calory_dev_device')
+      ),
       username: 'housefly'
     };
   }
@@ -653,16 +669,41 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
   }
 
   if (pathname === '/api/auth/me' && method === 'GET') {
-    const user = db.users[userId];
+    let user = db.users[userId];
+    const savedEmail = localStorage.getItem('caloriq_user_email') || '';
+    if (!user && userId && !userId.startsWith('guest_')) {
+      const isDevUser =
+        savedEmail.toLowerCase() === 'housefly' ||
+        userId === 'usr_dev_housefly' ||
+        userId === 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18';
+      user = {
+        id: userId,
+        username: isDevUser ? 'housefly' : savedEmail || undefined,
+        email: savedEmail || undefined,
+        isGuest: false,
+        isDev: isDevUser,
+        createdAt: Date.now(),
+        lastLoginAt: Date.now()
+      };
+      db.users[userId] = user;
+      saveDb();
+    }
     const prof = getProfile(userId);
-    const isDev = Boolean(user?.isDev && user?.username?.toLowerCase() === 'housefly');
+    const isDev = Boolean(
+      (user?.isDev && user?.username?.toLowerCase() === 'housefly') ||
+        savedEmail.toLowerCase() === 'housefly' ||
+        userId === 'usr_dev_housefly' ||
+        userId === 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18'
+    );
     prof.isDev = isDev;
+    const isGuest = user ? Boolean(user.isGuest) : userId.startsWith('guest_');
     return {
       userId,
-      username: user?.username || prof.username,
-      email: user?.email || user?.username || prof.username,
-      isGuest: user?.isGuest ?? true,
+      username: user?.username || prof.username || (isDev ? 'housefly' : savedEmail),
+      email: user?.email || user?.username || prof.username || (isDev ? 'housefly' : savedEmail),
+      isGuest,
       isDev,
+      lastSignedInAt: user?.lastLoginAt || null,
       profile: prof,
       stats: getUserStats(userId)
     };
@@ -702,6 +743,9 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
       fat: Math.round(Number(body.fat || 0) * 10) / 10,
       protein: Math.round(Number(body.protein || 0) * 10) / 10,
       ...micros,
+      caffeineMg: body.caffeineMg !== undefined ? Math.round(Number(body.caffeineMg)) : undefined,
+      standardDrinks:
+        body.standardDrinks !== undefined ? Math.round(Number(body.standardDrinks) * 10) / 10 : undefined,
       serving: body.serving || '1 serving',
       note: body.note ? String(body.note).trim() : undefined,
       unusualQuantity: Boolean(body.unusualQuantity),
@@ -1194,6 +1238,178 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     };
   }
 
+  if (pathname === '/api/ai/exercise-rating' && method === 'POST') {
+    const nameLower = String(body.activityName || '').toLowerCase();
+    const isStrength =
+      Boolean(body.weightKg && body.weightKg > 0) ||
+      /lift|strength|weight|squat|deadlift|bench|press|curl|row|push|pull|gym|resistance|plank/i.test(nameLower);
+    const isCardio =
+      Boolean(body.distanceKm && body.distanceKm > 0) ||
+      /run|jog|walk|cycle|bike|swim|hiit|cardio|row|sprint|treadmill|elliptical/i.test(nameLower);
+
+    const mins = Number(body.minutes) || 20;
+    let rating = 8;
+    if (mins < 10) rating = 6;
+    else if (mins >= 30 && (body.intensity === 'Moderate' || body.intensity === 'High')) rating = 9;
+
+    let feedback = 'Balanced session. Pair with a 10 min mobility cool-down next time.';
+    if (isCardio && !isStrength) {
+      feedback = 'Solid cardio. Add 10 min of strength twice a week to round it out.';
+    } else if (isStrength && !isCardio) {
+      feedback = 'Strong resistance work. Add 15 min of brisk walking or cycling for heart health.';
+    } else if (mins < 15) {
+      feedback = 'Good quick movement. Extending to 25 min next session will boost endurance.';
+    }
+
+    return {
+      rating,
+      feedback,
+      formatted: `${rating}/10 — ${feedback}`
+    };
+  }
+
+  if (pathname === '/api/ai/exercise-recommendation' && method === 'POST') {
+    const recent = Array.isArray(body.last7DaysExercises) ? body.last7DaysExercises : [];
+    let strengthCount = 0;
+    let cardioCount = 0;
+    for (const ex of recent) {
+      const n = String(ex.activityName || '').toLowerCase();
+      if (
+        (ex.weightKg && ex.weightKg > 0) ||
+        /lift|strength|weight|squat|deadlift|bench|press|curl|row|push|pull|gym|resistance|plank/i.test(n)
+      ) {
+        strengthCount++;
+      } else if (
+        (ex.distanceKm && ex.distanceKm > 0) ||
+        /run|jog|walk|cycle|bike|swim|hiit|cardio|sprint|treadmill/i.test(n)
+      ) {
+        cardioCount++;
+      }
+    }
+
+    let recommendation = "Try 25 min brisk walking. You've done mostly strength this week.";
+    if (recent.length === 0) {
+      const goalLower = String(body.goal || '').toLowerCase();
+      recommendation = goalLower.includes('gain')
+        ? 'Try 25 min full-body strength training to kick off your week.'
+        : 'Try 25 min brisk walking to build steady daily momentum.';
+    } else if (strengthCount > cardioCount) {
+      recommendation = "Try 25 min brisk walking. You've done mostly strength this week.";
+    } else if (cardioCount > strengthCount) {
+      recommendation = "Try 20 min upper-body and core strength. You've done mostly cardio this week.";
+    } else if (recent.length >= 5) {
+      recommendation = 'Try 20 min gentle mobility and stretching after a high-volume week.';
+    } else {
+      recommendation = 'Try 25 min moderate interval cycling or brisk walking today.';
+    }
+
+    return {
+      date: String(body.date || new Date().toISOString().split('T')[0]),
+      recommendation
+    };
+  }
+
+  if (pathname === '/api/ai/coach-suggestion' && method === 'POST') {
+    const safeDate = String(body.date || new Date().toISOString().split('T')[0]);
+    const rawDays = Array.isArray(body.days) ? body.days : [];
+    const days = rawDays.map((d: any) => {
+      const dbWater = d?.date ? db.waterLogs[userId]?.[String(d.date)] || 0 : 0;
+      const waterGlasses = Math.max(Number(d?.waterGlasses) || 0, dbWater);
+      const hasAnyLog = Boolean(d?.hasAnyLog || waterGlasses > 0);
+      return { ...d, waterGlasses, hasAnyLog };
+    });
+    const loggedDays = days.filter((d: any) => d.hasAnyLog);
+    const daysLoggedCount = loggedDays.length;
+
+    if (daysLoggedCount < 5) {
+      return {
+        date: safeDate,
+        hasEnoughData: false,
+        daysLoggedCount,
+        suggestion: 'Keep logging. Patterns will appear after about a week.'
+      };
+    }
+
+    const waterGoal = Number(body.waterTargetGlasses) || 8;
+    const proteinTarget = Number(body.proteinTarget) || 120;
+    const caloriesTarget = Number(body.caloriesTarget) || 2000;
+    const foodDays = days.filter((d: any) => d.caloriesEaten > 0);
+
+    const shortSleepFoodDays = foodDays.filter(
+      (d: any) => typeof d.sleepHours === 'number' && d.sleepHours > 0 && d.sleepHours < 6
+    );
+    const restedFoodDays = foodDays.filter(
+      (d: any) => typeof d.sleepHours === 'number' && d.sleepHours >= 6
+    );
+    if (shortSleepFoodDays.length > 0 && restedFoodDays.length > 0) {
+      const shortAvg = Math.round(
+        shortSleepFoodDays.reduce((s: number, d: any) => s + d.caloriesEaten, 0) /
+          shortSleepFoodDays.length
+      );
+      const restedAvg = Math.round(
+        restedFoodDays.reduce((s: number, d: any) => s + d.caloriesEaten, 0) /
+          restedFoodDays.length
+      );
+      const diff = shortAvg - restedAvg;
+      if (diff >= 120) {
+        return {
+          date: safeDate,
+          hasEnoughData: true,
+          daysLoggedCount,
+          suggestion: `You ate ${diff} kcal more on nights you slept under 6 hours.`
+        };
+      }
+    }
+
+    if (foodDays.length >= 3 && proteinTarget > 0) {
+      const shortProteinDays = foodDays.filter((d: any) => proteinTarget - d.proteinEaten >= 12);
+      if (shortProteinDays.length >= Math.ceil(foodDays.length * 0.6)) {
+        const avgShortfall = Math.max(
+          10,
+          Math.round(
+            shortProteinDays.reduce((s: number, d: any) => s + (proteinTarget - d.proteinEaten), 0) /
+              shortProteinDays.length
+          )
+        );
+        return {
+          date: safeDate,
+          hasEnoughData: true,
+          daysLoggedCount,
+          suggestion: `Protein is ${avgShortfall}g short most days. Add eggs or Greek yogurt to breakfast.`
+        };
+      }
+    }
+
+    const missedWaterDays = days.filter((d: any) => (d.waterGlasses || 0) < waterGoal).length;
+    if (missedWaterDays >= 4) {
+      return {
+        date: safeDate,
+        hasEnoughData: true,
+        daysLoggedCount,
+        suggestion: `You've skipped water goals ${missedWaterDays} of ${days.length || 7} days. Set a reminder at 3pm.`
+      };
+    }
+
+    if (foodDays.length > 0) {
+      const avgKcal = Math.round(
+        foodDays.reduce((s: number, d: any) => s + d.caloriesEaten, 0) / foodDays.length
+      );
+      return {
+        date: safeDate,
+        hasEnoughData: true,
+        daysLoggedCount,
+        suggestion: `You averaged ${avgKcal} kcal across ${foodDays.length} logged days this week.`
+      };
+    }
+
+    return {
+      date: safeDate,
+      hasEnoughData: true,
+      daysLoggedCount,
+      suggestion: `You logged ${daysLoggedCount} of 7 days this week. Keep pre-logging breakfast to lock in your routine.`
+    };
+  }
+
   // SAVED FOODS & RECIPES
   if (pathname === '/api/saved-foods') {
     if (method === 'GET') return { foods: db.savedFoods.filter(f => f.userId === userId) };
@@ -1315,32 +1531,6 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     return { success: true, plan: body.plan };
   }
 
-  // DEVELOPER CHAT
-  if (pathname === '/api/developer-chat') {
-    if (method === 'GET') {
-      return { messages: db.chatMessages.filter(m => m.userId === userId) };
-    }
-    if (method === 'POST') {
-      const userMsg: ChatMessage = {
-        id: uid('msg'),
-        userId,
-        sender: 'user',
-        text: String(body.text || '').trim(),
-        createdAt: Date.now()
-      };
-      db.chatMessages.push(userMsg);
-      db.chatMessages.push({
-        id: uid('msg'),
-        userId,
-        sender: 'developer',
-        text: "Thanks for reaching out! Your feedback and logs are saved locally. Let me know if you'd like any adjustments!",
-        createdAt: Date.now() + 200
-      });
-      saveDb();
-      return userMsg;
-    }
-  }
-
   // PROFILE & STATS & EXPORT
   if (pathname === '/api/profile') {
     if (method === 'GET') return { profile: getProfile(userId), stats: getUserStats(userId) };
@@ -1457,6 +1647,25 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
     return { success: true, message: 'Password updated.' };
   }
 
+  if (pathname === '/api/auth/change-username' && method === 'POST') {
+    const cleanNew = String(body.newUsername || '').replace(/^@/, '').trim();
+    if (!cleanNew || cleanNew.length < 2) {
+      throw new Error('Username must be at least 2 characters.');
+    }
+    if (db.users[userId]) {
+      db.users[userId].username = cleanNew;
+    }
+    if (db.profiles[userId]) {
+      db.profiles[userId].username = cleanNew;
+    }
+    saveDb();
+    return {
+      success: true,
+      username: cleanNew,
+      message: `Username updated to @${cleanNew}.`
+    };
+  }
+
   if (pathname === '/api/auth/change-email' && method === 'POST') {
     if (db.users[userId]) {
       db.users[userId].email = String(body.newEmail || '').toLowerCase().trim();
@@ -1504,6 +1713,199 @@ export async function handleStandaloneApiRequest(urlStr: string, options: Reques
 
   if (pathname === '/api/compliance/cookie-consent' && method === 'POST') {
     return { success: true, timestamp: new Date().toISOString() };
+  }
+
+  // COMMUNITY POSTS, REPLIES & MODERATION
+  if (!Array.isArray(db.posts)) db.posts = [];
+  if (!Array.isArray(db.replies)) db.replies = [];
+  if (!db.postLikes || typeof db.postLikes !== 'object') db.postLikes = {};
+  if (!Array.isArray(db.postReports)) db.postReports = [];
+  if (!db.blockedUsers || typeof db.blockedUsers !== 'object') db.blockedUsers = {};
+  if (!db.followingUsers || typeof db.followingUsers !== 'object') db.followingUsers = {};
+
+  const resolveStandaloneUsername = (uidToResolve: string, hint?: string): string => {
+    if (hint && hint.trim()) return hint.replace(/^@/, '').trim();
+    const u = db.users[uidToResolve];
+    const p = db.profiles[uidToResolve];
+    if (u?.username && u.username.trim()) return u.username.trim();
+    if (p?.username && p.username.trim()) return p.username.trim();
+    const saved = localStorage.getItem('caloriq_user_email') || '';
+    if (saved.trim()) return saved.replace(/^@/, '').split('@')[0].trim();
+    return 'housefly';
+  };
+
+  if (pathname === '/api/community/posts' && method === 'GET') {
+    const filter = (url.searchParams.get('filter') || 'all').toLowerCase();
+    const blocked = new Set((db.blockedUsers[userId] || []).map((s) => String(s).toLowerCase()));
+    const following = new Set([
+      ...(db.followingUsers[userId] || []).map((s) => String(s).toLowerCase()),
+      ...(db.friends || []).filter((f) => f.userId === userId && f.username).map((f) => f.username.toLowerCase())
+    ]);
+    const myUsername = resolveStandaloneUsername(userId).toLowerCase();
+    const filtered = db.posts
+      .filter((p) => {
+        if (!p || !p.id) return false;
+        const pUser = String(p.username || '').toLowerCase();
+        if (blocked.has(String(p.userId || '').toLowerCase()) || blocked.has(pUser)) return false;
+        if (filter === 'mine') {
+          return p.userId === userId || (myUsername && pUser === myUsername);
+        }
+        if (filter === 'following') {
+          return following.has(pUser) || following.has(String(p.userId || '').toLowerCase());
+        }
+        return true;
+      })
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+      .map((p) => {
+        const likers = db.postLikes[p.id] || [];
+        const replyCount = db.replies.filter((r) => r && r.postId === p.id).length;
+        return {
+          ...p,
+          likeCount: likers.length > 0 || p.likeCount === 0 ? likers.length : p.likeCount || 0,
+          replyCount,
+          likedByMe: likers.includes(userId),
+          isFollowingAuthor: following.has(String(p.username || '').toLowerCase())
+        };
+      });
+    return { posts: filtered };
+  }
+
+  if (pathname === '/api/community/posts' && method === 'POST') {
+    const cleanText = String(body.text || '').trim();
+    if (!cleanText) {
+      throw new Error('Post text is required.');
+    }
+    if (cleanText.length > 500) {
+      throw new Error('Posts cannot exceed 500 characters.');
+    }
+    const postId = uid('post');
+    const authorUsername = resolveStandaloneUsername(userId, body.username);
+    const cleanImage = body.imageUrl && String(body.imageUrl).trim() ? String(body.imageUrl).trim() : undefined;
+    const post: CommunityPost = {
+      id: postId,
+      userId,
+      username: authorUsername,
+      text: cleanText,
+      ...(cleanImage ? { imageUrl: cleanImage } : {}),
+      createdAt: Date.now(),
+      likeCount: 0,
+      replyCount: 0,
+      likedByMe: false
+    };
+    db.posts.unshift(post);
+    db.postLikes[postId] = [];
+    saveDb();
+    return { post };
+  }
+
+  if (pathname.startsWith('/api/community/posts/') && method === 'GET') {
+    const postId = decodeURIComponent(pathname.split('/').pop()!);
+    const rawPost = db.posts.find((p) => p && p.id === postId) || null;
+    if (!rawPost) {
+      return { post: null, replies: [] };
+    }
+    const likers = db.postLikes[postId] || [];
+    const postReplies = db.replies
+      .filter((r) => r && r.postId === postId)
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    return {
+      post: {
+        ...rawPost,
+        likeCount: likers.length > 0 || rawPost.likeCount === 0 ? likers.length : rawPost.likeCount || 0,
+        replyCount: postReplies.length,
+        likedByMe: likers.includes(userId)
+      },
+      replies: postReplies
+    };
+  }
+
+  if (pathname.endsWith('/like') && pathname.startsWith('/api/community/posts/') && method === 'POST') {
+    const parts = pathname.split('/');
+    const postId = decodeURIComponent(parts[parts.length - 2]);
+    const post = db.posts.find((p) => p && p.id === postId);
+    if (!db.postLikes[postId]) db.postLikes[postId] = [];
+    const likers = db.postLikes[postId];
+    const idx = likers.indexOf(userId);
+    let liked = false;
+    if (idx >= 0) {
+      likers.splice(idx, 1);
+      liked = false;
+    } else {
+      likers.push(userId);
+      liked = true;
+    }
+    if (post) {
+      post.likeCount = likers.length;
+    }
+    saveDb();
+    return { liked, likeCount: likers.length };
+  }
+
+  if (pathname.endsWith('/replies') && pathname.startsWith('/api/community/posts/') && method === 'POST') {
+    const parts = pathname.split('/');
+    const postId = decodeURIComponent(parts[parts.length - 2]);
+    const cleanText = String(body.text || '').trim();
+    if (!cleanText) {
+      throw new Error('Reply text is required.');
+    }
+    const reply: CommunityReply = {
+      id: uid('reply'),
+      postId,
+      userId,
+      username: resolveStandaloneUsername(userId, body.username),
+      text: cleanText,
+      createdAt: Date.now()
+    };
+    db.replies.push(reply);
+    const post = db.posts.find((p) => p && p.id === postId);
+    if (post) {
+      post.replyCount = db.replies.filter((r) => r && r.postId === postId).length;
+    }
+    saveDb();
+    return { reply };
+  }
+
+  if (pathname.endsWith('/report') && pathname.startsWith('/api/community/posts/') && method === 'POST') {
+    const parts = pathname.split('/');
+    const postId = decodeURIComponent(parts[parts.length - 2]);
+    const report: ReportedPostRecord = {
+      id: uid('report'),
+      postId,
+      reportedByUserId: userId,
+      reportedByUsername: resolveStandaloneUsername(userId),
+      reason: String(body.reason || 'Reported by community member'),
+      createdAt: Date.now()
+    };
+    db.postReports.push(report);
+    saveDb();
+    return { reported: true, report };
+  }
+
+  if (pathname === '/api/community/block' && method === 'POST') {
+    const target = String(body.targetUserId || body.username || '').trim().toLowerCase();
+    if (!db.blockedUsers[userId]) db.blockedUsers[userId] = [];
+    if (target && !db.blockedUsers[userId].includes(target)) {
+      db.blockedUsers[userId].push(target);
+      saveDb();
+    }
+    return { blocked: true };
+  }
+
+  if (pathname === '/api/community/follow' && method === 'POST') {
+    const target = String(body.username || '').replace(/^@/, '').trim().toLowerCase();
+    if (!db.followingUsers[userId]) db.followingUsers[userId] = [];
+    const list = db.followingUsers[userId];
+    const idx = list.indexOf(target);
+    let following = false;
+    if (idx >= 0) {
+      list.splice(idx, 1);
+      following = false;
+    } else if (target) {
+      list.push(target);
+      following = true;
+    }
+    saveDb();
+    return { following };
   }
 
   // USDA / BUILTIN SEARCH

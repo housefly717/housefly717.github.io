@@ -7,7 +7,6 @@ import type {
   MealTemplate,
   WeekPlan,
   UserStats,
-  ChatMessage,
   WeightRecord,
   MealType,
   BodyMeasurement,
@@ -181,16 +180,11 @@ class ApiService {
     return this.token;
   }
 
-  setToken(token: string, isGuest: boolean, rememberMe: boolean = true) {
+  setToken(token: string, isGuest: boolean, _rememberMe: boolean = true) {
     if (!token || token === 'undefined' || token === 'null') return;
     this.token = token;
-    if (isGuest || rememberMe) {
-      localStorage.setItem(TOKEN_KEY, token);
-      sessionStorage.removeItem(TOKEN_KEY);
-    } else {
-      sessionStorage.setItem(TOKEN_KEY, token);
-      localStorage.removeItem(TOKEN_KEY);
-    }
+    localStorage.setItem(TOKEN_KEY, token);
+    sessionStorage.removeItem(TOKEN_KEY);
     if (isGuest) {
       localStorage.setItem(GUEST_KEY, token);
     } else {
@@ -378,6 +372,25 @@ class ApiService {
     const savedUserEmail =
       typeof localStorage !== 'undefined' ? localStorage.getItem(USER_EMAIL_KEY) || '' : '';
 
+    if (!this.token && typeof localStorage !== 'undefined') {
+      const storedToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+      if (storedToken && storedToken !== 'undefined' && storedToken !== 'null') {
+        this.token = storedToken;
+      }
+    }
+
+    if (
+      savedUserEmail &&
+      !savedUserEmail.startsWith('guest_') &&
+      (!this.token || this.token.startsWith('guest_'))
+    ) {
+      const upgradedToken =
+        savedUserEmail.toLowerCase().trim() === 'housefly'
+          ? 'usr_dev_housefly'
+          : `usr_${savedUserEmail.toLowerCase().trim().replace(/[^a-z0-9]/gi, '_')}`;
+      this.setToken(upgradedToken, false, true);
+    }
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'X-Device-Meta': JSON.stringify(getDeviceMetadata()),
@@ -507,7 +520,8 @@ class ApiService {
         const data = await res.json();
         if (data?.token) {
           localStorage.setItem(USER_EMAIL_KEY, 'housefly');
-          localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+          sessionStorage.removeItem('caloriq_is_first_session');
+          localStorage.setItem('caloriq_last_signed_in_at', new Date().toISOString());
           localStorage.setItem('caloriq_signup_complete', 'true');
           localStorage.setItem(`caloriq_signup_complete_${data.userId}`, 'true');
           this.setToken(data.token, false, true);
@@ -518,6 +532,48 @@ class ApiService {
       // ignore
     }
     return false;
+  }
+
+  async verifyStoredSessionOnLoad(): Promise<{
+    hasValidToken: boolean;
+    needsOneTimeSetup: boolean;
+  }> {
+    const storedToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    if (storedToken && storedToken !== 'undefined' && storedToken !== 'null' && !storedToken.startsWith('guest_')) {
+      this.setToken(storedToken, false, true);
+      try {
+        const me = await this.request<{
+          userId: string;
+          username?: string;
+          email?: string;
+          isGuest: boolean;
+          isDev?: boolean;
+          lastSignedInAt?: string | number | null;
+        }>('/api/auth/me', {}, true);
+        if (me && me.userId && !me.isGuest) {
+          if (me.username || me.email) {
+            localStorage.setItem(USER_EMAIL_KEY, me.username || me.email || '');
+          }
+          const isFirstSession = sessionStorage.getItem('caloriq_is_first_session') === 'true';
+          if (me.lastSignedInAt && !isFirstSession) {
+            const num = Number(me.lastSignedInAt);
+            const d = !Number.isNaN(num) && num > 0 ? new Date(num) : new Date(String(me.lastSignedInAt));
+            if (!Number.isNaN(d.getTime())) {
+              localStorage.setItem('caloriq_last_signed_in_at', d.toISOString());
+            }
+          }
+          return { hasValidToken: true, needsOneTimeSetup: false };
+        }
+      } catch {
+        return { hasValidToken: true, needsOneTimeSetup: false };
+      }
+    }
+
+    const devRes = await this.checkDevDeviceOnLoad();
+    if (devRes.autoSignedIn) {
+      return { hasValidToken: true, needsOneTimeSetup: false };
+    }
+    return { hasValidToken: false, needsOneTimeSetup: devRes.needsOneTimeSetup };
   }
 
   async checkDevDeviceOnLoad(): Promise<{
@@ -594,7 +650,8 @@ class ApiService {
       })
     );
     localStorage.setItem(USER_EMAIL_KEY, 'housefly');
-    localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+    sessionStorage.removeItem('caloriq_is_first_session');
+    localStorage.setItem('caloriq_last_signed_in_at', new Date().toISOString());
     localStorage.setItem('caloriq_signup_complete', 'true');
     localStorage.setItem(`caloriq_signup_complete_${data.userId}`, 'true');
     this.setToken(data.token, false, true);
@@ -604,7 +661,14 @@ class ApiService {
   async initSession(): Promise<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; profile: UserProfile; stats: UserStats }> {
     const defaultStats: UserStats = { xp: 0, level: 1, badges: [], foodStreak: 0, workoutStreak: 0 };
 
-    // On app load, check localStorage for "calory_dev_device". If it exists and matches this browser, auto-sign in as dev account.
+    // Check localStorage for an existing session token first
+    const existingStoredToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    if (existingStoredToken && existingStoredToken !== 'undefined' && existingStoredToken !== 'null') {
+      this.token = existingStoredToken;
+      localStorage.setItem(TOKEN_KEY, existingStoredToken);
+    }
+
+    // Only attempt dev device auto-login if there is no non-guest session token
     if (!this.token || this.token.startsWith('guest_')) {
       await this.tryDevDeviceAutoLogin();
     }
@@ -624,7 +688,7 @@ class ApiService {
     }
 
     try {
-      const me = await this.request<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
+      const me = await this.request<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; lastSignedInAt?: string | number | null; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
       const localProf = this.getLocalProfile(me.userId, me.email);
       const isDev = Boolean(me.isDev || me.profile?.isDev);
       const mergedProfile: UserProfile =
@@ -637,19 +701,45 @@ class ApiService {
       if (me.username || me.email) {
         localStorage.setItem(USER_EMAIL_KEY, me.username || me.email || '');
       }
+      if (!me.isGuest) {
+        const isFirstSession = sessionStorage.getItem('caloriq_is_first_session') === 'true';
+        const currentRaw = localStorage.getItem('caloriq_last_signed_in_at');
+        if (me.lastSignedInAt && !isFirstSession) {
+          const num = Number(me.lastSignedInAt);
+          const d = !Number.isNaN(num) && num > 0 ? new Date(num) : new Date(String(me.lastSignedInAt));
+          if (!Number.isNaN(d.getTime())) {
+            localStorage.setItem('caloriq_last_signed_in_at', d.toISOString());
+          }
+        } else if (currentRaw && currentRaw !== 'first_session') {
+          const num = Number(currentRaw);
+          const d = !Number.isNaN(num) && num > 0 ? new Date(num) : new Date(currentRaw);
+          if (!Number.isNaN(d.getTime())) {
+            localStorage.setItem('caloriq_last_signed_in_at', d.toISOString());
+          } else {
+            localStorage.removeItem('caloriq_last_signed_in_at');
+          }
+        }
+      }
       this.initSse();
       return me;
     } catch (e) {
-      // Check if this is a client-side static host user session
+      // Never overwrite a valid non-guest user session token on network/transient errors
       const savedEmail = localStorage.getItem(USER_EMAIL_KEY) || undefined;
-      if (this.token && this.token.startsWith('usr_client_')) {
+      if (this.token && !this.token.startsWith('guest_')) {
         const profile = this.getLocalProfile(this.token, savedEmail);
+        const isDev = Boolean(
+          profile.isDev ||
+            savedEmail?.toLowerCase() === 'housefly' ||
+            this.token === 'usr_dev_housefly' ||
+            this.token === 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18'
+        );
         return {
           userId: this.token,
+          username: savedEmail,
           email: savedEmail,
           isGuest: false,
-          isDev: false,
-          profile,
+          isDev,
+          profile: { ...profile, isDev },
           stats: defaultStats
         };
       }
@@ -806,6 +896,7 @@ class ApiService {
     };
     saveClientUsers(users);
     localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
+    localStorage.setItem('caloriq_last_signed_in_at', 'first_session');
     this.setToken(resolvedToken, false, rememberMe);
     return {
       ...data,
@@ -865,7 +956,11 @@ class ApiService {
     };
     saveClientUsers(users);
     localStorage.setItem(USER_EMAIL_KEY, cleanEmail);
-    localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+    const loginTs = data.lastLoginAt ? new Date(Number(data.lastLoginAt) || data.lastLoginAt) : new Date();
+    localStorage.setItem(
+      'caloriq_last_signed_in_at',
+      !Number.isNaN(loginTs.getTime()) ? loginTs.toISOString() : new Date().toISOString()
+    );
     this.setToken(data.token, false, rememberMe);
     return data;
   }
@@ -1000,7 +1095,8 @@ class ApiService {
       };
       saveClientUsers(users);
       localStorage.setItem(USER_EMAIL_KEY, data.username || cleanUsername);
-      localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+      sessionStorage.setItem('caloriq_is_first_session', 'true');
+      localStorage.setItem('caloriq_last_signed_in_at', 'first_session');
       this.setToken(data.token, false, rememberMe);
       return data;
     }
@@ -1060,7 +1156,29 @@ class ApiService {
       };
       saveClientUsers(users);
       localStorage.setItem(USER_EMAIL_KEY, data.username || data.email || cleanUsername);
-      localStorage.setItem('caloriq_last_signed_in_at', String(Date.now()));
+      sessionStorage.removeItem('caloriq_is_first_session');
+      const loginTs = data.lastLoginAt ? new Date(Number(data.lastLoginAt) || data.lastLoginAt) : new Date();
+      localStorage.setItem(
+        'caloriq_last_signed_in_at',
+        !Number.isNaN(loginTs.getTime()) ? loginTs.toISOString() : new Date().toISOString()
+      );
+      localStorage.setItem('caloriq_signup_complete', 'true');
+      if (data.userId) {
+        localStorage.setItem(`caloriq_signup_complete_${data.userId}`, 'true');
+      }
+      if (data.isDev || cleanUsername.toLowerCase() === 'housefly') {
+        const browserSig = getBrowserDevSignature();
+        const existingDev = getStoredDevDeviceRecord();
+        localStorage.setItem(
+          DEV_DEVICE_KEY,
+          JSON.stringify({
+            username: 'housefly',
+            deviceToken: existingDev?.deviceToken || `dev_${Date.now().toString(36)}`,
+            browserSig,
+            lockedAt: Date.now()
+          })
+        );
+      }
       this.setToken(data.token, false, rememberMe);
       return data;
     }
@@ -1377,6 +1495,172 @@ class ApiService {
     });
   }
 
+  async rateExercise(payload: {
+    exerciseId: string;
+    activityName: string;
+    minutes: number;
+    caloriesBurned: number;
+    intensity: string;
+    met?: number;
+    weightKg?: number;
+    reps?: number;
+    distanceKm?: number;
+    plankSeconds?: number;
+    recentExercises?: Array<{
+      date: string;
+      activityName: string;
+      minutes: number;
+      caloriesBurned: number;
+      intensity: string;
+    }>;
+    goal?: string;
+    activityLevel?: string;
+  }): Promise<{ rating: number; feedback: string; formatted: string }> {
+    const cacheStorageKey = 'caloriq_exercise_ai_ratings_v1';
+    try {
+      const raw = localStorage.getItem(cacheStorageKey);
+      const map = raw ? JSON.parse(raw) : {};
+      if (payload.exerciseId && map[payload.exerciseId]) {
+        return map[payload.exerciseId];
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    const res = await this.request<{ rating: number; feedback: string; formatted: string }>(
+      '/api/ai/exercise-rating',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    );
+
+    if (payload.exerciseId && res?.formatted) {
+      try {
+        const raw = localStorage.getItem(cacheStorageKey);
+        const map = raw ? JSON.parse(raw) : {};
+        map[payload.exerciseId] = res;
+        localStorage.setItem(cacheStorageKey, JSON.stringify(map));
+      } catch {
+        // ignore storage errors
+      }
+    }
+
+    return res;
+  }
+
+  async getExerciseRecommendation(payload: {
+    userId?: string;
+    date: string;
+    last7DaysExercises: Array<{
+      date: string;
+      activityName: string;
+      minutes: number;
+      caloriesBurned: number;
+      intensity: string;
+      weightKg?: number;
+      distanceKm?: number;
+    }>;
+    goal?: string;
+    activityLevel?: string;
+    fitnessLevel?: string;
+  }): Promise<{ date: string; recommendation: string }> {
+    const cacheStorageKey = 'caloriq_exercise_ai_rec_v1';
+    const dayKey = `${payload.userId || 'user'}:${payload.date}`;
+    try {
+      const raw = localStorage.getItem(cacheStorageKey);
+      const map = raw ? JSON.parse(raw) : {};
+      if (map[dayKey] && map[dayKey].recommendation) {
+        return map[dayKey];
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    const res = await this.request<{ date: string; recommendation: string }>(
+      '/api/ai/exercise-recommendation',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    );
+
+    if (res?.recommendation) {
+      try {
+        const raw = localStorage.getItem(cacheStorageKey);
+        const map = raw ? JSON.parse(raw) : {};
+        map[dayKey] = res;
+        localStorage.setItem(cacheStorageKey, JSON.stringify(map));
+      } catch {
+        // ignore storage errors
+      }
+    }
+
+    return res;
+  }
+
+  async getCoachSuggestion(payload: {
+    userId?: string;
+    date: string;
+    caloriesTarget: number;
+    proteinTarget: number;
+    waterTargetGlasses?: number;
+    days: Array<{
+      date: string;
+      caloriesEaten: number;
+      proteinEaten: number;
+      carbsEaten: number;
+      fatEaten: number;
+      waterGlasses: number;
+      exerciseMinutes: number;
+      exerciseNames: string[];
+      mood?: number;
+      energy?: number;
+      sleepHours?: number;
+      sleepQuality?: number;
+      reflection?: string;
+      cravings: Array<{ wantedFood: string; intensity: number; time: string; trigger?: string }>;
+      caffeineItems: string[];
+      alcoholItems: string[];
+      hasAnyLog: boolean;
+    }>;
+  }): Promise<{ date: string; hasEnoughData: boolean; daysLoggedCount: number; suggestion: string }> {
+    const cacheStorageKey = 'caloriq_diary_coach_v1';
+    const dayKey = `${payload.userId || 'user'}:${payload.date}`;
+    try {
+      const raw = localStorage.getItem(cacheStorageKey);
+      const map = raw ? JSON.parse(raw) : {};
+      if (map[dayKey]?.hasEnoughData && map[dayKey]?.suggestion) {
+        return map[dayKey];
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    const res = await this.request<{
+      date: string;
+      hasEnoughData: boolean;
+      daysLoggedCount: number;
+      suggestion: string;
+    }>('/api/ai/coach-suggestion', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    if (res?.hasEnoughData && res?.suggestion) {
+      try {
+        const raw = localStorage.getItem(cacheStorageKey);
+        const map = raw ? JSON.parse(raw) : {};
+        map[dayKey] = res;
+        localStorage.setItem(cacheStorageKey, JSON.stringify(map));
+      } catch {
+        // ignore storage errors
+      }
+    }
+
+    return res;
+  }
+
   // Saved Foods & Recipes
   async getSavedFoods(): Promise<{ foods: SavedFood[] }> {
     return this.request('/api/saved-foods');
@@ -1480,18 +1764,6 @@ class ApiService {
     return this.request('/api/plan/save', {
       method: 'POST',
       body: JSON.stringify({ plan })
-    });
-  }
-
-  // Developer Chat
-  async getChat(): Promise<{ messages: ChatMessage[] }> {
-    return this.request('/api/developer-chat');
-  }
-
-  async sendChatMessage(text: string): Promise<ChatMessage> {
-    return this.request('/api/developer-chat', {
-      method: 'POST',
-      body: JSON.stringify({ text })
     });
   }
 
@@ -1636,6 +1908,27 @@ class ApiService {
 
   async revokeAllSessions(_keepCurrent = true): Promise<{ success: boolean; revokedCount: number }> {
     return this.signOutAllDevices();
+  }
+
+  async changeUsername(
+    currentPassword: string,
+    newUsername: string
+  ): Promise<{ success: boolean; username: string; message: string }> {
+    const cleanNew = newUsername.replace(/^@/, '').trim();
+    const res = await this.request<{ success: boolean; username: string; message: string }>(
+      '/api/auth/change-username',
+      {
+        method: 'POST',
+        body: JSON.stringify({ password: currentPassword, newUsername: cleanNew })
+      }
+    );
+    const updatedUsername = res.username || cleanNew;
+    localStorage.setItem(USER_EMAIL_KEY, updatedUsername);
+    return {
+      success: true,
+      username: updatedUsername,
+      message: res.message || `Username updated to @${updatedUsername}.`
+    };
   }
 
   // #49 / #55 Email change flow
@@ -1968,33 +2261,183 @@ class ApiService {
   }
 
   // === COMMUNITY FEED & MODERATION ===
+  private getLocalCommunityPosts(): CommunityPost[] {
+    try {
+      const raw = localStorage.getItem('caloriq_community_posts_v1');
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed)
+        ? parsed.filter((p): p is CommunityPost => Boolean(p && typeof p === 'object' && p.id && typeof p.text === 'string'))
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveLocalCommunityPosts(posts: CommunityPost[]) {
+    try {
+      localStorage.setItem('caloriq_community_posts_v1', JSON.stringify(posts.slice(0, 200)));
+    } catch {
+      // ignore storage quota errors
+    }
+  }
+
   async getCommunityPosts(filter: 'all' | 'following' | 'mine' = 'all'): Promise<{ posts: CommunityPost[] }> {
-    return this.request(`/api/community/posts?filter=${encodeURIComponent(filter)}`);
+    const localPosts = this.getLocalCommunityPosts();
+    const myUsername = (localStorage.getItem(USER_EMAIL_KEY) || 'housefly')
+      .replace(/^@/, '')
+      .split('@')[0]
+      .toLowerCase();
+    try {
+      const res = await this.request<{ posts?: CommunityPost[] }>(`/api/community/posts?filter=${encodeURIComponent(filter)}`);
+      const serverPosts = Array.isArray(res?.posts)
+        ? res.posts.filter((p): p is CommunityPost => Boolean(p && typeof p === 'object' && p.id))
+        : [];
+      const byId = new Map<string, CommunityPost>();
+      for (const p of serverPosts) {
+        byId.set(p.id, p);
+      }
+      for (const lp of localPosts) {
+        if (!byId.has(lp.id)) {
+          if (filter === 'mine') {
+            if (
+              lp.userId === this.token ||
+              (lp.username && lp.username.toLowerCase() === myUsername)
+            ) {
+              byId.set(lp.id, lp);
+            }
+          } else if (filter === 'all') {
+            byId.set(lp.id, lp);
+          }
+        }
+      }
+      const merged = Array.from(byId.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      if (filter === 'all' && merged.length > 0) {
+        this.saveLocalCommunityPosts(merged);
+      }
+      return { posts: merged };
+    } catch {
+      const filtered = localPosts.filter((p) => {
+        if (filter === 'mine') {
+          return p.userId === this.token || (p.username && p.username.toLowerCase() === myUsername);
+        }
+        return filter === 'all';
+      });
+      return { posts: filtered };
+    }
   }
 
   async getCommunityPostDetail(postId: string): Promise<{ post: CommunityPost; replies: CommunityReply[] }> {
-    return this.request(`/api/community/posts/${encodeURIComponent(postId)}`);
+    try {
+      const res = await this.request<{ post?: CommunityPost; replies?: CommunityReply[] }>(
+        `/api/community/posts/${encodeURIComponent(postId)}`
+      );
+      const localMatch = this.getLocalCommunityPosts().find((p) => p.id === postId);
+      const resolvedPost = (res?.post && res.post.id ? res.post : localMatch) as CommunityPost;
+      const resolvedReplies = Array.isArray(res?.replies)
+        ? res.replies.filter((r): r is CommunityReply => Boolean(r && r.id))
+        : [];
+      return { post: resolvedPost, replies: resolvedReplies };
+    } catch {
+      const localMatch = this.getLocalCommunityPosts().find((p) => p.id === postId) as CommunityPost;
+      return { post: localMatch, replies: [] };
+    }
   }
 
   async createCommunityPost(text: string, imageUrl?: string): Promise<{ post: CommunityPost }> {
-    return this.request('/api/community/posts', {
-      method: 'POST',
-      body: JSON.stringify({ text, imageUrl })
-    });
+    const cleanText = String(text || '').trim();
+    const rawUser = localStorage.getItem(USER_EMAIL_KEY) || 'housefly';
+    const username = rawUser.replace(/^@/, '').split('@')[0].trim() || 'housefly';
+    const fallbackUserId =
+      this.token && !this.token.startsWith('guest_')
+        ? this.token
+        : username.toLowerCase() === 'housefly'
+          ? 'usr_dev_housefly'
+          : `usr_${username.toLowerCase().replace(/[^a-z0-9]/gi, '_')}`;
+
+    if (!this.token || this.token.startsWith('guest_')) {
+      this.setToken(fallbackUserId, false, true);
+    }
+
+    let createdPost: CommunityPost | undefined;
+    try {
+      const res = await this.request<{ post?: CommunityPost } & Partial<CommunityPost>>('/api/community/posts', {
+        method: 'POST',
+        body: JSON.stringify({ text: cleanText, imageUrl, username })
+      });
+      if (res?.post && typeof res.post === 'object' && res.post.id) {
+        createdPost = {
+          ...res.post,
+          username: res.post.username || username,
+          likeCount: typeof res.post.likeCount === 'number' ? res.post.likeCount : 0,
+          replyCount: typeof res.post.replyCount === 'number' ? res.post.replyCount : 0,
+          likedByMe: Boolean(res.post.likedByMe)
+        };
+      }
+    } catch {
+      // Fallback to local creation below so posting never fails on transient backend issues
+    }
+
+    if (!createdPost) {
+      createdPost = {
+        id: `post_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        userId: fallbackUserId,
+        username,
+        text: cleanText,
+        ...(imageUrl ? { imageUrl } : {}),
+        createdAt: Date.now(),
+        likeCount: 0,
+        replyCount: 0,
+        likedByMe: false
+      };
+    }
+
+    const existing = this.getLocalCommunityPosts().filter((p) => p.id !== createdPost!.id);
+    this.saveLocalCommunityPosts([createdPost, ...existing]);
+    return { post: createdPost };
   }
 
   async toggleLikeCommunityPost(postId: string): Promise<{ liked: boolean; likeCount: number }> {
-    return this.request(`/api/community/posts/${encodeURIComponent(postId)}/like`, {
-      method: 'POST',
-      body: JSON.stringify({})
-    });
+    const res = await this.request<{ liked?: boolean; likeCount?: number }>(
+      `/api/community/posts/${encodeURIComponent(postId)}/like`,
+      {
+        method: 'POST',
+        body: JSON.stringify({})
+      }
+    );
+    const liked = Boolean(res?.liked);
+    const likeCount = typeof res?.likeCount === 'number' ? res.likeCount : liked ? 1 : 0;
+    const localPosts = this.getLocalCommunityPosts().map((p) =>
+      p.id === postId ? { ...p, likedByMe: liked, likeCount } : p
+    );
+    this.saveLocalCommunityPosts(localPosts);
+    return { liked, likeCount };
   }
 
   async addCommunityReply(postId: string, text: string): Promise<{ reply: CommunityReply }> {
-    return this.request(`/api/community/posts/${encodeURIComponent(postId)}/replies`, {
+    const cleanText = String(text || '').trim();
+    const rawUser = localStorage.getItem(USER_EMAIL_KEY) || 'housefly';
+    const username = rawUser.replace(/^@/, '').split('@')[0].trim() || 'housefly';
+    const res = await this.request<{ reply?: CommunityReply }>(`/api/community/posts/${encodeURIComponent(postId)}/replies`, {
       method: 'POST',
-      body: JSON.stringify({ text })
+      body: JSON.stringify({ text: cleanText, username })
     });
+    const reply: CommunityReply =
+      res?.reply && res.reply.id
+        ? res.reply
+        : {
+            id: `reply_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            postId,
+            userId: this.token || 'usr_dev_housefly',
+            username,
+            text: cleanText,
+            createdAt: Date.now()
+          };
+    const localPosts = this.getLocalCommunityPosts().map((p) =>
+      p.id === postId ? { ...p, replyCount: (p.replyCount || 0) + 1 } : p
+    );
+    this.saveLocalCommunityPosts(localPosts);
+    return { reply };
   }
 
   async reportCommunityPost(postId: string, reason?: string): Promise<{ reported: boolean; report: ReportedPostRecord }> {

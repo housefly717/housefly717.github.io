@@ -38,14 +38,6 @@ import {
   getDateBounds
 } from '../utils/validation.js';
 import { SwipeableItem } from './SwipeableItem.js';
-import { HealthAndImportSection } from './HealthAndImportSection.js';
-import { NutritionDepthSection } from './NutritionDepthSection.js';
-import {
-  estimateGlycemicIndex,
-  detectAdditiveWarnings,
-  estimateMealCarbonKg,
-  getLowerCalorieSwap
-} from '../utils/nutritionDepth.js';
 import type { MealType, FoodItem } from '../types/index.js';
 
 const TIPS_OF_THE_DAY = [
@@ -58,15 +50,7 @@ const TIPS_OF_THE_DAY = [
   'Consistency across seven days matters far more than any single meal.'
 ];
 
-const JOURNAL_PROMPTS = [
-  "What made today easy or hard?",
-  "Which meal gave you the best energy today?",
-  "What is one small win you are proud of today?",
-  "Did hunger or habit drive your snacking today?",
-  "How did last night's sleep affect your food choices?",
-  "What is one thing you can prep tonight to make tomorrow easier?",
-  "How did your body feel during movement or rest today?"
-];
+const DAILY_REFLECTION_PROMPT = 'How did today go?';
 
 interface DiaryTabProps {
   onNavigateToFitness: () => void;
@@ -74,6 +58,8 @@ interface DiaryTabProps {
 
 export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
   const {
+    userId,
+    isLoading,
     activeDate,
     setActiveDate,
     diaryItems,
@@ -81,10 +67,12 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     waterGlasses,
     updateWaterGlasses,
     exercises,
+    allExercises,
     addExerciseItem,
     profile,
     macroTarget,
     todayHabit,
+    allHabits,
     saveTodayHabit,
     cravings,
     addCravingItem,
@@ -217,10 +205,132 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
     }
   };
 
-  const dailyPrompt = useMemo(() => {
-    const daySeed = Number(activeDate.replace(/-/g, '')) || 0;
-    return JOURNAL_PROMPTS[daySeed % JOURNAL_PROMPTS.length];
-  }, [activeDate]);
+  const dailyPrompt = DAILY_REFLECTION_PROMPT;
+
+  // Coach card state (last 7 days of everything logged, cached once per day)
+  const [coachSuggestion, setCoachSuggestion] = useState<string>(
+    'Keep logging. Patterns will appear after about a week.'
+  );
+  const coachFetchedKeyRef = useRef<string | null>(null);
+
+  const coachSevenDaySummaries = useMemo(() => {
+    const anchor = new Date(todayStr + 'T00:00:00');
+    const summaries = [];
+    const caffeineRegex =
+      /\b(coffee|espresso|latte|cappuccino|americano|matcha|tea|green tea|black tea|energy drink|pre[- ]?workout|caffeine|cola)\b/i;
+    const alcoholRegex =
+      /\b(wine|red wine|white wine|beer|lager|ipa|stout|ale|cider|vodka|whiskey|whisky|bourbon|gin|rum|tequila|cocktail|margarita|champagne|prosecco|spirits|liquor|alcohol)\b/i;
+
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(anchor);
+      d.setDate(d.getDate() - i);
+      const dtStr = d.toISOString().split('T')[0];
+
+      const dayFoods = allDiaryItems.filter((item) => item.date === dtStr);
+      const dayEx = allExercises.filter((ex) => ex.date === dtStr);
+      const dayHabit =
+        dtStr === activeDate && todayHabit
+          ? todayHabit
+          : allHabits.find((h) => h.date === dtStr);
+      const dayCravings = cravings.filter((c) => c.date === dtStr);
+      const dayWater = dtStr === activeDate ? waterGlasses : 0;
+
+      const caloriesEaten = dayFoods.reduce((s, f) => s + (f.calories || 0), 0);
+      const proteinEaten = Math.round(dayFoods.reduce((s, f) => s + (f.protein || 0), 0) * 10) / 10;
+      const carbsEaten = Math.round(dayFoods.reduce((s, f) => s + (f.carbs || 0), 0) * 10) / 10;
+      const fatEaten = Math.round(dayFoods.reduce((s, f) => s + (f.fat || 0), 0) * 10) / 10;
+
+      const caffeineItems = dayFoods
+        .filter((f) => (typeof f.caffeineMg === 'number' && f.caffeineMg > 0) || caffeineRegex.test(f.name || '') || caffeineRegex.test(f.note || ''))
+        .map((f) => (typeof f.caffeineMg === 'number' && f.caffeineMg > 0 ? `${f.name} (${f.caffeineMg}mg caffeine)` : f.name));
+      const alcoholItems = dayFoods
+        .filter((f) => (typeof f.standardDrinks === 'number' && f.standardDrinks > 0) || alcoholRegex.test(f.name || '') || alcoholRegex.test(f.note || ''))
+        .map((f) => (typeof f.standardDrinks === 'number' && f.standardDrinks > 0 ? `${f.name} (${f.standardDrinks} std drinks)` : f.name));
+
+      const hasHabitLog = Boolean(
+        dayHabit &&
+          (dayHabit.mood !== undefined ||
+            dayHabit.energy !== undefined ||
+            dayHabit.sleepHours !== undefined ||
+            dayHabit.sleepQuality !== undefined ||
+            (dayHabit.journalAnswer && dayHabit.journalAnswer.trim().length > 0))
+      );
+
+      const hasAnyLog =
+        dayFoods.length > 0 ||
+        dayEx.length > 0 ||
+        dayWater > 0 ||
+        hasHabitLog ||
+        dayCravings.length > 0;
+
+      summaries.push({
+        date: dtStr,
+        caloriesEaten,
+        proteinEaten,
+        carbsEaten,
+        fatEaten,
+        waterGlasses: dayWater,
+        exerciseMinutes: dayEx.reduce((s, e) => s + (e.minutes || 0), 0),
+        exerciseNames: dayEx.map((e) => e.activityName),
+        mood: dayHabit?.mood,
+        energy: dayHabit?.energy,
+        sleepHours: dayHabit?.sleepHours,
+        sleepQuality: dayHabit?.sleepQuality,
+        reflection: dayHabit?.journalAnswer?.trim() || undefined,
+        cravings: dayCravings.map((c) => ({
+          wantedFood: c.wantedFood,
+          intensity: c.intensity,
+          time: c.time,
+          trigger: c.trigger
+        })),
+        caffeineItems,
+        alcoholItems,
+        hasAnyLog
+      });
+    }
+    return summaries;
+  }, [allDiaryItems, allExercises, allHabits, todayHabit, cravings, waterGlasses, activeDate, todayStr]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    const uidKey = userId || 'user';
+    const dayKey = `${uidKey}:${todayStr}`;
+    const clientLoggedDays = coachSevenDaySummaries.filter((d) => d.hasAnyLog).length;
+
+    try {
+      const raw = localStorage.getItem('caloriq_diary_coach_v1');
+      const map = raw ? JSON.parse(raw) : {};
+      if (map[dayKey]?.hasEnoughData && map[dayKey]?.suggestion) {
+        setCoachSuggestion(map[dayKey].suggestion);
+        coachFetchedKeyRef.current = `${dayKey}:cached`;
+        return;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    const requestKey = `${dayKey}:${clientLoggedDays >= 5 ? '5plus' : clientLoggedDays}`;
+    if (coachFetchedKeyRef.current === requestKey) return;
+    coachFetchedKeyRef.current = requestKey;
+
+    api
+      .getCoachSuggestion({
+        userId: uidKey,
+        date: todayStr,
+        caloriesTarget: macroTarget.calories || 2000,
+        proteinTarget: macroTarget.proteinGrams || 120,
+        waterTargetGlasses: 8,
+        days: coachSevenDaySummaries
+      })
+      .then((res) => {
+        if (res?.suggestion) {
+          setCoachSuggestion(res.suggestion);
+        }
+      })
+      .catch(() => {
+        setCoachSuggestion('Keep logging. Patterns will appear after about a week.');
+      });
+  }, [isLoading, userId, todayStr, coachSevenDaySummaries, macroTarget.calories, macroTarget.proteinGrams]);
 
   const dailyTip = useMemo(() => {
     const daySeed = Number(activeDate.replace(/-/g, '')) || 0;
@@ -314,6 +424,51 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
   const carbsEaten = Math.round(diaryItems.reduce((sum, i) => sum + (i.carbs || 0), 0) * 10) / 10;
   const fatEaten = Math.round(diaryItems.reduce((sum, i) => sum + (i.fat || 0), 0) * 10) / 10;
   const proteinEaten = Math.round(diaryItems.reduce((sum, i) => sum + (i.protein || 0), 0) * 10) / 10;
+  const sodiumEaten = Math.round(
+    diaryItems.reduce((sum, i) => {
+      if (typeof i.sodium === 'number') return sum + i.sodium;
+      return sum + Math.round((i.calories || 0) * 1.15);
+    }, 0)
+  );
+  const sugarEaten =
+    Math.round(
+      diaryItems.reduce((sum, i) => {
+        if (typeof i.sugar === 'number') return sum + i.sugar;
+        const isSweet = /honey|sugar|chocolate|cookie|cake|juice|soda|syrup|jam|yogurt|berry|banana|fruit/i.test(
+          i.name || ''
+        );
+        const c = i.carbs || 0;
+        return sum + (isSweet ? Math.max(4, c * 0.35) : c * 0.1);
+      }, 0) * 10
+    ) / 10;
+  const caffeineEatenMg = Math.round(
+    diaryItems.reduce((sum, i) => {
+      if (typeof i.caffeineMg === 'number') return sum + i.caffeineMg;
+      const lower = `${i.name || ''} ${i.serving || ''}`.toLowerCase();
+      if (/\b(decaf|decaffeinated|herbal)\b/.test(lower)) return sum;
+      if (/\b(espresso)\b/.test(lower)) return sum + 63;
+      if (/\b(coffee|americano|latte|cappuccino|cold brew|flat white)\b/.test(lower)) return sum + 95;
+      if (/\b(matcha|energy drink|red bull|monster)\b/.test(lower)) return sum + 80;
+      if (/\b(black tea|green tea|tea)\b/.test(lower)) return sum + 35;
+      return sum;
+    }, 0)
+  );
+  const standardDrinksEaten =
+    Math.round(
+      diaryItems.reduce((sum, i) => {
+        if (typeof i.standardDrinks === 'number') return sum + i.standardDrinks;
+        const lower = `${i.name || ''} ${i.serving || ''}`.toLowerCase();
+        if (
+          /\b(beer|lager|ale|ipa|stout|cider|wine|prosecco|champagne|whiskey|whisky|vodka|gin|rum|tequila|cocktail|margarita)\b/.test(
+            lower
+          ) &&
+          !/\b(non-alcoholic|ginger beer|root beer|vinegar)\b/.test(lower)
+        ) {
+          return sum + 1;
+        }
+        return sum;
+      }, 0) * 10
+    ) / 10;
 
   // Macro progress percentages
   const carbsPercent = hasStats ? Math.min(100, Math.round((carbsEaten / (macroTarget.carbsGrams || 1)) * 100)) : 0;
@@ -855,8 +1010,8 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
       >
         <p id="sr-macro-bars-summary" className="sr-only">
           {hasStats
-            ? `Macronutrients today: Carbohydrates ${carbsEaten} of ${macroTarget.carbsGrams} grams (${carbsPercent}%), Fat ${fatEaten} of ${macroTarget.fatGrams} grams (${fatPercent}%), Protein ${proteinEaten} of ${macroTarget.proteinGrams} grams (${proteinPercent}%).`
-            : 'Macronutrients today: Set up your profile to see macro gram targets.'}
+            ? `Macronutrients today: Carbohydrates ${carbsEaten} of ${macroTarget.carbsGrams} grams (${carbsPercent}%), Fat ${fatEaten} of ${macroTarget.fatGrams} grams (${fatPercent}%), Protein ${proteinEaten} of ${macroTarget.proteinGrams} grams (${proteinPercent}%), Sodium ${sodiumEaten} of 2300 milligrams, Sugar ${sugarEaten} of 25 grams.`
+            : `Macronutrients today: Set up your profile to see macro gram targets. Sodium ${sodiumEaten} of 2300 milligrams, Sugar ${sugarEaten} of 25 grams.`}
         </p>
         <div className="flex items-center justify-between">
           <div className="text-xs font-semibold text-zinc-300">Daily Macronutrients</div>
@@ -934,6 +1089,64 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             </div>
           </div>
         </div>
+
+        <div className="grid grid-cols-2 gap-2.5 pt-0.5">
+          <div className="bg-zinc-950/70 border border-orange-500/25 rounded-full px-3 py-1.5 flex items-center justify-between text-[11px]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-orange-500 shrink-0" />
+              <span className="font-semibold text-orange-400">Sodium</span>
+            </div>
+            <div className="font-mono text-[10px] text-zinc-400">
+              <span className={`font-bold ${sodiumEaten > 2300 ? 'text-orange-300' : 'text-zinc-200'}`}>
+                {sodiumEaten.toLocaleString()}
+              </span>
+              <span> / 2,300 mg</span>
+            </div>
+          </div>
+
+          <div className="bg-zinc-950/70 border border-pink-500/25 rounded-full px-3 py-1.5 flex items-center justify-between text-[11px]">
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-pink-500 shrink-0" />
+              <span className="font-semibold text-pink-400">Sugar</span>
+            </div>
+            <div className="font-mono text-[10px] text-zinc-400">
+              <span className={`font-bold ${sugarEaten > 25 ? 'text-pink-300' : 'text-zinc-200'}`}>
+                {sugarEaten}
+              </span>
+              <span> / 25 g</span>
+            </div>
+          </div>
+        </div>
+
+        {(caffeineEatenMg > 0 || standardDrinksEaten > 0) && (
+          <div className="grid grid-cols-2 gap-2.5 pt-0.5">
+            {caffeineEatenMg > 0 && (
+              <div className="bg-zinc-950/70 border border-amber-500/25 rounded-full px-3 py-1.5 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 shrink-0" />
+                  <span className="font-semibold text-amber-300">Caffeine</span>
+                </div>
+                <div className="font-mono text-[10px] text-zinc-400">
+                  <span className="font-bold text-zinc-200">{caffeineEatenMg.toLocaleString()}</span>
+                  <span> mg</span>
+                </div>
+              </div>
+            )}
+
+            {standardDrinksEaten > 0 && (
+              <div className="bg-zinc-950/70 border border-purple-500/25 rounded-full px-3 py-1.5 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-purple-400 shrink-0" />
+                  <span className="font-semibold text-purple-300">Alcohol</span>
+                </div>
+                <div className="font-mono text-[10px] text-zinc-400">
+                  <span className="font-bold text-zinc-200">{standardDrinksEaten}</span>
+                  <span> std drink{standardDrinksEaten === 1 ? '' : 's'}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* WATER TRACKER: Quick-add buttons + 8 tappable glasses per day */}
@@ -1338,32 +1551,6 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                                 <span className="text-xs font-medium text-zinc-200 block truncate">
                                   {item.name}
                                 </span>
-                                {(() => {
-                                  const gi = estimateGlycemicIndex(
-                                    item.name,
-                                    item.carbs,
-                                    item.protein,
-                                    item.fat
-                                  );
-                                  const additives = detectAdditiveWarnings(item.name);
-                                  return (
-                                    <>
-                                      <span
-                                        className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[9px] font-mono ${gi.badgeClass}`}
-                                      >
-                                        {gi.level}
-                                      </span>
-                                      {additives.length > 0 && (
-                                        <span
-                                          title={additives.map((a) => a.additive).join(', ')}
-                                          className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/40 text-[9px] font-mono text-amber-300"
-                                        >
-                                          Additive warning
-                                        </span>
-                                      )}
-                                    </>
-                                  );
-                                })()}
                                 {(item.unusualQuantity || item.note?.includes('Unusual quantity')) && (
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[10px] font-mono font-semibold text-rose-400">
                                     <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
@@ -1371,16 +1558,26 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                                   </span>
                                 )}
                               </div>
-                              <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono">
+                              <div className="flex items-center gap-2 text-[10px] text-zinc-500 font-mono flex-wrap">
                                 <span>{item.serving || '1 portion'}</span>
                                 <span>·</span>
                                 <span className="text-blue-400">{item.carbs}c</span>
                                 <span className="text-amber-400">{item.fat}f</span>
                                 <span className="text-red-400">{item.protein}p</span>
-                                <span>·</span>
-                                <span className="text-zinc-400">
-                                  {estimateMealCarbonKg(item.name, item.calories)}kg CO2e
-                                </span>
+                                {typeof item.caffeineMg === 'number' && item.caffeineMg > 0 && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="text-amber-300">{item.caffeineMg}mg caffeine</span>
+                                  </>
+                                )}
+                                {typeof item.standardDrinks === 'number' && item.standardDrinks > 0 && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="text-purple-300">
+                                      {item.standardDrinks} std drink{item.standardDrinks === 1 ? '' : 's'}
+                                    </span>
+                                  </>
+                                )}
                               </div>
                               {item.note && !isEditingNote && (
                                 <p className="text-[11px] text-zinc-400 mt-1 flex items-center gap-1">
@@ -1394,34 +1591,6 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
                               <span className="text-xs font-bold text-teal-400 font-mono mr-1">
                                 {item.calories} kcal
                               </span>
-                              {/* Group B: AI meal swap — swap any logged meal for a lower-calorie option */}
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  const swap = getLowerCalorieSwap(item);
-                                  await deleteFoodItem(item.id);
-                                  await addFoodItem({
-                                    date: activeDate,
-                                    mealType: item.mealType,
-                                    name: swap.name,
-                                    calories: swap.calories,
-                                    protein: swap.protein,
-                                    carbs: swap.carbs,
-                                    fat: swap.fat,
-                                    serving: '1 swapped lower-calorie portion',
-                                    source: 'ai'
-                                  });
-                                  setCopyStatus(
-                                    `Swapped for "${swap.name}" (-${swap.savedCalories} kcal)`
-                                  );
-                                  setTimeout(() => setCopyStatus(null), 3000);
-                                }}
-                                title="AI Meal Swap: Replace with a lower-calorie option"
-                                aria-label={`Swap ${item.name} for a lower-calorie option`}
-                                className="p-1 text-zinc-400 hover:text-teal-400 rounded transition-colors"
-                              >
-                                <RefreshCw className="w-3.5 h-3.5" />
-                              </button>
                               {/* #15 Leftover tracker on dinner items */}
                               {meal.type === 'dinner' && (
                                 <button
@@ -1535,6 +1704,15 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             </div>
           );
         })}
+      </div>
+
+      {/* COACH CARD (Directly below Snacks meal section) */}
+      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-4 shadow-xl space-y-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4 text-teal-400 shrink-0" />
+          <h4 className="text-xs font-semibold text-zinc-200">Coach</h4>
+        </div>
+        <p className="text-xs text-zinc-300 leading-relaxed">{coachSuggestion}</p>
       </div>
 
       {/* #14 PANTRY, #15 LEFTOVERS, #11 RECEIPT SCAN, #10 FRIDGE PHOTO & #16 WHAT CAN I MAKE? */}
@@ -1864,10 +2042,11 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
             <span className="text-[11px] text-teal-400 font-medium">Saved.</span>
           )}
         </div>
-        <p className="text-xs text-teal-300/90 font-medium">{dailyPrompt}</p>
+        <p className="text-xs text-teal-300/90 font-medium">How did today go?</p>
         <div className="flex gap-2">
           <input
             type="text"
+            minLength={1}
             value={journalDraft}
             onChange={(e) => setJournalDraft(e.target.value)}
             placeholder="Write a brief reflection..."
@@ -1875,15 +2054,18 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           />
           <button
             type="button"
+            disabled={!journalDraft.trim()}
             onClick={async () => {
+              const trimmed = journalDraft.trim();
+              if (!trimmed) return;
               await saveTodayHabit({
-                journalPrompt: dailyPrompt,
-                journalAnswer: journalDraft.trim()
+                journalPrompt: 'How did today go?',
+                journalAnswer: trimmed
               });
               setJournalSavedMsg(true);
               setTimeout(() => setJournalSavedMsg(false), 3000);
             }}
-            className="px-3 py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs shrink-0"
+            className="px-3 py-2 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold rounded-xl text-xs shrink-0"
           >
             Save
           </button>
@@ -2003,12 +2185,6 @@ export const DiaryTab: React.FC<DiaryTabProps> = ({ onNavigateToFitness }) => {
           </div>
         )}
       </div>
-
-      {/* GROUP B: AI & Nutrition Depth (Eat Right Now, History Suggestions, AI Meal Swap, Sunday Report, GI Tags, Omega-3, Additives, Carbon, Food Waste) */}
-      <NutritionDepthSection />
-
-      {/* GROUP A: Health Depth, Vitals, Meds, Supplements, Caffeine, Alcohol, Cycle, Symptoms & CSV Import */}
-      <HealthAndImportSection mode="diary" />
     </div>
   );
 };

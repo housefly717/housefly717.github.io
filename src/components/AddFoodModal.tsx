@@ -178,6 +178,8 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       fiber?: number;
       sugar?: number;
       sodium?: number;
+      caffeineMg?: number;
+      standardDrinks?: number;
       serving?: string;
       note?: string;
       unusualQuantity?: boolean;
@@ -205,6 +207,8 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
       fiber: payload.fiber,
       sugar: payload.sugar,
       sodium: payload.sodium,
+      caffeineMg: payload.caffeineMg,
+      standardDrinks: payload.standardDrinks,
       serving: payload.serving || '1 portion',
       note: payload.note,
       unusualQuantity: payload.unusualQuantity,
@@ -245,6 +249,8 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
         fiber: decipheredFood.totalFiber,
         sugar: decipheredFood.totalSugar,
         sodium: decipheredFood.totalSodiumMg,
+        caffeineMg: decipheredFood.totalCaffeineMg > 0 ? decipheredFood.totalCaffeineMg : undefined,
+        standardDrinks: decipheredFood.totalStandardDrinks > 0 ? decipheredFood.totalStandardDrinks : undefined,
         serving: `${Math.round(decipheredFood.items.reduce((s, i) => s + i.grams, 0) * 10) / 10}g total`,
         note: isUnusualQuantityConfirmed
           ? `Unusual quantity · Health Rating: ${decipheredFood.healthRating}/10`
@@ -1011,7 +1017,7 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                   rows={3}
                   value={smartFoodText}
                   onChange={(e) => setSmartFoodText(e.target.value)}
-                  placeholder="e.g., 80g mangos, 10g yogurt, a pinch of salt"
+                  placeholder="e.g., 80g mangos, 2 cups regular coffee, or 1 glass of beer 150ml 12.5% ABV"
                   required
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500 resize-none leading-relaxed"
                 />
@@ -1051,6 +1057,25 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                     <span className="text-sm font-bold text-zinc-100 font-mono">{decipheredFood.totalProtein}g</span>
                   </div>
                 </div>
+
+                {(decipheredFood.totalCaffeineMg > 0 || decipheredFood.totalStandardDrinks > 0) && (
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    {decipheredFood.totalCaffeineMg > 0 && (
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-300 text-[11px] font-mono">
+                        <span className="font-semibold">Caffeine:</span>
+                        <span className="font-bold">{decipheredFood.totalCaffeineMg} mg</span>
+                      </div>
+                    )}
+                    {decipheredFood.totalStandardDrinks > 0 && (
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-purple-500/10 border border-purple-500/30 text-purple-300 text-[11px] font-mono">
+                        <span className="font-semibold">Alcohol:</span>
+                        <span className="font-bold">
+                          {decipheredFood.totalStandardDrinks} std drink{decipheredFood.totalStandardDrinks === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Confirm Weights & Itemized Ingredient Breakdown */}
                 {decipheredFood.items.length > 0 && (
@@ -1192,6 +1217,8 @@ export const AddFoodModal: React.FC<AddFoodModalProps> = ({ isOpen, onClose, def
                                 <span className="text-zinc-200 font-medium block truncate">{item.name}</span>
                                 <span className="text-zinc-400 font-mono text-[10px] block truncate">
                                   {item.servingLabel} — {item.calories} kcal ({item.carbs}c · {item.fat}f · {item.protein}p)
+                                  {item.caffeineMg > 0 ? ` · ${item.caffeineMg}mg caffeine` : ''}
+                                  {item.standardDrinks > 0 ? ` · ${item.standardDrinks} std drink${item.standardDrinks === 1 ? '' : 's'}` : ''}
                                 </span>
                                 {item.notes && (
                                   <span className="text-amber-300/90 text-[10px] block mt-0.5">

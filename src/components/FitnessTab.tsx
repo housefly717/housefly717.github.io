@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Activity,
   Flame,
@@ -10,7 +10,8 @@ import {
   Ruler,
   Camera,
   BatteryCharging,
-  Zap
+  Zap,
+  Sparkles
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
@@ -22,6 +23,8 @@ import type { BodyMeasurement, ProgressPhoto } from '../types/index.js';
 
 export const FitnessTab: React.FC = () => {
   const {
+    userId,
+    isLoading,
     activeDate,
     profile,
     stats,
@@ -43,6 +46,20 @@ export const FitnessTab: React.FC = () => {
   const [plankSeconds, setPlankSeconds] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [exerciseError, setExerciseError] = useState<string | null>(null);
+  const [dailyRecommendation, setDailyRecommendation] = useState<string>('');
+  const [latestExerciseRatingText, setLatestExerciseRatingText] = useState<string | null>(null);
+  const [isRatingLoading, setIsRatingLoading] = useState(false);
+  const [exerciseRatingsById, setExerciseRatingsById] = useState<
+    Record<string, { rating: number; feedback: string; formatted: string }>
+  >(() => {
+    try {
+      const raw = localStorage.getItem('caloriq_exercise_ai_ratings_v1');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+  const recFetchedForDayKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem('caloriq_draft_exercise_ai', workoutDescription);
@@ -147,6 +164,75 @@ export const FitnessTab: React.FC = () => {
   }, [allExercises]);
 
   const userWeightKg = profile.currentWeightKg || 70;
+  const last7DaysExercises = useMemo(() => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 7);
+    const cutoffStr = cutoff.toISOString().split('T')[0];
+    return allExercises
+      .filter((e) => e.date >= cutoffStr)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [allExercises]);
+
+  useEffect(() => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    const uidKey = userId || 'user';
+    const dayKey = `${uidKey}:${todayStr}`;
+
+    try {
+      const raw = localStorage.getItem('caloriq_exercise_ai_rec_v1');
+      const map = raw ? JSON.parse(raw) : {};
+      if (map[dayKey]?.recommendation) {
+        setDailyRecommendation(map[dayKey].recommendation);
+        recFetchedForDayKeyRef.current = dayKey;
+        return;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    if (isLoading) return;
+    if (recFetchedForDayKeyRef.current === dayKey) return;
+    recFetchedForDayKeyRef.current = dayKey;
+
+    const goalText =
+      profile.goalSpeed ||
+      profile.goal ||
+      (profile.goalWeightKg && profile.currentWeightKg
+        ? profile.goalWeightKg < profile.currentWeightKg
+          ? 'lose weight'
+          : profile.goalWeightKg > profile.currentWeightKg
+            ? 'gain muscle'
+            : 'maintain weight'
+        : 'maintain fitness');
+    const activityText = profile.dailyActivity || profile.activity || 'moderate';
+
+    api
+      .getExerciseRecommendation({
+        userId: uidKey,
+        date: todayStr,
+        last7DaysExercises: last7DaysExercises.map((e) => ({
+          date: e.date,
+          activityName: e.activityName,
+          minutes: e.minutes,
+          caloriesBurned: e.caloriesBurned,
+          intensity: e.intensity,
+          weightKg: e.weightKg,
+          distanceKm: e.distanceKm
+        })),
+        goal: goalText,
+        activityLevel: activityText,
+        fitnessLevel: profile.fitnessLevel || 'intermediate'
+      })
+      .then((res) => {
+        if (res?.recommendation) {
+          setDailyRecommendation(res.recommendation);
+        }
+      })
+      .catch(() => {
+        // fallback handled in api/server
+      });
+  }, [isLoading, userId, last7DaysExercises, profile.goalSpeed, profile.goal, profile.goalWeightKg, profile.currentWeightKg, profile.dailyActivity, profile.activity, profile.fitnessLevel]);
+
   const decipheredWorkout = useMemo(
     () => decipherExerciseText(debouncedWorkoutDescription, userWeightKg),
     [debouncedWorkoutDescription, userWeightKg]
@@ -170,7 +256,7 @@ export const FitnessTab: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      await addExerciseItem({
+      const savedExercise = await addExerciseItem({
         date: activeDate,
         activityName: liveDeciphered.summaryTitle,
         met: liveDeciphered.averageMet,
@@ -188,6 +274,48 @@ export const FitnessTab: React.FC = () => {
       setLiftReps('');
       setDistanceKm('');
       setPlankSeconds('');
+
+      if (savedExercise?.id) {
+        if (exerciseRatingsById[savedExercise.id]?.formatted) {
+          setLatestExerciseRatingText(exerciseRatingsById[savedExercise.id].formatted);
+        } else {
+          setIsRatingLoading(true);
+          try {
+            const ratingRes = await api.rateExercise({
+              exerciseId: savedExercise.id,
+              activityName: savedExercise.activityName,
+              minutes: savedExercise.minutes,
+              caloriesBurned: savedExercise.caloriesBurned,
+              intensity: savedExercise.intensity,
+              met: savedExercise.met,
+              weightKg: savedExercise.weightKg,
+              reps: savedExercise.reps,
+              distanceKm: savedExercise.distanceKm,
+              plankSeconds: savedExercise.plankSeconds,
+              recentExercises: last7DaysExercises.map((ex) => ({
+                date: ex.date,
+                activityName: ex.activityName,
+                minutes: ex.minutes,
+                caloriesBurned: ex.caloriesBurned,
+                intensity: ex.intensity
+              })),
+              goal: profile.goalSpeed || profile.goal || 'general fitness',
+              activityLevel: profile.dailyActivity || profile.activity || 'moderate'
+            });
+            if (ratingRes?.formatted) {
+              setLatestExerciseRatingText(ratingRes.formatted);
+              setExerciseRatingsById((prev) => ({
+                ...prev,
+                [savedExercise.id]: ratingRes
+              }));
+            }
+          } catch {
+            // ignore rating errors
+          } finally {
+            setIsRatingLoading(false);
+          }
+        }
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -306,6 +434,19 @@ export const FitnessTab: React.FC = () => {
           >
             Try example
           </button>
+        </div>
+
+        {/* Recommended for you card (above the exercise log, cached once per day) */}
+        <div className="bg-zinc-950/90 border border-teal-500/25 rounded-xl px-3.5 py-2.5 flex items-start gap-2.5">
+          <Sparkles className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-teal-400 block">
+              Recommended for you
+            </span>
+            <p className="text-xs text-zinc-200 leading-relaxed mt-0.5">
+              {dailyRecommendation || 'Checking your last 7 days of workouts...'}
+            </p>
+          </div>
         </div>
 
         <form onSubmit={handleLogExercise} className="space-y-3.5">
@@ -442,6 +583,15 @@ export const FitnessTab: React.FC = () => {
             )}
           </button>
         </form>
+
+        {(isRatingLoading || latestExerciseRatingText) && (
+          <div className="bg-zinc-950 border border-teal-500/30 rounded-xl px-3.5 py-2.5 flex items-start gap-2.5">
+            <Sparkles className="w-4 h-4 text-teal-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-zinc-200 font-medium leading-relaxed">
+              {isRatingLoading ? 'Rating your workout...' : latestExerciseRatingText}
+            </p>
+          </div>
+        )}
       </div>
 
       {/* #20 PERSONAL RECORDS (Auto-detected from logs) */}
@@ -737,6 +887,11 @@ export const FitnessTab: React.FC = () => {
                       {item.weightKg && <span>· {item.weightKg}kg{item.reps ? `×${item.reps}` : ''}</span>}
                       {item.distanceKm && <span>· {item.distanceKm}km</span>}
                     </div>
+                    {exerciseRatingsById[item.id]?.formatted && (
+                      <p className="text-[11px] text-teal-300/90 mt-1 leading-snug">
+                        {exerciseRatingsById[item.id].formatted}
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-3">

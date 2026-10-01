@@ -777,3 +777,458 @@ Examples of the tone:
     };
   }
 }
+
+export interface ExerciseRatingInput {
+  exerciseId: string;
+  activityName: string;
+  minutes: number;
+  caloriesBurned: number;
+  intensity: string;
+  met?: number;
+  weightKg?: number;
+  reps?: number;
+  distanceKm?: number;
+  plankSeconds?: number;
+  recentExercises?: Array<{
+    date: string;
+    activityName: string;
+    minutes: number;
+    caloriesBurned: number;
+    intensity: string;
+  }>;
+  goal?: string;
+  activityLevel?: string;
+}
+
+export interface ExerciseRatingResult {
+  rating: number;
+  feedback: string;
+  formatted: string;
+}
+
+const exerciseRatingCache = new Map<string, ExerciseRatingResult>();
+
+export async function rateExerciseWithGemini(
+  input: ExerciseRatingInput
+): Promise<ExerciseRatingResult> {
+  const cacheKey = String(input.exerciseId || '').trim();
+  if (cacheKey && exerciseRatingCache.has(cacheKey)) {
+    return exerciseRatingCache.get(cacheKey)!;
+  }
+
+  const buildFallbackRating = (): ExerciseRatingResult => {
+    const nameLower = (input.activityName || '').toLowerCase();
+    const isStrength =
+      Boolean(input.weightKg && input.weightKg > 0) ||
+      /lift|strength|weight|squat|deadlift|bench|press|curl|row|push|pull|gym|resistance|plank/i.test(nameLower);
+    const isCardio =
+      Boolean(input.distanceKm && input.distanceKm > 0) ||
+      /run|jog|walk|cycle|bike|swim|hiit|cardio|row|sprint|treadmill|elliptical/i.test(nameLower);
+
+    let score = 7;
+    if (input.minutes >= 20 && input.minutes <= 75) score += 1;
+    if (input.intensity === 'Moderate' || input.intensity === 'High') score += 1;
+    if (input.minutes < 10) score = 6;
+    score = Math.max(1, Math.min(10, score));
+
+    let feedback = 'Balanced session. Pair with a 10 min mobility cool-down next time.';
+    if (isCardio && !isStrength) {
+      feedback = 'Solid cardio. Add 10 min of strength twice a week to round it out.';
+    } else if (isStrength && !isCardio) {
+      feedback = 'Strong resistance work. Add 15 min of brisk walking or cycling for heart health.';
+    } else if (input.minutes < 15) {
+      feedback = 'Good quick movement. Extending to 25 min next session will boost endurance.';
+    }
+
+    return {
+      rating: score,
+      feedback,
+      formatted: `${score}/10 — ${feedback}`
+    };
+  };
+
+  try {
+    const ai = getAiClient();
+    const recentSummary =
+      (input.recentExercises || [])
+        .slice(0, 10)
+        .map((e) => `${e.date}: ${e.activityName} (${e.minutes} min, ${e.intensity})`)
+        .join('; ') || 'No prior exercises this week';
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: `Rate this logged exercise out of 10 and provide one short line of constructive feedback.
+Logged exercise: "${input.activityName}", ${input.minutes} min, ${input.caloriesBurned} kcal burned, intensity: ${input.intensity}${input.weightKg ? `, weight: ${input.weightKg}kg` : ''}${input.distanceKm ? `, distance: ${input.distanceKm}km` : ''}.
+User goal: ${input.goal || 'general fitness'}. Activity level: ${input.activityLevel || 'moderate'}.
+Last 7 days of exercise: ${recentSummary}.`,
+      config: {
+        systemInstruction: `You are a concise fitness coach.
+Rules:
+1. Return JSON with "rating" (integer 1 to 10) and "feedback" (one short line of feedback under 16 words, without repeating the score).
+2. Example feedback: "Solid cardio. Add 10 min of strength twice a week to round it out."
+3. Be specific to the logged workout and recent 7-day balance.
+4. Never use emojis.`,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            rating: { type: Type.INTEGER },
+            feedback: { type: Type.STRING }
+          },
+          required: ['rating', 'feedback']
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    const rating = Math.max(1, Math.min(10, Math.round(Number(parsed.rating) || 8)));
+    const rawFeedback = String(parsed.feedback || '')
+      .replace(/^\d+\s*\/\s*10\s*[—–-]\s*/i, '')
+      .trim();
+    const feedback =
+      rawFeedback || 'Solid cardio. Add 10 min of strength twice a week to round it out.';
+    const result: ExerciseRatingResult = {
+      rating,
+      feedback,
+      formatted: `${rating}/10 — ${feedback}`
+    };
+    if (cacheKey) {
+      exerciseRatingCache.set(cacheKey, result);
+    }
+    return result;
+  } catch {
+    const fallback = buildFallbackRating();
+    if (cacheKey) {
+      exerciseRatingCache.set(cacheKey, fallback);
+    }
+    return fallback;
+  }
+}
+
+export interface ExerciseRecommendationInput {
+  userId: string;
+  date: string;
+  last7DaysExercises: Array<{
+    date: string;
+    activityName: string;
+    minutes: number;
+    caloriesBurned: number;
+    intensity: string;
+    weightKg?: number;
+    distanceKm?: number;
+  }>;
+  goal?: string;
+  activityLevel?: string;
+  fitnessLevel?: string;
+}
+
+export interface ExerciseRecommendationResult {
+  date: string;
+  recommendation: string;
+}
+
+const dailyWorkoutRecommendationCache = new Map<string, ExerciseRecommendationResult>();
+
+export async function recommendDailyWorkoutWithGemini(
+  input: ExerciseRecommendationInput
+): Promise<ExerciseRecommendationResult> {
+  const safeDate = String(input.date || new Date().toISOString().split('T')[0]).trim();
+  const cacheKey = `${input.userId || 'anon'}:${safeDate}`;
+  if (dailyWorkoutRecommendationCache.has(cacheKey)) {
+    return dailyWorkoutRecommendationCache.get(cacheKey)!;
+  }
+
+  const buildFallbackRecommendation = (): ExerciseRecommendationResult => {
+    const recent = input.last7DaysExercises || [];
+    let strengthCount = 0;
+    let cardioCount = 0;
+    for (const ex of recent) {
+      const n = (ex.activityName || '').toLowerCase();
+      if (
+        (ex.weightKg && ex.weightKg > 0) ||
+        /lift|strength|weight|squat|deadlift|bench|press|curl|row|push|pull|gym|resistance|plank/i.test(n)
+      ) {
+        strengthCount++;
+      } else if (
+        (ex.distanceKm && ex.distanceKm > 0) ||
+        /run|jog|walk|cycle|bike|swim|hiit|cardio|sprint|treadmill/i.test(n)
+      ) {
+        cardioCount++;
+      }
+    }
+
+    let recommendation = 'Try 25 min brisk walking. You\'ve done mostly strength this week.';
+    if (recent.length === 0) {
+      const goalLower = (input.goal || '').toLowerCase();
+      if (goalLower.includes('gain')) {
+        recommendation = 'Try 25 min full-body strength training to kick off your week.';
+      } else {
+        recommendation = 'Try 25 min brisk walking to build steady daily momentum.';
+      }
+    } else if (strengthCount > cardioCount) {
+      recommendation = "Try 25 min brisk walking. You've done mostly strength this week.";
+    } else if (cardioCount > strengthCount) {
+      recommendation = "Try 20 min upper-body and core strength. You've done mostly cardio this week.";
+    } else if (recent.length >= 5) {
+      recommendation = 'Try 20 min gentle mobility and stretching after a high-volume week.';
+    } else {
+      recommendation = 'Try 25 min moderate interval cycling or brisk walking today.';
+    }
+
+    return {
+      date: safeDate,
+      recommendation
+    };
+  };
+
+  try {
+    const ai = getAiClient();
+    const recentList =
+      (input.last7DaysExercises || []).length > 0
+        ? input.last7DaysExercises
+            .map(
+              (e) =>
+                `- ${e.date}: ${e.activityName} (${e.minutes} min, ${e.intensity}${e.weightKg ? `, ${e.weightKg}kg` : ''}${e.distanceKm ? `, ${e.distanceKm}km` : ''})`
+            )
+            .join('\n')
+        : 'No workouts logged in the last 7 days.';
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: `Suggest one specific workout for today based on:
+- User goal: ${input.goal || 'maintain / general health'}
+- Activity level: ${input.activityLevel || 'moderate'}
+- Fitness level: ${input.fitnessLevel || 'intermediate'}
+- Last 7 days of exercise:
+${recentList}`,
+      config: {
+        systemInstruction: `You are a concise personal trainer.
+Rules:
+1. Return JSON with "recommendation": a single specific workout suggestion for today in 1-2 short sentences (max 18 words).
+2. Reference their last 7 days of exercise, goal, or activity level naturally.
+3. Example: "Try 25 min brisk walking. You've done mostly strength this week."
+4. Never use emojis.`,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            recommendation: { type: Type.STRING }
+          },
+          required: ['recommendation']
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    const recText = String(parsed.recommendation || '').trim();
+    const result: ExerciseRecommendationResult = {
+      date: safeDate,
+      recommendation: recText || buildFallbackRecommendation().recommendation
+    };
+    dailyWorkoutRecommendationCache.set(cacheKey, result);
+    return result;
+  } catch {
+    const fallback = buildFallbackRecommendation();
+    dailyWorkoutRecommendationCache.set(cacheKey, fallback);
+    return fallback;
+  }
+}
+
+export interface CoachDaySummary {
+  date: string;
+  caloriesEaten: number;
+  proteinEaten: number;
+  carbsEaten: number;
+  fatEaten: number;
+  waterGlasses: number;
+  exerciseMinutes: number;
+  exerciseNames: string[];
+  mood?: number;
+  energy?: number;
+  sleepHours?: number;
+  sleepQuality?: number;
+  reflection?: string;
+  cravings: Array<{ wantedFood: string; intensity: number; time: string; trigger?: string }>;
+  caffeineItems: string[];
+  alcoholItems: string[];
+  hasAnyLog: boolean;
+}
+
+export interface CoachSuggestionInput {
+  userId: string;
+  date: string;
+  caloriesTarget: number;
+  proteinTarget: number;
+  waterTargetGlasses?: number;
+  days: CoachDaySummary[];
+}
+
+export interface CoachSuggestionResult {
+  date: string;
+  hasEnoughData: boolean;
+  daysLoggedCount: number;
+  suggestion: string;
+}
+
+const dailyCoachSuggestionCache = new Map<string, CoachSuggestionResult>();
+
+export async function generateCoachSuggestionWithGemini(
+  input: CoachSuggestionInput
+): Promise<CoachSuggestionResult> {
+  const safeDate = String(input.date || new Date().toISOString().split('T')[0]).trim();
+  const days = Array.isArray(input.days) ? input.days : [];
+  const loggedDays = days.filter((d) => Boolean(d && d.hasAnyLog));
+  const daysLoggedCount = loggedDays.length;
+
+  if (daysLoggedCount < 5) {
+    return {
+      date: safeDate,
+      hasEnoughData: false,
+      daysLoggedCount,
+      suggestion: 'Keep logging. Patterns will appear after about a week.'
+    };
+  }
+
+  const cacheKey = `${input.userId || 'anon'}:${safeDate}`;
+  if (dailyCoachSuggestionCache.has(cacheKey)) {
+    return dailyCoachSuggestionCache.get(cacheKey)!;
+  }
+
+  const waterGoal = input.waterTargetGlasses || 8;
+  const proteinTarget = input.proteinTarget || 120;
+  const caloriesTarget = input.caloriesTarget || 2000;
+
+  const buildDataDrivenFallback = (): string => {
+    const foodDays = days.filter((d) => d.caloriesEaten > 0);
+
+    // 1. Check sleep (<6h or <7h) vs calories eaten
+    const shortSleepFoodDays = foodDays.filter(
+      (d) => typeof d.sleepHours === 'number' && d.sleepHours > 0 && d.sleepHours < 6
+    );
+    const restedFoodDays = foodDays.filter(
+      (d) => typeof d.sleepHours === 'number' && d.sleepHours >= 6
+    );
+    if (shortSleepFoodDays.length > 0 && restedFoodDays.length > 0) {
+      const shortAvg = Math.round(
+        shortSleepFoodDays.reduce((s, d) => s + d.caloriesEaten, 0) / shortSleepFoodDays.length
+      );
+      const restedAvg = Math.round(
+        restedFoodDays.reduce((s, d) => s + d.caloriesEaten, 0) / restedFoodDays.length
+      );
+      const diff = shortAvg - restedAvg;
+      if (diff >= 120) {
+        return `You ate ${diff} kcal more on nights you slept under 6 hours.`;
+      }
+    }
+
+    // 2. Check protein shortfall across food-logged days
+    if (foodDays.length >= 3 && proteinTarget > 0) {
+      const shortProteinDays = foodDays.filter((d) => proteinTarget - d.proteinEaten >= 12);
+      if (shortProteinDays.length >= Math.ceil(foodDays.length * 0.6)) {
+        const avgShortfall = Math.max(
+          10,
+          Math.round(
+            shortProteinDays.reduce((s, d) => s + (proteinTarget - d.proteinEaten), 0) /
+              shortProteinDays.length
+          )
+        );
+        return `Protein is ${avgShortfall}g short most days. Add eggs or Greek yogurt to breakfast.`;
+      }
+    }
+
+    // 3. Check water goal misses across the 7 days
+    const missedWaterDays = days.filter((d) => (d.waterGlasses || 0) < waterGoal).length;
+    if (missedWaterDays >= 4) {
+      return `You've skipped water goals ${missedWaterDays} of ${days.length || 7} days. Set a reminder at 3pm.`;
+    }
+
+    // 4. Check alcohol or caffeine pattern from smart log
+    const alcoholDays = days.filter((d) => Array.isArray(d.alcoholItems) && d.alcoholItems.length > 0);
+    if (alcoholDays.length >= 3) {
+      return `Alcohol appeared on ${alcoholDays.length} of ${days.length || 7} days. Swap one evening drink for sparkling water.`;
+    }
+
+    // 5. Check cravings pattern
+    const totalCravings = days.reduce((s, d) => s + (d.cravings?.length || 0), 0);
+    if (totalCravings >= 3) {
+      return `You logged ${totalCravings} cravings this week. Pair afternoon snacks with 15g protein to stay fuller.`;
+    }
+
+    // 6. Check calorie consistency
+    if (foodDays.length > 0) {
+      const avgKcal = Math.round(
+        foodDays.reduce((s, d) => s + d.caloriesEaten, 0) / foodDays.length
+      );
+      const delta = avgKcal - caloriesTarget;
+      if (Math.abs(delta) <= 120) {
+        return `You averaged ${avgKcal} kcal across ${foodDays.length} days, right on your ${caloriesTarget} kcal target.`;
+      }
+      if (delta > 120) {
+        return `Daily intake averaged ${delta} kcal over target across ${foodDays.length} days. Pre-log dinner earlier.`;
+      }
+    }
+
+    return `You logged ${daysLoggedCount} of 7 days this week. Keep pre-logging breakfast to lock in your routine.`;
+  };
+
+  try {
+    const ai = getAiClient();
+    const payloadStr = JSON.stringify(
+      {
+        caloriesTarget,
+        proteinTarget,
+        waterTargetGlasses: waterGoal,
+        last7Days: days
+      },
+      null,
+      2
+    );
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: `Read this user's last 7 days of logged data (food/meals, water, exercise, mood, energy, sleep hours, sleep quality, cravings, reflections, and alcohol/caffeine from the smart log) and return ONE short suggestion tied to a real pattern in the data.\n\nData:\n${payloadStr}`,
+      config: {
+        systemInstruction: `You are a concise nutrition and habit coach.
+Rules:
+1. Return JSON with "suggestion": ONE short suggestion (1-2 short sentences, max 18 words), tied strictly to a real pattern in the provided 7-day data.
+2. Never invent a pattern. Only reference numbers and habits actually present in the data.
+3. One suggestion only. Not a list.
+4. No medical advice. No diagnosis. Never use emojis.
+Examples of the exact style:
+- "Protein is 20g short most days. Add eggs or Greek yogurt to breakfast."
+- "You ate 300 kcal more on nights you slept under 6 hours."
+- "You've skipped water goals 5 of 7 days. Set a reminder at 3pm."`,
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            suggestion: { type: Type.STRING }
+          },
+          required: ['suggestion']
+        }
+      }
+    });
+
+    const parsed = JSON.parse(response.text || '{}');
+    const cleanText = String(parsed.suggestion || '')
+      .replace(/^[-•*]\s*/, '')
+      .trim();
+    const result: CoachSuggestionResult = {
+      date: safeDate,
+      hasEnoughData: true,
+      daysLoggedCount,
+      suggestion: cleanText || buildDataDrivenFallback()
+    };
+    dailyCoachSuggestionCache.set(cacheKey, result);
+    return result;
+  } catch {
+    const result: CoachSuggestionResult = {
+      date: safeDate,
+      hasEnoughData: true,
+      daysLoggedCount,
+      suggestion: buildDataDrivenFallback()
+    };
+    dailyCoachSuggestionCache.set(cacheKey, result);
+    return result;
+  }
+}

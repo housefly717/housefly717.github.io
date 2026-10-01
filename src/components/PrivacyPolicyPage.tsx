@@ -98,7 +98,7 @@ export const PrivacyPolicyPage: React.FC<PrivacyPolicyPageProps> = ({
             </p>
             <ul className="list-disc pl-5 space-y-1 text-zinc-300">
               <li>
-                <strong>Export Your Data (Right to Portability):</strong> Open the <strong>Me</strong> tab and click <strong>Export My Data (JSON)</strong> or <strong>Export Diary CSV</strong> to download a complete, machine-readable copy of your profile, food diary, exercises, water logs, weights, habits, cravings, and saved meals.
+                <strong>Export Your Data (Right to Portability):</strong> Open the <strong>Me</strong> tab and click <strong>Export JSON</strong> to download a complete, machine-readable copy of your profile, food diary, exercises, water logs, weights, habits, cravings, and saved meals.
               </li>
               <li>
                 <strong>Delete Your Account &amp; Data (Right to Erasure):</strong> Open the <strong>Me</strong> tab, scroll to Account &amp; Data, and select <strong>Delete Account</strong>. Confirming deletion permanently removes your profile, food logs, weight history, and account credentials from our database immediately.

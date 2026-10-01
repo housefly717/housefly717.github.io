@@ -1,10 +1,86 @@
 {
-  "users": {},
-  "profiles": {},
+  "users": {
+    "usr_545648c7-5e38-44fc-adc5-373e0b3e5e18": {
+      "id": "usr_545648c7-5e38-44fc-adc5-373e0b3e5e18",
+      "email": "housefly@mail2world.com",
+      "isGuest": false,
+      "createdAt": 1790769790658,
+      "lastLoginAt": 1790769790658,
+      "trustedDevices": [],
+      "username": "housefly",
+      "isDev": true
+    },
+    "guest_f530de4d-c55e-42a9-b2c6-39aab99f7f39": {
+      "id": "guest_f530de4d-c55e-42a9-b2c6-39aab99f7f39",
+      "isGuest": true,
+      "createdAt": 1790790676917,
+      "lastLoginAt": 1790790676917,
+      "trustedDevices": [],
+      "isDev": false
+    }
+  },
+  "profiles": {
+    "usr_545648c7-5e38-44fc-adc5-373e0b3e5e18": {
+      "name": "N",
+      "username": "housefly",
+      "age": 43,
+      "gender": "female",
+      "heightCm": 165,
+      "fitnessLevel": "",
+      "currentWeightKg": 79.6,
+      "goalWeightKg": 65,
+      "dailyActivity": "moderate",
+      "goalSpeed": "lose_normal",
+      "unitSystem": "metric",
+      "pinnedWhy": "",
+      "themeMode": "dark",
+      "streakFreezesUsed": [],
+      "waterReminderEnabled": false,
+      "mealReminderEnabled": false,
+      "streakOptIn": true,
+      "waterChallengeJoined": false,
+      "height": 165,
+      "currentWeight": 79.6,
+      "goalWeight": 65,
+      "activity": "moderate",
+      "goal": "lose_normal",
+      "signupComplete": true,
+      "isDev": true
+    },
+    "guest_f530de4d-c55e-42a9-b2c6-39aab99f7f39": {
+      "name": "Guest User",
+      "username": "caloriq_guest_f530",
+      "age": 0,
+      "gender": "",
+      "heightCm": 0,
+      "fitnessLevel": "",
+      "currentWeightKg": 0,
+      "goalWeightKg": 0,
+      "dailyActivity": "",
+      "goalSpeed": "",
+      "unitSystem": "metric",
+      "pinnedWhy": "",
+      "themeMode": "dark",
+      "streakFreezesUsed": [],
+      "waterReminderEnabled": false,
+      "mealReminderEnabled": false,
+      "streakOptIn": true,
+      "waterChallengeJoined": false,
+      "isDev": false
+    }
+  },
   "diaryEntries": [],
   "waterEntries": {},
   "exerciseEntries": [],
-  "weightEntries": [],
+  "weightEntries": [
+    {
+      "id": "wt_35266dcb-db82-4859-aa1e-11907cf23e82",
+      "userId": "usr_545648c7-5e38-44fc-adc5-373e0b3e5e18",
+      "date": "2026-09-30",
+      "weightKg": 79.6,
+      "createdAt": 1790769885012
+    }
+  ],
   "measurements": [],
   "progressPhotos": [],
   "dailyHabits": {},
@@ -13,12 +89,28 @@
   "pantryItems": [],
   "friends": [],
   "sharedRecipes": [],
+  "posts": [],
+  "replies": [],
+  "postLikes": {},
+  "postReports": [],
+  "blockedUsers": {},
+  "followingUsers": {},
   "savedFoods": [],
   "savedRecipes": [],
   "mealTemplates": [],
   "plans": {},
-  "chatMessages": [],
-  "userXp": {},
+  "userXp": {
+    "usr_545648c7-5e38-44fc-adc5-373e0b3e5e18": {
+      "xp": 20,
+      "badges": [
+        "First weigh-in"
+      ]
+    },
+    "guest_f530de4d-c55e-42a9-b2c6-39aab99f7f39": {
+      "xp": 0,
+      "badges": []
+    }
+  },
   "securityEvents": [],
   "recentErrors": [],
   "settings": {

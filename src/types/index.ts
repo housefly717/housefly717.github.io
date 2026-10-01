@@ -16,6 +16,8 @@ export interface FoodItem {
   iron?: number; // mg
   calcium?: number; // mg
   vitaminD?: number; // mcg
+  caffeineMg?: number; // mg
+  standardDrinks?: number; // standard alcoholic drinks
   serving?: string;
   note?: string;
   unusualQuantity?: boolean;
@@ -272,14 +274,6 @@ export interface UserStats {
   badges: string[];
   foodStreak?: number;
   workoutStreak?: number;
-}
-
-export interface ChatMessage {
-  id: string;
-  userId: string;
-  sender: 'user' | 'developer';
-  text: string;
-  createdAt: number;
 }
 
 export interface PlanDayMeal {

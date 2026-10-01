@@ -8,9 +8,7 @@
         if ('caches' in window) {
           caches.keys().then(function (keys) {
             keys.forEach(function (k) {
-              if (k !== 'caloriq-shell-v1.0.3') {
-                caches.delete(k);
-              }
+              caches.delete(k);
             });
           }).catch(function () {});
         }

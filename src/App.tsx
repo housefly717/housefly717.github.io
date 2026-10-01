@@ -410,6 +410,22 @@ type ViewType =
   | 'press'
   | 'notfound';
 
+function hasStoredNonGuestToken(): boolean {
+  try {
+    const token =
+      localStorage.getItem('caloriq_session_token') ||
+      sessionStorage.getItem('caloriq_session_token');
+    return Boolean(
+      token &&
+        token !== 'undefined' &&
+        token !== 'null' &&
+        !token.startsWith('guest_')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function resolveViewFromLocation(): ViewType {
   const path = window.location.pathname;
   const params = new URLSearchParams(window.location.search);
@@ -417,6 +433,10 @@ function resolveViewFromLocation(): ViewType {
     if (params.get('view') === 'privacy') return 'privacy';
     if (params.get('view') === 'terms') return 'terms';
     if (params.get('view') === 'app' || params.get('resetToken')) return 'app';
+    if (hasStoredNonGuestToken()) {
+      window.history.replaceState({}, '', '/dashboard');
+      return 'app';
+    }
     return 'landing';
   }
   if (path === '/app' || path === '/dashboard') return 'app';
@@ -431,8 +451,8 @@ function resolveViewFromLocation(): ViewType {
 }
 
 export default function App() {
-  const [pathname, setPathname] = useState(window.location.pathname);
   const [activeView, setActiveView] = useState<ViewType>(() => resolveViewFromLocation());
+  const [pathname, setPathname] = useState(window.location.pathname);
   const [initialTab, setInitialTab] = useState<TabType>('diary');
   const [autoOpenAuth, setAutoOpenAuth] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -465,11 +485,16 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    api.checkDevDeviceOnLoad().then((res) => {
+    const hadTokenSynchronously = hasStoredNonGuestToken();
+    api.verifyStoredSessionOnLoad().then((res) => {
       if (cancelled) return;
-      if (res.autoSignedIn) {
-        setDevSessionKey((k) => k + 1);
-        if (window.location.pathname === '/') {
+      if (res.hasValidToken) {
+        setShowDevSetupScreen(false);
+        setAutoOpenAuth(false);
+        if (!hadTokenSynchronously) {
+          setDevSessionKey((k) => k + 1);
+        }
+        if (window.location.pathname === '/' || window.location.pathname === '/index.html') {
           setActiveView('app');
           setPathname('/dashboard');
           window.history.replaceState({}, '', '/dashboard');

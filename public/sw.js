@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'caloriq-shell-v1.0.3';
+const CACHE_VERSION = 'caloriq-shell-v1.0.4';
 const APP_SHELL_ASSETS = [
   '/',
   '/dashboard',

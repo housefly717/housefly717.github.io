@@ -2,10 +2,8 @@ import React, { useState, useEffect } from 'react';
 import {
   Scale,
   Award,
-  MessageSquare,
   Download,
   AlertTriangle,
-  Send,
   Plus,
   Trash2,
   CheckCircle2,
@@ -32,7 +30,7 @@ import {
   Globe,
   Upload,
   KeyRound,
-  Mail,
+  User,
   Bug,
   LogOut,
   Terminal,
@@ -45,7 +43,6 @@ import { APP_VERSION } from '../utils/i18n.js';
 import { validateAndMigrateBackup, CURRENT_BACKUP_SCHEMA_VERSION } from '../utils/backupMigration.js';
 import { WeeklyRecapModal } from './WeeklyRecapModal.js';
 import { SocialAccountabilitySection } from './SocialAccountabilitySection.js';
-import { HealthAndImportSection } from './HealthAndImportSection.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
 import { SwipeableItem } from './SwipeableItem.js';
 import {
@@ -68,7 +65,7 @@ import {
   validateDateRange
 } from '../utils/validation.js';
 import type { SupportedLanguage } from '../utils/i18n.js';
-import type { UserProfile, ChatMessage, CommunityPost, ReportedPostRecord } from '../types/index.js';
+import type { UserProfile, CommunityPost, ReportedPostRecord } from '../types/index.js';
 
 function cmToFtIn(cm: number): { ft: string; in: string } {
   if (!cm || cm <= 0) return { ft: '', in: '' };
@@ -108,7 +105,6 @@ export const MeTab: React.FC<MeTabProps> = ({
 }) => {
   const {
     userId,
-    userEmail,
     profile,
     updateUserProfile,
     weights,
@@ -184,16 +180,29 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // #53, #58 Active sessions & Last signed in
   const [sessionsList, setSessionsList] = useState<Array<{ id: string; deviceLabel: string; ip: string; createdAt: string; lastActiveAt: string; isCurrent: boolean }>>([]);
-  const lastSignedInAt = localStorage.getItem('caloriq_last_signed_in_at');
+  const rawLastSignedInAt = localStorage.getItem('caloriq_last_signed_in_at');
+  const formattedLastSignedIn = (() => {
+    const candidate = rawLastSignedInAt || sessionsList.find((s) => s.isCurrent)?.createdAt || sessionsList[0]?.createdAt;
+    if (!candidate || candidate === 'null' || candidate === 'undefined' || candidate === 'first_session') {
+      return new Date().toLocaleDateString();
+    }
+    const num = Number(candidate);
+    const d = !Number.isNaN(num) && num > 0 ? new Date(num) : new Date(String(candidate));
+    if (Number.isNaN(d.getTime())) {
+      return new Date().toLocaleDateString();
+    }
+    return d.toLocaleString();
+  })();
 
-  // #55 Email change flow state
-  const [showEmailChange, setShowEmailChange] = useState(false);
-  const [emailChangeCurrentPwd, setEmailChangeCurrentPwd] = useState('');
-  const [emailChangeNewEmail, setEmailChangeNewEmail] = useState('');
-  const [emailChangeStep, setEmailChangeStep] = useState<'request' | 'confirm'>('request');
-  const [emailChangeOldCode, setEmailChangeOldCode] = useState('');
-  const [emailChangeNewCode, setEmailChangeNewCode] = useState('');
-  const [emailChangeStatus, setEmailChangeStatus] = useState<string | null>(null);
+  const activeUsername = (profile.username || formData.username || 'housefly')
+    .replace(/^@/, '')
+    .split('@')[0];
+
+  // #55 Username change flow state
+  const [showUsernameChange, setShowUsernameChange] = useState(false);
+  const [usernameChangeCurrentPwd, setUsernameChangeCurrentPwd] = useState('');
+  const [usernameChangeNewUsername, setUsernameChangeNewUsername] = useState('');
+  const [usernameChangeStatus, setUsernameChangeStatus] = useState<string | null>(null);
 
   // #56 Password change flow state
   const [showPasswordChange, setShowPasswordChange] = useState(false);
@@ -208,60 +217,6 @@ export const MeTab: React.FC<MeTabProps> = ({
 
   // #79, #80 Backup import state
   const [backupImportStatus, setBackupImportStatus] = useState<string | null>(null);
-
-  // Dev Tools & Community Moderation state (only for isDev = true / housefly)
-  const isDevAccount =
-    !isGuest &&
-    (Boolean(profile.isDev) ||
-      (userEmail || '').toLowerCase() === 'housefly' ||
-      userId === 'usr_dev_housefly');
-  const [reportedPosts, setReportedPosts] = useState<Array<ReportedPostRecord & { post: CommunityPost }>>([]);
-  const [isLoadingReports, setIsLoadingReports] = useState(false);
-  const [moderationNotice, setModerationNotice] = useState<string | null>(null);
-  const [devActionStatus, setDevActionStatus] = useState<string | null>(null);
-
-  const loadReportedPosts = async () => {
-    if (!isDevAccount) return;
-    setIsLoadingReports(true);
-    try {
-      const res = await api.devGetReportedPosts();
-      setReportedPosts(res.reports || []);
-    } catch {
-      // ignore
-    } finally {
-      setIsLoadingReports(false);
-    }
-  };
-
-  useEffect(() => {
-    if (isDevAccount) {
-      loadReportedPosts();
-    }
-  }, [isDevAccount]);
-
-  const handleDeleteReportedPost = async (postId: string) => {
-    setModerationNotice(null);
-    try {
-      const res = await api.devDeleteCommunityPost(postId);
-      setReportedPosts(res.reports || []);
-      setModerationNotice('Reported post deleted.');
-      setTimeout(() => setModerationNotice(null), 3000);
-    } catch (err: any) {
-      setModerationNotice(err?.message || 'Could not delete post.');
-    }
-  };
-
-  const handleDismissPostReport = async (reportId: string) => {
-    setModerationNotice(null);
-    try {
-      const res = await api.devDismissCommunityReport(reportId);
-      setReportedPosts(res.reports || []);
-      setModerationNotice('Report dismissed.');
-      setTimeout(() => setModerationNotice(null), 3000);
-    } catch (err: any) {
-      setModerationNotice(err?.message || 'Could not dismiss report.');
-    }
-  };
 
   // Referral code state
   const myReferralCode =
@@ -295,12 +250,6 @@ export const MeTab: React.FC<MeTabProps> = ({
   const debouncedNewWeight = useDebounce(newWeight, 400);
   const { minDate, maxDate } = getDateBounds();
 
-  // Chat with Developer State
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [chatInput, setChatInput] = useState('');
-  const [isSendingChat, setIsSendingChat] = useState(false);
-  const [isLoadingChat, setIsLoadingChat] = useState(true);
-
   // Clear confirmation modal
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   // #60 Weekly recap modal trigger
@@ -322,22 +271,10 @@ export const MeTab: React.FC<MeTabProps> = ({
   }, [profile]);
 
   useEffect(() => {
-    loadChatMessages();
     if (!isGuest) {
       api.getSessions().then((res) => setSessionsList(res.sessions || [])).catch(() => {});
     }
   }, [isGuest]);
-
-  const loadChatMessages = async () => {
-    try {
-      const res = await api.getChat();
-      setChatMessages(res.messages || []);
-    } catch {
-      // ignore
-    } finally {
-      setIsLoadingChat(false);
-    }
-  };
 
   // Math recalculations live from form data (only when all required fields are answered)
   const isProfileComplete = hasCompleteProfileStats(formData);
@@ -464,33 +401,13 @@ export const MeTab: React.FC<MeTabProps> = ({
     setNewWeight('');
   };
 
-  const handleSendChatMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInput.trim() || isSendingChat) return;
-
-    const text = chatInput.trim();
-    setChatInput('');
-    setIsSendingChat(true);
-
-    try {
-      const msg = await api.sendChatMessage(text);
-      setChatMessages(prev => [...prev, msg]);
-      setTimeout(loadChatMessages, 1200);
-    } catch {
-      // ignore
-    } finally {
-      setIsSendingChat(false);
-    }
-  };
-
   const handleExportData = async () => {
     if (isGuest) return;
     try {
-      const [allRes, savedRes, tmplRes, chatRes] = await Promise.all([
+      const [allRes, savedRes, tmplRes] = await Promise.all([
         api.getAllDiary().catch(() => ({ items: allDiaryItems })),
         api.getSavedFoods().catch(() => ({ foods: [] })),
-        api.getTemplates().catch(() => ({ templates: [] })),
-        api.getChat().catch(() => ({ messages: chatMessages }))
+        api.getTemplates().catch(() => ({ templates: [] }))
       ]);
 
       const diaryByDate: Record<string, any[]> = {};
@@ -518,8 +435,7 @@ export const MeTab: React.FC<MeTabProps> = ({
         recipes: serverExport.recipes || [],
         templates: tmplRes.templates || serverExport.templates || [],
         exercise: serverExport.exercise || exercises,
-        plans: serverExport.plans || [],
-        chat: chatRes.messages || serverExport.chat || []
+        plans: serverExport.plans || []
       };
 
       const todayStr = new Date().toISOString().split('T')[0];
@@ -1777,73 +1693,6 @@ export const MeTab: React.FC<MeTabProps> = ({
       {/* PHASE 5: SOCIAL & ACCOUNTABILITY (#43, #44, #45, #46, #47) */}
       <SocialAccountabilitySection />
 
-      {/* GROUP A: IMPORT & HEALTH DEPTH */}
-      <HealthAndImportSection mode="me" />
-
-      {/* CHAT WITH THE DEVELOPER */}
-      <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-3">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="w-4 h-4 text-teal-400" />
-          <div>
-            <h4 className="text-sm font-semibold text-zinc-200">Chat with the developer</h4>
-            <span className="text-[11px] text-zinc-500">
-              Direct inbox to the Caloriq software engineering team.
-            </span>
-          </div>
-        </div>
-
-        <div className="h-44 overflow-y-auto bg-zinc-950 rounded-xl p-3 border border-zinc-850 space-y-2">
-          {isLoadingChat ? (
-            <div className="space-y-2 py-2">
-              <div className="w-2/3 h-8 rounded-xl bg-zinc-800/80 animate-pulse" />
-              <div className="w-1/2 h-8 rounded-xl bg-zinc-800/80 animate-pulse ml-auto" />
-              <div className="w-3/4 h-8 rounded-xl bg-zinc-800/80 animate-pulse" />
-            </div>
-          ) : chatMessages.length === 0 ? (
-            <p className="text-xs text-zinc-600 text-center py-8">
-              Send questions, bug reports, or feature ideas directly to the developer.
-            </p>
-          ) : (
-            chatMessages.map((m) => (
-              <div
-                key={m.id}
-                className={`flex flex-col ${m.sender === 'user' ? 'items-end' : 'items-start'}`}
-              >
-                <span className="text-[9px] text-zinc-600 px-1 mb-0.5 capitalize">
-                  {m.sender === 'user' ? 'You' : 'Developer'}
-                </span>
-                <div
-                  className={`max-w-[85%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
-                    m.sender === 'user'
-                      ? 'bg-teal-600 text-zinc-950 font-medium rounded-br-none'
-                      : 'bg-zinc-850 text-zinc-200 border border-zinc-800 rounded-bl-none'
-                  }`}
-                >
-                  {m.text}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <form onSubmit={handleSendChatMessage} className="flex gap-2">
-          <input
-            type="text"
-            value={chatInput}
-            onChange={(e) => setChatInput(e.target.value)}
-            placeholder="Type your message to the developer..."
-            className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
-          />
-          <button
-            type="submit"
-            disabled={isSendingChat || !chatInput.trim()}
-            className="p-2 bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold rounded-xl transition-colors"
-          >
-            <Send className="w-4 h-4" />
-          </button>
-        </form>
-      </div>
-
       {/* #53, #55, #56, #58 ACCOUNT SECURITY & ACTIVE SESSIONS */}
       {!isGuest && (
         <div className="bg-zinc-900/90 border border-zinc-800 rounded-2xl p-5 shadow-xl space-y-4">
@@ -1853,10 +1702,7 @@ export const MeTab: React.FC<MeTabProps> = ({
               <div>
                 <h4 className="text-sm font-semibold text-zinc-200">Account Security &amp; Sessions</h4>
                 <span className="text-[11px] text-zinc-400 block">
-                  Signed in as {userEmail || 'Member'}
-                  {lastSignedInAt
-                    ? ` · Last signed in ${new Date(lastSignedInAt).toLocaleDateString()}`
-                    : ''}
+                  Signed in as @{activeUsername} · Last signed in {formattedLastSignedIn}
                 </span>
               </div>
             </div>
@@ -1866,20 +1712,20 @@ export const MeTab: React.FC<MeTabProps> = ({
             <button
               type="button"
               onClick={() => {
-                setShowEmailChange((v) => !v);
+                setShowUsernameChange((v) => !v);
                 setShowPasswordChange(false);
               }}
-              aria-label="Change account email"
+              aria-label="Change account username"
               className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 transition-colors"
             >
-              <Mail className="w-3.5 h-3.5 text-teal-400" />
-              Change Email
+              <User className="w-3.5 h-3.5 text-teal-400" />
+              Change Username
             </button>
             <button
               type="button"
               onClick={() => {
                 setShowPasswordChange((v) => !v);
-                setShowEmailChange(false);
+                setShowUsernameChange(false);
               }}
               aria-label="Change account password"
               className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 transition-colors"
@@ -1889,83 +1735,49 @@ export const MeTab: React.FC<MeTabProps> = ({
             </button>
           </div>
 
-          {/* #55 Email Change Form */}
-          {showEmailChange && (
+          {/* #55 Username Change Form */}
+          {showUsernameChange && (
             <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-xl space-y-3">
-              <h5 className="text-xs font-bold text-zinc-200">Change Email (Verifies old &amp; new address)</h5>
-              {emailChangeStep === 'request' ? (
-                <div className="space-y-2">
-                  <input
-                    type="password"
-                    value={emailChangeCurrentPwd}
-                    onChange={(e) => setEmailChangeCurrentPwd(e.target.value)}
-                    placeholder="Current password"
-                    aria-label="Current password for email change"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
-                  />
-                  <input
-                    type="email"
-                    value={emailChangeNewEmail}
-                    onChange={(e) => setEmailChangeNewEmail(e.target.value)}
-                    placeholder="New email address"
-                    aria-label="New email address"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
-                  />
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setEmailChangeStatus(null);
-                      try {
-                        const res = await api.requestEmailChange(emailChangeCurrentPwd, emailChangeNewEmail);
-                        setEmailChangeStep('confirm');
-                        setEmailChangeStatus(res.message);
-                      } catch (err: any) {
-                        setEmailChangeStatus(err?.message || 'Failed to request email change.');
-                      }
-                    }}
-                    className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs"
-                  >
-                    Send Verification Codes
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <input
-                    type="text"
-                    value={emailChangeOldCode}
-                    onChange={(e) => setEmailChangeOldCode(e.target.value)}
-                    placeholder="6-digit code from current email"
-                    aria-label="6-digit code from current email"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono text-zinc-100"
-                  />
-                  <input
-                    type="text"
-                    value={emailChangeNewCode}
-                    onChange={(e) => setEmailChangeNewCode(e.target.value)}
-                    placeholder="6-digit code from new email"
-                    aria-label="6-digit code from new email"
-                    className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono text-zinc-100"
-                  />
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        const res = await api.confirmEmailChange(emailChangeNewEmail, emailChangeOldCode, emailChangeNewCode);
-                        setEmailChangeStatus(`Email updated to ${res.email}.`);
-                        setShowEmailChange(false);
-                      } catch (err: any) {
-                        setEmailChangeStatus(err?.message || 'Verification failed.');
-                      }
-                    }}
-                    className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs"
-                  >
-                    Confirm Email Change
-                  </button>
-                </div>
-              )}
-              {emailChangeStatus && (
+              <h5 className="text-xs font-bold text-zinc-200">Change Username</h5>
+              <div className="space-y-2">
+                <input
+                  type="password"
+                  value={usernameChangeCurrentPwd}
+                  onChange={(e) => setUsernameChangeCurrentPwd(e.target.value)}
+                  placeholder="Current password"
+                  aria-label="Current password for username change"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
+                />
+                <input
+                  type="text"
+                  value={usernameChangeNewUsername}
+                  onChange={(e) => setUsernameChangeNewUsername(e.target.value)}
+                  placeholder="New username"
+                  aria-label="New username"
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-100"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setUsernameChangeStatus(null);
+                    try {
+                      const res = await api.changeUsername(usernameChangeCurrentPwd, usernameChangeNewUsername);
+                      await updateUserProfile({ username: res.username });
+                      setUsernameChangeStatus(res.message);
+                      setUsernameChangeCurrentPwd('');
+                      setUsernameChangeNewUsername('');
+                    } catch (err: any) {
+                      setUsernameChangeStatus(err?.message || 'Failed to update username.');
+                    }
+                  }}
+                  className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs"
+                >
+                  Update Username
+                </button>
+              </div>
+              {usernameChangeStatus && (
                 <p role="status" aria-live="polite" className="text-[11px] text-teal-300">
-                  {emailChangeStatus}
+                  {usernameChangeStatus}
                 </p>
               )}
             </div>
@@ -2045,7 +1857,13 @@ export const MeTab: React.FC<MeTabProps> = ({
                       {sess.deviceLabel} {sess.isCurrent ? '(This device)' : ''}
                     </span>
                     <span className="text-[10px] font-mono text-zinc-400">
-                      Active {new Date(sess.lastActiveAt).toLocaleDateString()}
+                      Active{' '}
+                      {(() => {
+                        const raw = sess.lastActiveAt || sess.createdAt;
+                        const num = Number(raw);
+                        const d = !Number.isNaN(num) && num > 0 ? new Date(num) : new Date(String(raw));
+                        return !Number.isNaN(d.getTime()) ? d.toLocaleDateString() : 'recently';
+                      })()}
                     </span>
                   </div>
                   {!sess.isCurrent && (
@@ -2064,175 +1882,6 @@ export const MeTab: React.FC<MeTabProps> = ({
               ))}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* DEV TOOLS (Exclusively accessible to the dev account: housefly / isDev = true) */}
-      {isDevAccount && (
-        <div className="bg-zinc-900/90 border border-teal-500/40 rounded-2xl p-5 shadow-xl space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-teal-500/15 border border-teal-500/30 flex items-center justify-center text-teal-400">
-                <Terminal className="w-4 h-4" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h4 className="text-sm font-semibold text-zinc-100">Dev Tools</h4>
-                  <span className="px-1.5 py-0.5 rounded bg-teal-500/20 border border-teal-500/40 text-[9px] font-mono font-bold text-teal-300 uppercase tracking-wider">
-                    isDev = true
-                  </span>
-                </div>
-                <span className="text-[11px] text-zinc-400 block">
-                  Locked to device · Signed in as @{userEmail || 'housefly'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Community moderation section */}
-          <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <Flag className="w-4 h-4 text-amber-400" />
-                <div>
-                  <h5 className="text-xs font-bold text-zinc-100">Community moderation</h5>
-                  <span className="text-[10px] text-zinc-400 block">
-                    Review reported posts — delete violating posts or dismiss reports
-                  </span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={loadReportedPosts}
-                disabled={isLoadingReports}
-                aria-label="Refresh reported posts"
-                className="p-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isLoadingReports ? 'animate-spin text-teal-400' : ''}`} />
-              </button>
-            </div>
-
-            {moderationNotice && (
-              <div
-                role="status"
-                aria-live="polite"
-                className="px-3 py-2 rounded-lg bg-teal-950/60 border border-teal-500/40 text-[11px] text-teal-200 font-medium"
-              >
-                {moderationNotice}
-              </div>
-            )}
-
-            {isLoadingReports ? (
-              <div className="space-y-2 py-2">
-                <div className="h-16 rounded-xl bg-zinc-900 animate-pulse" />
-              </div>
-            ) : reportedPosts.length === 0 ? (
-              <div className="py-5 text-center border border-dashed border-zinc-800 rounded-xl">
-                <p className="text-xs text-zinc-400 font-medium">No reported posts in queue</p>
-                <p className="text-[10px] text-zinc-500 mt-0.5">
-                  Posts reported by community members will appear here.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-2.5">
-                {reportedPosts.map((report) => (
-                  <div
-                    key={report.id}
-                    className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl space-y-2.5"
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-bold text-zinc-100">
-                            @{report.post?.username || 'user'}
-                          </span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                            Reported
-                          </span>
-                        </div>
-                        <span className="text-[10px] text-zinc-500 block mt-0.5">
-                          Reported by @{report.reportedByUsername} ·{' '}
-                          {new Date(report.createdAt).toLocaleString()}
-                        </span>
-                      </div>
-                    </div>
-
-                    <p className="text-xs text-zinc-200 bg-zinc-950 border border-zinc-800/80 rounded-lg p-2.5 whitespace-pre-wrap break-words">
-                      {report.post?.text || ''}
-                    </p>
-
-                    {report.post?.imageUrl && (
-                      <div className="rounded-lg overflow-hidden border border-zinc-800 bg-zinc-950 max-h-36">
-                        <img
-                          src={report.post.imageUrl}
-                          alt="Reported post attachment"
-                          className="w-full h-full object-cover max-h-36"
-                        />
-                      </div>
-                    )}
-
-                    {report.reason && (
-                      <p className="text-[11px] text-amber-300/90">
-                        Reason: <span className="text-zinc-300">{report.reason}</span>
-                      </p>
-                    )}
-
-                    <div className="flex items-center gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteReportedPost(report.postId)}
-                        className="flex-1 py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-colors"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                        Delete post
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDismissPostReport(report.id)}
-                        className="flex-1 py-2 px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-semibold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-colors"
-                      >
-                        <CheckCircle2 className="w-3.5 h-3.5 text-teal-400" />
-                        Dismiss report
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Quick Dev Utilities */}
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={async () => {
-                setDevActionStatus('Seeding 7-day demo account...');
-                try {
-                  const res = await api.devSeedDemoAccount();
-                  setDevActionStatus(`Demo account ready: ${res.email} / ${res.password}`);
-                } catch (err: any) {
-                  setDevActionStatus(err?.message || 'Failed to seed demo account.');
-                }
-              }}
-              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-teal-300 flex items-center justify-center gap-1.5 transition-colors"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-teal-400" />
-              Seed Demo Account
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                window.dispatchEvent(new CustomEvent('caloriq-open-dev-console'));
-              }}
-              className="p-2.5 bg-zinc-950 hover:bg-zinc-850 border border-zinc-800 rounded-xl text-xs font-medium text-zinc-200 flex items-center justify-center gap-1.5 transition-colors"
-            >
-              <Terminal className="w-3.5 h-3.5 text-teal-400" />
-              Open Dev Console
-            </button>
-          </div>
-          {devActionStatus && (
-            <p className="text-[11px] font-mono text-teal-300 text-center">{devActionStatus}</p>
-          )}
         </div>
       )}
 

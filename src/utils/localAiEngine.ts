@@ -46,6 +46,10 @@ export interface DecipheredFoodItem {
   fiberPer100g: number;
   sugarPer100g: number;
   sodiumMgPer100g: number;
+  caffeineMg: number;
+  standardDrinks: number;
+  caffeineMgPer100g?: number;
+  abvPercent?: number;
   category: 'produce' | 'protein' | 'dairy' | 'grain' | 'fat' | 'seasoning' | 'processed' | 'beverage';
 }
 
@@ -68,6 +72,8 @@ export interface DecipheredFoodResult {
   totalFiber: number;
   totalSugar: number;
   totalSodiumMg: number;
+  totalCaffeineMg: number;
+  totalStandardDrinks: number;
   healthRating: number; // 1 to 10
   healthLabel: string;
   whatToAdd: string[];
@@ -1271,7 +1277,7 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
   },
   {
     name: 'Coffee / Tea',
-    keywords: ['coffee', 'black coffee', 'espresso', 'americano', 'tea', 'green tea'],
+    keywords: ['coffee', 'regular coffee', 'black coffee', 'brewed coffee', 'drip coffee', 'filter coffee', 'iced coffee', 'cold brew', 'espresso', 'americano', 'tea', 'green tea', 'black tea', 'matcha', 'latte', 'cappuccino', 'flat white'],
     caloriesPer100g: 2,
     proteinPer100g: 0.1,
     carbsPer100g: 0,
@@ -1282,8 +1288,177 @@ const LOCAL_FOOD_DB: LocalFoodEntry[] = [
     defaultGrams: 240,
     defaultUnitLabel: '1 cup (240ml)',
     category: 'beverage'
+  },
+  {
+    name: 'Beer',
+    keywords: ['beer', 'lager', 'ale', 'ipa', 'stout', 'pilsner', 'draught beer', 'craft beer'],
+    caloriesPer100g: 43,
+    proteinPer100g: 0.5,
+    carbsPer100g: 3.6,
+    fatPer100g: 0,
+    fiberPer100g: 0,
+    sugarPer100g: 0,
+    sodiumMgPer100g: 4,
+    defaultGrams: 330,
+    defaultUnitLabel: '1 bottle (330ml)',
+    category: 'beverage'
+  },
+  {
+    name: 'Wine',
+    keywords: ['wine', 'red wine', 'white wine', 'rose wine', 'rosé', 'prosecco', 'champagne', 'sparkling wine', 'pinot noir', 'cabernet', 'chardonnay', 'sauvignon blanc', 'merlot'],
+    caloriesPer100g: 83,
+    proteinPer100g: 0.1,
+    carbsPer100g: 2.6,
+    fatPer100g: 0,
+    fiberPer100g: 0,
+    sugarPer100g: 0.6,
+    sodiumMgPer100g: 5,
+    defaultGrams: 150,
+    defaultUnitLabel: '1 glass (150ml)',
+    category: 'beverage'
+  },
+  {
+    name: 'Spirits / Liquor',
+    keywords: ['whiskey', 'whisky', 'bourbon', 'scotch', 'vodka', 'gin', 'rum', 'tequila', 'brandy', 'cognac', 'liquor', 'spirits'],
+    caloriesPer100g: 231,
+    proteinPer100g: 0,
+    carbsPer100g: 0,
+    fatPer100g: 0,
+    fiberPer100g: 0,
+    sugarPer100g: 0,
+    sodiumMgPer100g: 1,
+    defaultGrams: 45,
+    defaultUnitLabel: '1 shot (45ml)',
+    category: 'beverage'
+  },
+  {
+    name: 'Cider / Cocktail',
+    keywords: ['cider', 'hard cider', 'cocktail', 'margarita', 'mojito', 'martini', 'spritz', 'aperol spritz', 'hard seltzer'],
+    caloriesPer100g: 58,
+    proteinPer100g: 0,
+    carbsPer100g: 5.0,
+    fatPer100g: 0,
+    fiberPer100g: 0,
+    sugarPer100g: 4.2,
+    sodiumMgPer100g: 6,
+    defaultGrams: 250,
+    defaultUnitLabel: '1 glass (250ml)',
+    category: 'beverage'
   }
 ];
+
+function estimateBeverageCaffeineAndAlcohol(
+  rawText: string,
+  foodPhrase: string,
+  grams: number,
+  explicitAbvPercent?: number
+): {
+  caffeineMg: number;
+  caffeineMgPer100g: number;
+  standardDrinks: number;
+  abvPercent?: number;
+  overrideCaloriesPer100g?: number;
+  overrideCarbsPer100g?: number;
+  overrideProteinPer100g?: number;
+} {
+  const combined = `${rawText} ${foodPhrase}`.toLowerCase();
+  const isDecaf = /\b(decaf|decaffeinated|caffeine[-\s]?free|herbal|chamomile|peppermint|rooibos)\b/i.test(combined);
+
+  let caffeineMgPer100g = 0;
+  if (!isDecaf) {
+    if (/\b(espresso|ristretto)\b/i.test(combined)) {
+      caffeineMgPer100g = 210; // ~63mg per 30ml shot
+    } else if (/\b(cold brew)\b/i.test(combined)) {
+      caffeineMgPer100g = 52; // ~125mg per 240ml cup
+    } else if (/\b(instant coffee)\b/i.test(combined)) {
+      caffeineMgPer100g = 26; // ~62mg per 240ml cup
+    } else if (/\b(latte|cappuccino|flat white|macchiato|mocha)\b/i.test(combined)) {
+      caffeineMgPer100g = 31.25; // ~75mg per 240ml cup
+    } else if (/\b(coffee|americano|drip|brewed|iced coffee)\b/i.test(combined)) {
+      caffeineMgPer100g = 39.58; // ~95mg per 240ml cup
+    } else if (/\b(matcha)\b/i.test(combined)) {
+      caffeineMgPer100g = 29.17; // ~70mg per 240ml cup
+    } else if (/\b(black tea|english breakfast|earl grey|chai|sweet tea|iced tea)\b/i.test(combined)) {
+      caffeineMgPer100g = 19.58; // ~47mg per 240ml cup
+    } else if (/\b(green tea|oolong|white tea|tea)\b/i.test(combined)) {
+      caffeineMgPer100g = 11.67; // ~28mg per 240ml cup
+    } else if (/\b(pre[-\s]?workout)\b/i.test(combined)) {
+      caffeineMgPer100g = 75;
+    } else if (/\b(energy drink|red bull|monster|celsius)\b/i.test(combined)) {
+      caffeineMgPer100g = 32; // ~80mg per 250ml can
+    } else if (/\b(cola|coke|pepsi|diet coke|dr pepper|mountain dew)\b/i.test(combined)) {
+      caffeineMgPer100g = 10; // ~33mg per 330ml can
+    } else if (/\b(dark chocolate)\b/i.test(combined)) {
+      caffeineMgPer100g = 80;
+    } else if (/\b(chocolate|cocoa)\b/i.test(combined)) {
+      caffeineMgPer100g = 20;
+    }
+  } else if (/\b(coffee|espresso|latte|cappuccino|americano)\b/i.test(combined)) {
+    caffeineMgPer100g = 1.0; // trace caffeine in decaf (~2-3mg per cup)
+  }
+
+  const isAlcoholKeyword = /\b(beer|lager|ale|ipa|stout|pilsner|wine|red wine|white wine|rosé|rose wine|prosecco|champagne|sparkling wine|pinot|cabernet|chardonnay|sauvignon|merlot|whiskey|whisky|bourbon|scotch|vodka|gin|rum|tequila|brandy|cognac|liquor|spirits|cider|hard cider|hard seltzer|cocktail|margarita|mojito|martini|spritz|aperol)\b/i.test(
+    combined
+  );
+  const isNonAlcoholic = /\b(non[-\s]?alcoholic|alcohol[-\s]?free|0\.0%|zero alcohol|ginger beer|root beer|apple cider vinegar)\b/i.test(
+    combined
+  );
+
+  let abvPercent: number | undefined = explicitAbvPercent;
+  if (abvPercent === undefined && isAlcoholKeyword && !isNonAlcoholic) {
+    if (/\b(whiskey|whisky|bourbon|scotch|vodka|gin|rum|tequila|brandy|cognac|liquor|spirits)\b/i.test(combined)) {
+      abvPercent = 40;
+    } else if (/\b(wine|red wine|white wine|rosé|rose wine|prosecco|champagne|sparkling wine|pinot|cabernet|chardonnay|sauvignon|merlot)\b/i.test(combined)) {
+      abvPercent = 12.5;
+    } else if (/\b(cocktail|margarita|mojito|martini|spritz|aperol)\b/i.test(combined)) {
+      abvPercent = 11;
+    } else if (/\b(beer|lager|ale|ipa|stout|pilsner|cider|hard cider|hard seltzer)\b/i.test(combined)) {
+      abvPercent = 5.0;
+    }
+  }
+
+  const caffeineMg = Math.round((grams / 100) * caffeineMgPer100g);
+
+  if (abvPercent !== undefined && abvPercent > 0 && !isNonAlcoholic) {
+    // 1 ml ethanol = 0.789g; 1 standard drink = 14g pure ethanol; 1g ethanol = 7 kcal
+    const pureEthanolGramsPer100ml = abvPercent * 0.789;
+    const alcoholKcalPer100ml = pureEthanolGramsPer100ml * 7;
+    let nonAlcoholCarbsPer100ml = 0;
+    let nonAlcoholProteinPer100ml = 0;
+
+    if (/\b(beer|lager|ale|ipa|stout|pilsner)\b/i.test(combined)) {
+      nonAlcoholCarbsPer100ml = 3.6;
+      nonAlcoholProteinPer100ml = 0.5;
+    } else if (/\b(wine|red wine|white wine|rosé|rose wine|prosecco|champagne|sparkling wine|pinot|cabernet|chardonnay|sauvignon|merlot)\b/i.test(combined)) {
+      nonAlcoholCarbsPer100ml = 2.6;
+      nonAlcoholProteinPer100ml = 0.1;
+    } else if (/\b(cider|hard cider|cocktail|margarita|mojito|spritz|aperol)\b/i.test(combined)) {
+      nonAlcoholCarbsPer100ml = 5.0;
+    }
+
+    const totalKcalPer100ml = Math.round(
+      alcoholKcalPer100ml + nonAlcoholCarbsPer100ml * 4 + nonAlcoholProteinPer100ml * 4
+    );
+    const totalPureAlcoholGrams = (grams / 100) * pureEthanolGramsPer100ml;
+    const standardDrinks = Math.round((totalPureAlcoholGrams / 14) * 10) / 10;
+
+    return {
+      caffeineMg,
+      caffeineMgPer100g,
+      standardDrinks,
+      abvPercent,
+      overrideCaloriesPer100g: totalKcalPer100ml,
+      overrideCarbsPer100g: nonAlcoholCarbsPer100ml,
+      overrideProteinPer100g: nonAlcoholProteinPer100ml
+    };
+  }
+
+  return {
+    caffeineMg,
+    caffeineMgPer100g,
+    standardDrinks: 0
+  };
+}
 
 // Known per-item weights (in grams) for count-based inputs without explicit weight
 const KNOWN_ITEM_WEIGHTS_GRAMS: Array<{ pattern: RegExp; grams: number; unitLabel: string }> = [
@@ -1372,6 +1547,15 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
 
   const lower = raw.toLowerCase();
 
+  // Extract optional explicit ABV percentage (e.g. "12.5% ABV", "5% alc", "13.5%")
+  const abvMatch = raw.match(/(\d+(?:[.,]\d+)?)\s*%\s*(?:abv|alc(?:ohol)?(?:\s*by\s*vol(?:ume)?)?)?/i);
+  const explicitAbvPercent = abvMatch
+    ? parseFloat(abvMatch[1].replace(',', '.'))
+    : undefined;
+  const rawWithoutAbv = abvMatch
+    ? raw.replace(abvMatch[0], ' ').replace(/\s+/g, ' ').trim()
+    : raw;
+
   // Check colloquial small measures first: "a pinch of", "2 pinches of", "a dash of", "a sprinkle of"
   const pinchMatch = lower.match(/^(?:(\d+|a|an|one|two|three)\s+)?(pinch|pinches|dash|dashes|sprinkle|touch)\s+(?:of\s+)?(.+)$/i);
   if (pinchMatch) {
@@ -1397,6 +1581,8 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
         fiber: Math.round(matched.fiberPer100g * factor * 10) / 10,
         sugar: Math.round(matched.sugarPer100g * factor * 10) / 10,
         sodiumMg: Math.round(matched.sodiumMgPer100g * factor),
+        caffeineMg: 0,
+        standardDrinks: 0,
         caloriesPer100g: matched.caloriesPer100g,
         proteinPer100g: matched.proteinPer100g,
         carbsPer100g: matched.carbsPer100g,
@@ -1422,6 +1608,8 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
       fiber: 0,
       sugar: 0,
       sodiumMg: /salt/i.test(itemName) ? 155 : 5,
+      caffeineMg: 0,
+      standardDrinks: 0,
       caloriesPer100g: 0,
       proteinPer100g: 0,
       carbsPer100g: 0,
@@ -1435,7 +1623,7 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
 
   let amount = 1;
   let unit = '';
-  let foodPhrase = raw;
+  let foodPhrase = rawWithoutAbv;
   let hasUserExplicitWeight = false;
 
   const parseQtyToken = (rawQty: string): number => {
@@ -1447,26 +1635,40 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     return WORD_NUMBERS[q] ?? (parseFloat(q.replace(',', '.')) || 1);
   };
 
-  // 1. Check quantity + unit at START: e.g. "60g dried prunes", "200ml milk", "2 slices bread"
-  const leadingUnitMatch = raw.match(
-    /^(?:(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|half|quarter|\d+(?:[.,/]\d+)?)\s*)?(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|slices?)\b\s*(?:of\s+)?(.+)$/i
+  // Special case: vessel + food + explicit volume, e.g. "1 glass of beer 150ml", "2 cans of beer 330ml"
+  const vesselPlusVolumeMatch = rawWithoutAbv.match(
+    /^(?:(a|an|one|two|three|four|five|six|seven|eight|nine|ten|\d+(?:[.,/]\d+)?)\s+)?(glass|glasses|cup|cups|mug|mugs|can|cans|bottle|bottles|pint|pints|shot|shots)\s+(?:of\s+)?(.+?)[,\s\-–(]+(\d+(?:[.,]\d+)?)\s*(ml|milliliters?|l|liters?|oz|ounces?|g|grams?)\)?$/i
   );
 
+  // 1. Check quantity + unit at START: e.g. "60g dried prunes", "200ml milk", "2 slices bread", "2 cups regular coffee", "1 glass of wine"
+  const leadingUnitMatch = !vesselPlusVolumeMatch
+    ? rawWithoutAbv.match(
+        /^(?:(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|half|quarter|\d+(?:[.,/]\d+)?)\s*)?(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|mug|mugs|glass|glasses|pint|pints|shot|shots|can|cans|bottle|bottles|tbsp|tablespoons?|tsp|teaspoons?|slices?)\b\s*(?:of\s+)?(.+)$/i
+      )
+    : null;
+
   // 2. Check quantity + unit at END or in parens: e.g. "oatmeal 150g", "milk 200g", "milk (200ml)", "oatmeal - 150g"
-  const trailingUnitMatch = !leadingUnitMatch
-    ? raw.match(
-        /^(.+?)[,\s\-–(]+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|half|quarter|\d+(?:[.,/]\d+)?)\s*(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?|slices?)\)?$/i
+  const trailingUnitMatch = !vesselPlusVolumeMatch && !leadingUnitMatch
+    ? rawWithoutAbv.match(
+        /^(.+?)[,\s\-–(]+(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|half|quarter|\d+(?:[.,/]\d+)?)\s*(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|mug|mugs|glass|glasses|pint|pints|shot|shots|can|cans|bottle|bottles|tbsp|tablespoons?|tsp|teaspoons?|slices?)\)?$/i
       )
     : null;
 
   // 3. Check quantity + unit in MIDDLE: e.g. "oatmeal 150g cooked"
-  const middleUnitMatch = !leadingUnitMatch && !trailingUnitMatch
-    ? raw.match(
+  const middleUnitMatch = !vesselPlusVolumeMatch && !leadingUnitMatch && !trailingUnitMatch
+    ? rawWithoutAbv.match(
         /^(.+?)\s+(\d+(?:[.,]\d+)?)\s*(g|grams?|kg|kilograms?|ml|milliliters?|l|liters?|oz|ounces?|cups?|tbsp|tablespoons?|tsp|teaspoons?)\b\s+(.+)$/i
       )
     : null;
 
-  if (leadingUnitMatch && leadingUnitMatch[3]) {
+  if (vesselPlusVolumeMatch) {
+    const vesselCount = parseQtyToken(vesselPlusVolumeMatch[1] || '1');
+    const perVesselAmount = parseFloat(vesselPlusVolumeMatch[4].replace(',', '.')) || 0;
+    amount = vesselCount * perVesselAmount;
+    unit = vesselPlusVolumeMatch[5].toLowerCase();
+    foodPhrase = vesselPlusVolumeMatch[3].trim();
+    hasUserExplicitWeight = true;
+  } else if (leadingUnitMatch && leadingUnitMatch[3]) {
     amount = parseQtyToken(leadingUnitMatch[1] || '1');
     unit = leadingUnitMatch[2].toLowerCase();
     foodPhrase = leadingUnitMatch[3].trim();
@@ -1483,11 +1685,11 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     hasUserExplicitWeight = true;
   } else {
     // Check leading or trailing bare number without unit, e.g. "3 raspberries", "2 eggs", "eggs 2"
-    const leadingCountMatch = raw.match(
+    const leadingCountMatch = rawWithoutAbv.match(
       /^(a|an|one|two|three|four|five|six|seven|eight|nine|ten|twelve|fifteen|twenty|thirty|forty|fifty|half|quarter|\d+(?:[.,/]\d+)?)\s+(?:of\s+|an?\s+)?(.+)$/i
     );
     const trailingCountMatch = !leadingCountMatch
-      ? raw.match(/^(.+?)\s*[x×\-]?\s*(\d+(?:[.,]\d+)?)$/i)
+      ? rawWithoutAbv.match(/^(.+?)\s*[x×\-]?\s*(\d+(?:[.,]\d+)?)$/i)
       : null;
 
     if (leadingCountMatch) {
@@ -1501,12 +1703,22 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     } else {
       amount = 1;
       unit = 'piece';
-      foodPhrase = raw;
+      foodPhrase = rawWithoutAbv;
     }
   }
 
   const matched = findBestFoodMatch(foodPhrase);
-  const displayName = formatTypedFoodName(foodPhrase);
+  const baseDisplayName = formatTypedFoodName(foodPhrase);
+  const displayName =
+    explicitAbvPercent !== undefined
+      ? `${baseDisplayName} (${explicitAbvPercent}% ABV)`
+      : baseDisplayName;
+
+  const isLiquidOrBeverage =
+    matched?.category === 'beverage' ||
+    /\b(coffee|espresso|americano|latte|cappuccino|flat white|tea|matcha|milk|water|juice|soda|cola|coke|energy drink|beer|lager|ale|ipa|stout|wine|whiskey|whisky|vodka|gin|rum|tequila|cider|cocktail)\b/i.test(
+      foodPhrase
+    );
 
   let grams = 0;
   let isEstimatedWeight = false;
@@ -1522,16 +1734,34 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     servingLabel = `${amount}kg (${grams}g)`;
   } else if (unit === 'ml' || unit === 'milliliter' || unit === 'milliliters') {
     grams = amount;
-    servingLabel = `${amount}ml (${grams}g)`;
+    servingLabel = `${amount}ml`;
   } else if (unit === 'l' || unit === 'liter' || unit === 'liters') {
     grams = amount * 1000;
-    servingLabel = `${amount}L (${grams}g)`;
+    servingLabel = `${amount}L (${grams}ml)`;
   } else if (unit === 'oz' || unit === 'ounce' || unit === 'ounces') {
-    grams = Math.round(amount * 28.35);
-    servingLabel = `${amount} oz (${grams}g)`;
-  } else if (unit === 'cup' || unit === 'cups') {
-    grams = Math.round(amount * 180);
-    servingLabel = `${amount} cup (${grams}g)`;
+    grams = Math.round(amount * (isLiquidOrBeverage ? 29.57 : 28.35));
+    servingLabel = `${amount} oz (${grams}${isLiquidOrBeverage ? 'ml' : 'g'})`;
+  } else if (unit === 'cup' || unit === 'cups' || unit === 'mug' || unit === 'mugs') {
+    const perCupGrams = isLiquidOrBeverage ? 240 : 180;
+    grams = Math.round(amount * perCupGrams);
+    servingLabel = `${amount} ${unit.replace(/s$/, '')}${amount !== 1 ? 's' : ''} (${grams}${isLiquidOrBeverage ? 'ml' : 'g'})`;
+  } else if (unit === 'glass' || unit === 'glasses') {
+    const isWine = /\b(wine|prosecco|champagne|pinot|cabernet|chardonnay|sauvignon|merlot|rosé|rose)\b/i.test(foodPhrase);
+    const perGlassMl = isWine ? 150 : 250;
+    grams = Math.round(amount * perGlassMl);
+    servingLabel = `${amount} glass${amount !== 1 ? 'es' : ''} (${grams}ml)`;
+  } else if (unit === 'pint' || unit === 'pints') {
+    grams = Math.round(amount * 473);
+    servingLabel = `${amount} pint${amount !== 1 ? 's' : ''} (${grams}ml)`;
+  } else if (unit === 'shot' || unit === 'shots') {
+    const isEspresso = /\b(espresso|ristretto|coffee)\b/i.test(foodPhrase);
+    const perShotMl = isEspresso ? 30 : 45;
+    grams = Math.round(amount * perShotMl);
+    servingLabel = `${amount} shot${amount !== 1 ? 's' : ''} (${grams}ml)`;
+  } else if (unit === 'can' || unit === 'cans' || unit === 'bottle' || unit === 'bottles') {
+    const perVesselMl = matched?.defaultGrams && matched.defaultGrams >= 100 ? matched.defaultGrams : 330;
+    grams = Math.round(amount * perVesselMl);
+    servingLabel = `${amount} ${unit.replace(/s$/, '')}${amount !== 1 ? 's' : ''} (${grams}ml)`;
   } else if (unit === 'tbsp' || unit === 'tablespoon' || unit === 'tablespoons') {
     grams = Math.round(amount * 15);
     servingLabel = `${amount} tbsp (${grams}g)`;
@@ -1551,7 +1781,7 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
       grams = Math.round(amount * matched.defaultGrams * 10) / 10;
       isEstimatedWeight = true;
       needsWeightConfirmation = false;
-      servingLabel = `${grams}g (estimated)`;
+      servingLabel = `${grams}${isLiquidOrBeverage ? 'ml' : 'g'} (estimated)`;
     } else {
       // Only show confirm weight when the user gave NO weight AND the AI could not estimate one
       grams = 0;
@@ -1571,7 +1801,18 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     : undefined;
   const factor = grams / 100;
 
+  const bevEstimate = estimateBeverageCaffeineAndAlcohol(
+    raw,
+    foodPhrase,
+    roundedGrams,
+    explicitAbvPercent
+  );
+
   if (matched) {
+    const calPer100g = bevEstimate.overrideCaloriesPer100g ?? matched.caloriesPer100g;
+    const carbsPer100g = bevEstimate.overrideCarbsPer100g ?? matched.carbsPer100g;
+    const protPer100g = bevEstimate.overrideProteinPer100g ?? matched.proteinPer100g;
+
     return {
       rawText: raw,
       name: displayName,
@@ -1584,21 +1825,64 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
       suggestedGrams,
       over5kgWarning,
       servingLabel,
-      calories: Math.round(matched.caloriesPer100g * factor),
-      protein: Math.round(matched.proteinPer100g * factor * 10) / 10,
-      carbs: Math.round(matched.carbsPer100g * factor * 10) / 10,
+      calories: Math.round(calPer100g * factor),
+      protein: Math.round(protPer100g * factor * 10) / 10,
+      carbs: Math.round(carbsPer100g * factor * 10) / 10,
       fat: Math.round(matched.fatPer100g * factor * 10) / 10,
       fiber: Math.round(matched.fiberPer100g * factor * 10) / 10,
       sugar: Math.round(matched.sugarPer100g * factor * 10) / 10,
       sodiumMg: Math.round(matched.sodiumMgPer100g * factor),
-      caloriesPer100g: matched.caloriesPer100g,
-      proteinPer100g: matched.proteinPer100g,
-      carbsPer100g: matched.carbsPer100g,
+      caffeineMg: bevEstimate.caffeineMg,
+      standardDrinks: bevEstimate.standardDrinks,
+      caffeineMgPer100g: bevEstimate.caffeineMgPer100g,
+      abvPercent: bevEstimate.abvPercent,
+      caloriesPer100g: calPer100g,
+      proteinPer100g: protPer100g,
+      carbsPer100g: carbsPer100g,
       fatPer100g: matched.fatPer100g,
       fiberPer100g: matched.fiberPer100g,
       sugarPer100g: matched.sugarPer100g,
       sodiumMgPer100g: matched.sodiumMgPer100g,
       category: matched.category
+    };
+  }
+
+  // If explicit ABV was given on an unrecognized drink name, treat as alcoholic beverage
+  if (bevEstimate.overrideCaloriesPer100g !== undefined) {
+    const calPer100g = bevEstimate.overrideCaloriesPer100g;
+    const carbsPer100g = bevEstimate.overrideCarbsPer100g ?? 2.0;
+    const protPer100g = bevEstimate.overrideProteinPer100g ?? 0;
+    return {
+      rawText: raw,
+      name: displayName,
+      grams: roundedGrams,
+      isEstimatedWeight,
+      needsWeightConfirmation,
+      notes,
+      isOver5kg,
+      kgAmount,
+      suggestedGrams,
+      over5kgWarning,
+      servingLabel,
+      calories: Math.round(calPer100g * factor),
+      protein: Math.round(protPer100g * factor * 10) / 10,
+      carbs: Math.round(carbsPer100g * factor * 10) / 10,
+      fat: 0,
+      fiber: 0,
+      sugar: 0,
+      sodiumMg: Math.round(4 * factor),
+      caffeineMg: bevEstimate.caffeineMg,
+      standardDrinks: bevEstimate.standardDrinks,
+      caffeineMgPer100g: bevEstimate.caffeineMgPer100g,
+      abvPercent: bevEstimate.abvPercent,
+      caloriesPer100g: calPer100g,
+      proteinPer100g: protPer100g,
+      carbsPer100g: carbsPer100g,
+      fatPer100g: 0,
+      fiberPer100g: 0,
+      sugarPer100g: 0,
+      sodiumMgPer100g: 4,
+      category: 'beverage'
     };
   }
 
@@ -1625,6 +1909,10 @@ function parseFoodSegment(segmentRaw: string): DecipheredFoodItem | null {
     fiber: Math.round(1.5 * factor * 10) / 10,
     sugar: Math.round(3.0 * factor * 10) / 10,
     sodiumMg: Math.round(140 * factor),
+    caffeineMg: bevEstimate.caffeineMg,
+    standardDrinks: bevEstimate.standardDrinks,
+    caffeineMgPer100g: bevEstimate.caffeineMgPer100g,
+    abvPercent: bevEstimate.abvPercent,
     caloriesPer100g: 135,
     proteinPer100g: 6,
     carbsPer100g: 16,
@@ -1676,7 +1964,7 @@ const MEAL_PROTEIN_PHRASES: Record<MealContextType, string[]> = {
 
 const HEALTHY_FAT_PHRASES = [
   'Add 10–15g of healthy fats (chia seeds, flaxseeds, or crushed walnuts) to slow digestion and help absorb fat-soluble vitamins.',
-  'Sprinkle 1 tbsp of hemp seeds, chia, or sliced almonds on top for omega-3s and steadier energy.',
+  'Sprinkle 1 tbsp of hemp seeds, chia, or sliced almonds on top for healthy fats and steadier energy.',
   'Include a small handful of nuts or a drizzle of olive/avocado oil to round out essential fatty acids.',
   'Top with pumpkin seeds, flax, or a spoonful of nut butter to add healthy unsaturated fats.',
   'Pair with ¼ avocado or 12g of mixed seeds so the meal digests more gradually.',
@@ -1731,6 +2019,8 @@ export function buildDecipheredFoodSummary(
       totalFiber: 0,
       totalSugar: 0,
       totalSodiumMg: 0,
+      totalCaffeineMg: 0,
+      totalStandardDrinks: 0,
       healthRating: 5,
       healthLabel: 'Enter ingredients above',
       whatToAdd: [],
@@ -1745,6 +2035,8 @@ export function buildDecipheredFoodSummary(
   const totalFiber = Math.round(items.reduce((s, i) => s + i.fiber, 0) * 10) / 10;
   const totalSugar = Math.round(items.reduce((s, i) => s + i.sugar, 0) * 10) / 10;
   const totalSodiumMg = items.reduce((s, i) => s + i.sodiumMg, 0);
+  const totalCaffeineMg = Math.round(items.reduce((s, i) => s + (i.caffeineMg || 0), 0));
+  const totalStandardDrinks = Math.round(items.reduce((s, i) => s + (i.standardDrinks || 0), 0) * 10) / 10;
   const needsWeightConfirmation = items.some(i => Boolean(i.needsWeightConfirmation));
 
   const hasItemOver5kg = items.some(i => i.grams > 5000);
@@ -1768,42 +2060,110 @@ export function buildDecipheredFoodSummary(
     Math.round(totalCalories) +
     items.length * 17;
 
-  // Health rating considers meal size, protein density, and fiber (not just ingredient list in abstract)
+  // Health rating considers whole-food ratio, added sugar (>25g / >50g thresholds), meal size (>800 kcal), protein, and fiber
   const hasProduce = items.some(i => i.category === 'produce');
   const hasWholeGrainOrDairy = items.some(i => i.category === 'grain' || i.category === 'dairy');
-  const hasProcessed = items.some(i => i.category === 'processed' || i.category === 'beverage');
-  const hasAddedSalt = items.some(i => /salt|soy sauce/i.test(i.name));
+  const isAddedSugarSource = (item: DecipheredFoodItem): boolean =>
+    item.category === 'processed' ||
+    (item.category === 'beverage' && item.sugar > 0) ||
+    /\b(honey|syrup|maple|agave|sugar|chocolate|cookie|cookies|biscuit|cake|muffin|croissant|donut|brownie|pastry|candy|jam|jelly|soda|cola|coke|soft drink|energy drink|sweet tea)\b/i.test(
+      item.name
+    );
+
+  const addedSugarGrams =
+    Math.round(items.reduce((s, i) => s + (isAddedSugarSource(i) ? i.sugar : 0), 0) * 10) / 10;
+
+  const isWholeFoodItem = (item: DecipheredFoodItem): boolean => {
+    if (
+      item.category === 'produce' ||
+      item.category === 'grain' ||
+      item.category === 'dairy' ||
+      item.category === 'protein' ||
+      item.category === 'fat' ||
+      item.category === 'seasoning'
+    ) {
+      return true;
+    }
+    if (item.category === 'beverage' && item.calories <= 10) {
+      return true;
+    }
+    return false;
+  };
+
+  const totalGrams = items.reduce((s, i) => s + i.grams, 0);
+  const wholeFoodGrams = items.filter(isWholeFoodItem).reduce((s, i) => s + i.grams, 0);
+  const wholeFoodCalories = items.filter(isWholeFoodItem).reduce((s, i) => s + i.calories, 0);
+  const wholeFoodShare =
+    totalCalories > 0
+      ? Math.max(
+          totalGrams > 0 ? wholeFoodGrams / totalGrams : 0,
+          wholeFoodCalories / totalCalories
+        )
+      : 0;
+
+  const isBeverageOnlyZeroCal = items.every(i => i.category === 'beverage' && i.calories <= 15 && (i.standardDrinks || 0) === 0);
+  const hasAlmostNoProteinAndNoFibre = !isBeverageOnlyZeroCal && totalProtein < 5 && totalFiber < 2;
+  const isGenuinelyPoorMeal =
+    totalCalories > 800 ||
+    addedSugarGrams > 50 ||
+    hasAlmostNoProteinAndNoFibre ||
+    isExtremeCalorieMeal;
+
+  const isMostlyWholeFood = wholeFoodShare >= 0.65 && addedSugarGrams <= 25 && !isGenuinelyPoorMeal;
   const proteinDensityPct = totalCalories > 0 ? (totalProtein * 4 * 100) / totalCalories : 0;
   const isLightMeal = totalCalories > 0 && totalCalories < 220;
 
-  let score = 6.2;
+  let score = isMostlyWholeFood ? 8.0 : 6.8;
 
   // Fiber contribution
-  if (totalFiber >= 5) score += 1.0;
-  else if (totalFiber >= 3) score += 0.6;
-  else if (totalFiber >= 1.5) score += 0.3;
+  if (totalFiber >= 5) score += 0.8;
+  else if (totalFiber >= 3) score += 0.5;
+  else if (totalFiber >= 1.5) score += 0.2;
 
-  // Whole-food foundation
-  if (hasProduce || hasWholeGrainOrDairy) score += 0.5;
+  // Whole-food foundation bonus
+  if (hasProduce && hasWholeGrainOrDairy) score += 0.4;
+  else if (hasProduce || hasWholeGrainOrDairy) score += 0.2;
 
   // Protein density & absolute protein
   if (totalProtein >= 25 || (totalProtein >= 18 && proteinDensityPct >= 20)) {
-    score += 1.5;
-  } else if (totalProtein >= 12 || proteinDensityPct >= 16) {
-    score += 0.9;
-  } else if (isLightMeal && !hasProcessed) {
-    // Light whole-food meal with low protein (e.g., 81 kcal dried prunes or fruit/oatmeal starter) -> roughly 6.5
-    score = 6.5;
-  } else if (totalProtein < 5 && totalCalories >= 220) {
-    score -= 0.8;
+    score += 0.8;
+  } else if (totalProtein >= 12 || proteinDensityPct >= 15) {
+    score += 0.5;
   }
 
-  if (hasProcessed) score -= 1.8;
-  if (totalSodiumMg > 800) score -= 1.2;
-  else if (hasAddedSalt && totalCalories < 150) score -= 0.3;
+  // Only penalize added sugar when total added sugar in the meal exceeds 25g
+  if (addedSugarGrams > 50) {
+    score -= 2.8;
+  } else if (addedSugarGrams > 25) {
+    score -= 1.4;
+  }
 
-  if (totalSugar > 25 && !hasProduce) score -= 1.4;
-  if (totalFat > 30 && totalProtein < 15) score -= 0.8;
+  // Savory ultra-processed penalty only for substantial processed portions (>= 15g) when not mostly whole food
+  const hasSubstantialSavoryProcessed = items.some(
+    i => i.category === 'processed' && i.grams >= 15 && !isAddedSugarSource(i)
+  );
+  if (hasSubstantialSavoryProcessed && !isMostlyWholeFood) {
+    score -= 1.0;
+  }
+
+  if (totalSodiumMg > 1000) score -= 0.8;
+  if (totalFat > 35 && totalProtein < 12) score -= 0.6;
+
+  // Apply genuinely poor meal penalties vs whole-food floor
+  if (isGenuinelyPoorMeal) {
+    if (addedSugarGrams > 50 || hasAlmostNoProteinAndNoFibre) {
+      score = Math.min(score, 5.2);
+    } else if (totalCalories > 800 && (!isMostlyWholeFood || totalCalories > 1100 || addedSugarGrams > 25)) {
+      score = Math.min(score, 5.5);
+    }
+  } else {
+    // Never rate under 6 unless the meal is genuinely poor
+    score = Math.max(6.0, score);
+    // A meal of mostly whole foods should rate 8/10 or higher
+    if (isMostlyWholeFood) {
+      score = Math.max(8.0, score);
+    }
+  }
 
   score = Math.max(1, Math.min(10, score));
 
@@ -1846,18 +2206,23 @@ export function buildDecipheredFoodSummary(
     }
   } else {
     let baseLabel: string;
-    if (isLightMeal && totalProtein < 10 && !hasProcessed) {
+    if (healthRating >= 8.0) {
+      baseLabel =
+        healthRating >= 8.5
+          ? 'Excellent — Nutrient-Dense & Balanced'
+          : 'Great — Whole-Food Foundation';
+    } else if (isLightMeal && totalProtein < 10 && addedSugarGrams <= 25) {
       baseLabel = `Light meal — add protein to make it a proper ${mealDisplayName}.`;
     } else if (totalProtein < 5) {
       baseLabel = `Low protein — add protein to make it a proper ${mealDisplayName}.`;
-    } else if (healthRating >= 8.5) {
-      baseLabel = 'Excellent — Nutrient-Dense & Balanced';
     } else if (healthRating >= 7.0) {
       baseLabel = 'Good — Whole-Food Foundation';
-    } else if (healthRating >= 5.5) {
+    } else if (healthRating >= 6.0) {
       baseLabel = 'Moderate — Could Use Macro Balance';
+    } else if (addedSugarGrams > 25) {
+      baseLabel = 'Low — High in Added Sugar';
     } else {
-      baseLabel = 'Low — High in Sodium, Sugar, or Processed Fats';
+      baseLabel = 'Low — High Calorie Density or Low Protein & Fiber';
     }
 
     healthLabel = usedFallbackReference
@@ -1883,25 +2248,42 @@ export function buildDecipheredFoodSummary(
       whatToAdd.push(pickPhrase(BALANCED_ADD_PHRASES, phraseSeed));
     }
 
-    const saltItem = items.find(i => /salt|soy sauce/i.test(i.name));
+    // Never suggest removing a single ingredient under 15g unless the meal is otherwise unhealthy (isGenuinelyPoorMeal)
+    const canSuggestRemovingItem = (item: DecipheredFoodItem): boolean =>
+      item.grams >= 15 || isGenuinelyPoorMeal;
+
+    const saltItem = items.find(
+      i => /salt|soy sauce/i.test(i.name) && canSuggestRemovingItem(i) && i.sodiumMg > 400
+    );
     if (saltItem) {
       whatToTakeOut.push(
         `Reduce the ${saltItem.rawText} (~${saltItem.sodiumMg}mg sodium) and swap in cinnamon, citrus zest, or fresh herbs.`
       );
-    } else if (totalSodiumMg > 600) {
+    } else if (totalSodiumMg > 900) {
       whatToTakeOut.push(
         `Trim high-sodium items (${totalSodiumMg}mg total sodium) to keep daily sodium in check.`
       );
     }
 
-    const processedItems = items.filter(i => i.category === 'processed' || i.category === 'beverage');
-    if (processedItems.length > 0) {
-      whatToTakeOut.push(
-        `Scale back ${processedItems.map(p => p.name).join(' & ')} to cut refined sugars and empty calories.`
+    // Only flag sugar or say "take out empty calories" when added sugar is over 25g in the meal
+    if (addedSugarGrams > 25) {
+      const sugaryItems = items.filter(
+        i => isAddedSugarSource(i) && i.sugar > 0 && canSuggestRemovingItem(i)
       );
+      if (sugaryItems.length > 0) {
+        whatToTakeOut.push(
+          `Take out empty calories by scaling back ${sugaryItems.map(p => p.name).join(' & ')} (${addedSugarGrams}g added sugar).`
+        );
+      } else {
+        whatToTakeOut.push(
+          `Take out empty calories by reducing added sugars (${addedSugarGrams}g total in this meal).`
+        );
+      }
     }
 
-    const heavyFatItem = items.find(i => i.fat > 18);
+    const heavyFatItem = items.find(
+      i => i.fat > 22 && canSuggestRemovingItem(i) && !isMostlyWholeFood
+    );
     if (heavyFatItem) {
       whatToTakeOut.push(
         `Trim the portion of ${heavyFatItem.name} by ~30% to save ~${Math.round(heavyFatItem.calories * 0.3)} kcal.`
@@ -1909,16 +2291,15 @@ export function buildDecipheredFoodSummary(
     }
 
     if (whatToTakeOut.length === 0) {
-      if (totalProtein < 5) {
-        // Never say "Nothing needs to be taken out" for a meal with under 5g protein
-        whatToTakeOut.push('Add protein to make this a proper meal.');
+      if (hasAlmostNoProteinAndNoFibre) {
+        whatToTakeOut.push('Add protein and fiber to make this a balanced meal.');
       } else {
         const cleanTakeoutPhrases = [
           'Whole-food ingredients look clean — no excess refined sugars or trans fats to remove.',
           'Ingredients are clean and unprocessed; focus on portion balance rather than removing items.',
-          'No processed additives or excess sodium detected in these ingredients.',
+          'No excess refined ingredients or high sodium detected in this meal.',
           'Solid whole-food choices — nothing unhealthy needs to be cut from this plate.',
-          'Clean ingredient profile with no refined oils or added sugars to strip out.'
+          'Clean ingredient profile with no refined oils or excess added sugars to strip out.'
         ];
         whatToTakeOut.push(pickPhrase(cleanTakeoutPhrases, phraseSeed + 5));
       }
@@ -1942,6 +2323,8 @@ export function buildDecipheredFoodSummary(
     totalFiber,
     totalSugar,
     totalSodiumMg,
+    totalCaffeineMg,
+    totalStandardDrinks,
     healthRating,
     healthLabel,
     whatToAdd,
@@ -1967,6 +2350,15 @@ export function recalculateDecipheredFoodWithGrams(
       : undefined;
     const factor = grams / 100;
     const stillNeedsConfirmation = hasOverride ? grams <= 0 : Boolean(item.needsWeightConfirmation);
+
+    const caffeineMg = item.caffeineMgPer100g
+      ? Math.round(item.caffeineMgPer100g * factor)
+      : item.caffeineMg || 0;
+    const standardDrinks =
+      item.abvPercent && item.abvPercent > 0
+        ? Math.round(((grams / 100) * item.abvPercent * 0.789 / 14) * 10) / 10
+        : item.standardDrinks || 0;
+
     return {
       ...item,
       grams: roundedGrams,
@@ -1987,7 +2379,9 @@ export function recalculateDecipheredFoodWithGrams(
       fat: Math.round(item.fatPer100g * factor * 10) / 10,
       fiber: Math.round(item.fiberPer100g * factor * 10) / 10,
       sugar: Math.round(item.sugarPer100g * factor * 10) / 10,
-      sodiumMg: Math.round(item.sodiumMgPer100g * factor)
+      sodiumMg: Math.round(item.sodiumMgPer100g * factor),
+      caffeineMg,
+      standardDrinks
     };
   });
   return buildDecipheredFoodSummary(updatedItems, dailyCalorieGoal, mealType);
