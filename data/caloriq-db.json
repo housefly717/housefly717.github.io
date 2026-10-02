@@ -3,6 +3,7 @@
     "usr_545648c7-5e38-44fc-adc5-373e0b3e5e18": {
       "id": "usr_545648c7-5e38-44fc-adc5-373e0b3e5e18",
       "email": "housefly@mail2world.com",
+      "passwordHash": "f4dee99dbe7e267844c1cb716f34f1072e012bcaeee0df67fc039307c886300d",
       "isGuest": false,
       "createdAt": 1790769790658,
       "lastLoginAt": 1790769790658,
@@ -17,6 +18,44 @@
       "lastLoginAt": 1790790676917,
       "trustedDevices": [],
       "isDev": false
+    },
+    "usr_caloriq_guest": {
+      "id": "usr_caloriq_guest",
+      "isGuest": false,
+      "createdAt": 1790874802818,
+      "lastLoginAt": 1790874802818,
+      "trustedDevices": [],
+      "isDev": false
+    },
+    "guest_1b0855e1-da9d-44ec-9164-cc628775ff48": {
+      "id": "guest_1b0855e1-da9d-44ec-9164-cc628775ff48",
+      "isGuest": true,
+      "createdAt": 1790878312984,
+      "lastLoginAt": 1790878312984,
+      "isDev": false
+    },
+    "usr_caloriq_1b085": {
+      "id": "usr_caloriq_1b085",
+      "username": "caloriq_1b085",
+      "isGuest": false,
+      "createdAt": 1790878313663,
+      "lastLoginAt": 1790878313663,
+      "trustedDevices": [],
+      "isDev": false
+    },
+    "guest_a3c1aeb5-270f-494b-9b94-4d5b505e8d5f": {
+      "id": "guest_a3c1aeb5-270f-494b-9b94-4d5b505e8d5f",
+      "isGuest": true,
+      "createdAt": 1790884133156,
+      "lastLoginAt": 1790884133156
+    },
+    "usr_caloriq_a3c1a": {
+      "id": "usr_caloriq_a3c1a",
+      "username": "caloriq_a3c1a",
+      "isGuest": false,
+      "createdAt": 1790884133647,
+      "lastLoginAt": 1790884133647,
+      "trustedDevices": []
     }
   },
   "profiles": {
@@ -67,6 +106,110 @@
       "streakOptIn": true,
       "waterChallengeJoined": false,
       "isDev": false
+    },
+    "usr_caloriq_guest": {
+      "name": "caloriq_usr_calori",
+      "username": "caloriq_usr_calori",
+      "age": 0,
+      "gender": "",
+      "heightCm": 0,
+      "fitnessLevel": "",
+      "currentWeightKg": 0,
+      "goalWeightKg": 0,
+      "dailyActivity": "",
+      "goalSpeed": "",
+      "unitSystem": "metric",
+      "pinnedWhy": "",
+      "themeMode": "dark",
+      "streakFreezesUsed": [],
+      "waterReminderEnabled": false,
+      "mealReminderEnabled": false,
+      "streakOptIn": true,
+      "waterChallengeJoined": false,
+      "isDev": false
+    },
+    "guest_1b0855e1-da9d-44ec-9164-cc628775ff48": {
+      "name": "Guest User",
+      "username": "caloriq_1b085",
+      "age": 0,
+      "gender": "",
+      "heightCm": 0,
+      "fitnessLevel": "",
+      "currentWeightKg": 0,
+      "goalWeightKg": 0,
+      "dailyActivity": "",
+      "goalSpeed": "",
+      "unitSystem": "metric",
+      "pinnedWhy": "",
+      "themeMode": "dark",
+      "streakFreezesUsed": [],
+      "waterReminderEnabled": false,
+      "mealReminderEnabled": false,
+      "streakOptIn": true,
+      "waterChallengeJoined": false,
+      "isDev": false
+    },
+    "usr_caloriq_1b085": {
+      "name": "caloriq_1b085",
+      "username": "caloriq_1b085",
+      "age": 0,
+      "gender": "",
+      "heightCm": 0,
+      "fitnessLevel": "",
+      "currentWeightKg": 0,
+      "goalWeightKg": 0,
+      "dailyActivity": "",
+      "goalSpeed": "",
+      "unitSystem": "metric",
+      "pinnedWhy": "",
+      "themeMode": "dark",
+      "streakFreezesUsed": [],
+      "waterReminderEnabled": false,
+      "mealReminderEnabled": false,
+      "streakOptIn": true,
+      "waterChallengeJoined": false,
+      "isDev": false
+    },
+    "guest_a3c1aeb5-270f-494b-9b94-4d5b505e8d5f": {
+      "name": "Guest User",
+      "username": "caloriq_a3c1a",
+      "age": 0,
+      "gender": "",
+      "heightCm": 0,
+      "fitnessLevel": "",
+      "currentWeightKg": 0,
+      "goalWeightKg": 0,
+      "dailyActivity": "",
+      "goalSpeed": "",
+      "unitSystem": "metric",
+      "pinnedWhy": "",
+      "themeMode": "dark",
+      "streakFreezesUsed": [],
+      "waterReminderEnabled": false,
+      "mealReminderEnabled": false,
+      "streakOptIn": true,
+      "waterChallengeJoined": false,
+      "isDev": false
+    },
+    "usr_caloriq_a3c1a": {
+      "name": "caloriq_a3c1a",
+      "username": "caloriq_a3c1a",
+      "age": 0,
+      "gender": "",
+      "heightCm": 0,
+      "fitnessLevel": "",
+      "currentWeightKg": 0,
+      "goalWeightKg": 0,
+      "dailyActivity": "",
+      "goalSpeed": "",
+      "unitSystem": "metric",
+      "pinnedWhy": "",
+      "themeMode": "dark",
+      "streakFreezesUsed": [],
+      "waterReminderEnabled": false,
+      "mealReminderEnabled": false,
+      "streakOptIn": true,
+      "waterChallengeJoined": false
     }
   },
   "diaryEntries": [],
@@ -109,9 +252,70 @@
     "guest_f530de4d-c55e-42a9-b2c6-39aab99f7f39": {
       "xp": 0,
       "badges": []
+    },
+    "usr_caloriq_guest": {
+      "xp": 0,
+      "badges": []
+    },
+    "guest_1b0855e1-da9d-44ec-9164-cc628775ff48": {
+      "xp": 0,
+      "badges": []
+    },
+    "usr_caloriq_1b085": {
+      "xp": 0,
+      "badges": []
+    },
+    "guest_a3c1aeb5-270f-494b-9b94-4d5b505e8d5f": {
+      "xp": 0,
+      "badges": []
+    },
+    "usr_caloriq_a3c1a": {
+      "xp": 0,
+      "badges": []
     }
   },
-  "securityEvents": [],
+  "securityEvents": [
+    {
+      "id": "sec_d5dd92e9-338f-4a5b-93f8-36409a683939",
+      "timestamp": "2026-10-01T19:48:53.611Z",
+      "createdAt": 1790884133611,
+      "eventType": "session_revoked",
+      "userEmail": "",
+      "ip": "37.169.63.90",
+      "city": "Cervione",
+      "country": "France",
+      "ispOrOrg": "Free Mobile SAS",
+      "isVpnOrDatacenter": false,
+      "deviceFingerprint": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 | screen:1067x600 | tz:Europe/Paris | lang:en-US | platform:Win32",
+      "deviceName": "Desktop Chrome",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+      "requestPath": "/api/auth/logout",
+      "summary": "Session revoked: Signed out manually by usr_caloriq_1b085",
+      "metadata": {
+        "reason": "Signed out manually"
+      }
+    },
+    {
+      "id": "sec_98b0f92b-20b5-412f-a3ec-1b146100a527",
+      "timestamp": "2026-10-01T18:11:53.171Z",
+      "createdAt": 1790878313171,
+      "eventType": "session_revoked",
+      "userEmail": "",
+      "ip": "37.169.63.90",
+      "city": "Cervione",
+      "country": "France",
+      "ispOrOrg": "Free Mobile SAS",
+      "isVpnOrDatacenter": false,
+      "deviceFingerprint": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 | screen:1067x600 | tz:Europe/Paris | lang:en-US | platform:Win32",
+      "deviceName": "Desktop Chrome",
+      "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+      "requestPath": "/api/auth/logout",
+      "summary": "Session revoked: Signed out manually by usr_caloriq_guest",
+      "metadata": {
+        "reason": "Signed out manually"
+      }
+    }
+  ],
   "recentErrors": [],
   "settings": {
     "id": "global"

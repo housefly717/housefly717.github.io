@@ -73,6 +73,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
   const {
     userId,
     isAuthModalOpen,
+    authModalMode,
     closeAuthModal,
     isGuest,
     userEmail,
@@ -83,7 +84,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
     resetGuestSession
   } = useApp();
 
-  const [mode, setMode] = useState<'signup' | 'login'>('signup');
+  const [mode, setMode] = useState<'signup' | 'login'>(authModalMode || 'login');
+
+  useEffect(() => {
+    if (isAuthModalOpen && authModalMode) {
+      setMode(authModalMode);
+    }
+  }, [isAuthModalOpen, authModalMode]);
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -295,7 +302,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onAuthComplete }) => {
 
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const cleanUsername = username.trim();
+    const cleanUsername = username.trim().replace(/^@/, '');
 
     if (mode === 'signup') {
       const usernameErr = validateUsername(cleanUsername);

@@ -32,6 +32,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
     activeDate,
     setActiveDate,
     isGuest,
+    isDev,
     userId,
     userEmail,
     profile,
@@ -41,18 +42,30 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
     isSyncing,
     saveStatus,
     language,
-    theme,
-    toggleTheme
+    updateUserProfile
   } = useApp();
+
+  const theme = profile.themeMode || 'dark';
+  const toggleTheme = async () => {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    try {
+      localStorage.setItem('caloriq_theme_mode', next);
+    } catch {}
+    await updateUserProfile({ themeMode: next });
+  };
 
   const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
 
   const isDevAccount =
     !isGuest &&
-    (Boolean(profile?.isDev) ||
-      (userEmail || '').toLowerCase() === 'housefly' ||
+    (Boolean(isDev) ||
+      Boolean(profile?.isDev) ||
+      (userEmail || '').toLowerCase().replace(/^@/, '') === 'housefly' ||
       (userEmail || '').toLowerCase() === 'housefly@mail2world.com' ||
-      userId === 'usr_dev_housefly');
+      (profile?.username || '').toLowerCase().replace(/^@/, '') === 'housefly' ||
+      userId === 'usr_dev_housefly' ||
+      userId === 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18' ||
+      (typeof localStorage !== 'undefined' && localStorage.getItem('calory_dev_device') !== null));
 
   useEffect(() => {
     const handleOpenDev = () => {
@@ -207,7 +220,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
                 className="px-2 py-1.5 rounded-lg bg-teal-500/15 hover:bg-teal-500/25 border border-teal-500/40 text-teal-300 font-mono font-bold text-[11px] flex items-center gap-1 transition-colors cursor-pointer"
               >
                 <Terminal className="w-3 h-3 text-teal-400" />
-                <span>Dev</span>
+                <span>Dev Tools</span>
               </button>
             )}
 
@@ -222,7 +235,7 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
             </button>
 
             <button
-              onClick={openAuthModal}
+              onClick={() => openAuthModal()}
               aria-label={isGuest ? 'Sign in or create account' : 'Account details'}
               className={`text-xs px-2.5 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 ${
                 isGuest
@@ -231,7 +244,11 @@ export const Navigation: React.FC<NavigationProps> = ({ currentTab, onTabChange,
               }`}
             >
               <span className="w-1.5 h-1.5 rounded-full bg-teal-400"></span>
-              <span>{isGuest ? 'Guest' : (userEmail?.split('@')[0] || 'Sync')}</span>
+              <span>
+                {isGuest
+                  ? 'Guest'
+                  : `@${(isDevAccount ? 'housefly' : (profile?.username || userEmail?.split('@')[0] || 'Sync')).replace(/^@/, '')}`}
+              </span>
             </button>
           </div>
         </div>

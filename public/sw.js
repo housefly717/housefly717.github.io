@@ -1,4 +1,4 @@
-const CACHE_VERSION = 'caloriq-shell-v1.0.4';
+const CACHE_VERSION = 'caloriq-shell-v1.0.6';
 const APP_SHELL_ASSETS = [
   '/',
   '/dashboard',
@@ -55,6 +55,10 @@ self.addEventListener('fetch', (event) => {
     url.searchParams.has('v') ||
     url.searchParams.has('t')
   ) {
+    return;
+  }
+
+  if (url.pathname.startsWith('/api/auth/')) {
     return;
   }
 

@@ -85,7 +85,8 @@ interface AppContextType {
   openAddFood: (meal?: MealType) => void;
   closeAddFood: () => void;
   isAuthModalOpen: boolean;
-  openAuthModal: () => void;
+  authModalMode: 'signup' | 'login';
+  openAuthModal: (mode?: 'signup' | 'login') => void;
   closeAuthModal: () => void;
   undoToast: UndoToastItem | null;
   showUndoToast: (label: string, onUndo: () => Promise<void>) => void;
@@ -156,10 +157,11 @@ const AppContext = createContext<AppContextType | null>(null);
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const getTodayStr = () => new Date().toISOString().split('T')[0];
 
-  const [userId, setUserId] = useState<string>('');
-  const [userEmail, setUserEmail] = useState<string | undefined>(undefined);
-  const [isGuest, setIsGuest] = useState<boolean>(true);
-  const [isDev, setIsDev] = useState<boolean>(false);
+  const hasDevDeviceOnInit = typeof localStorage !== 'undefined' && localStorage.getItem('calory_dev_device') !== null;
+  const [userId, setUserId] = useState<string>(() => (hasDevDeviceOnInit ? 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18' : ''));
+  const [userEmail, setUserEmail] = useState<string | undefined>(() => (hasDevDeviceOnInit ? 'housefly' : undefined));
+  const [isGuest, setIsGuest] = useState<boolean>(() => (hasDevDeviceOnInit ? false : true));
+  const [isDev, setIsDev] = useState<boolean>(() => (hasDevDeviceOnInit ? true : false));
   const [activeDate, setActiveDateState] = useState<string>(getTodayStr());
 
   // Guest 24-hour clock & 1-call AI limit
@@ -308,7 +310,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [exercises, setExercises] = useState<ExerciseItem[]>([]);
   const [allExercises, setAllExercises] = useState<ExerciseItem[]>([]);
   const [weights, setWeights] = useState<WeightRecord[]>([]);
-  const [profile, setProfile] = useState<UserProfile>(defaultProfile);
+  const [profile, setProfile] = useState<UserProfile>(() =>
+    hasDevDeviceOnInit
+      ? { ...defaultProfile, name: 'N', username: 'housefly', isDev: true, signupComplete: true }
+      : defaultProfile
+  );
   const [stats, setStats] = useState<UserStats>(defaultStats);
   const [todayHabit, setTodayHabit] = useState<DailyHabitLog | null>(null);
   const [allHabits, setAllHabits] = useState<DailyHabitLog[]>([]);
@@ -345,6 +351,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isAddFoodOpen, setIsAddFoodOpen] = useState<boolean>(false);
   const [selectedMealForAdd, setSelectedMealForAdd] = useState<MealType | null>(null);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<'signup' | 'login'>('login');
 
   const [undoToast, setUndoToast] = useState<UndoToastItem | null>(null);
   const undoTimerRef = useRef<number | null>(null);
@@ -432,7 +439,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   useEffect(() => {
-    if (isGuest) {
+    if (isGuest || isDev || localStorage.getItem('calory_dev_device') !== null) {
       setIsSessionExpiryWarningOpen(false);
       return;
     }
@@ -455,7 +462,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         api.logout();
         api.initSession().then((session) => {
           setUserId(session.userId);
-          setUserEmail(session.email);
+          setUserEmail(session.username || session.email);
           setIsGuest(session.isGuest);
           setIsDev(Boolean(session.isDev || session.profile?.isDev));
           if (session.profile) setProfile(session.profile);
@@ -558,7 +565,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const session = await api.initSession();
         setUserId(session.userId);
-        setUserEmail(session.email);
+        setUserEmail(session.username || session.email);
         setIsGuest(session.isGuest);
         setIsDev(Boolean(session.isDev || session.profile?.isDev));
         if (session.profile) setProfile(session.profile);
@@ -607,7 +614,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSelectedMealForAdd(null);
   };
 
-  const openAuthModal = useCallback(() => setIsAuthModalOpen(true), []);
+  const openAuthModal = useCallback((mode: 'signup' | 'login' = 'login') => {
+    setAuthModalMode(mode);
+    setIsAuthModalOpen(true);
+  }, []);
   const closeAuthModal = useCallback(() => setIsAuthModalOpen(false), []);
 
   const addFoodItem = async (food: Omit<FoodItem, 'id' | 'userId' | 'createdAt'>): Promise<FoodItem> => {
@@ -862,7 +872,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const onAuthSuccess = async () => {
     const session = await api.initSession();
     setUserId(session.userId);
-    setUserEmail(session.email);
+    setUserEmail(session.username || session.email);
     setIsGuest(session.isGuest);
     setIsDev(Boolean(session.isDev || session.profile?.isDev));
     setIsGuestLockOpen(false);
@@ -953,6 +963,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         openAddFood,
         closeAddFood,
         isAuthModalOpen,
+        authModalMode,
         openAuthModal,
         closeAuthModal,
         undoToast,

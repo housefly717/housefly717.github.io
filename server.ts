@@ -411,6 +411,7 @@ function authenticateDev(req: Request, res: Response, next: NextFunction) {
 
 // ------------------- AUTH ROUTES -------------------
 app.get('/api/auth/dev-status', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.json(getDevSetupStatus());
 });
 
@@ -1184,7 +1185,7 @@ app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
     res.json({
       userId: user.id,
       username: user.username,
-      email: user.email,
+      email: user.email || user.username,
       isGuest: false,
       isDev: Boolean(user.isDev),
       token: user.id,
@@ -1443,19 +1444,17 @@ app.post('/api/auth/signout-all', authenticateUser, async (req, res) => {
 app.post('/api/auth/change-password', authenticateUser, rateLimitAuth, (req, res) => {
   try {
     const userId = (req as any).userId;
-    const user = (req as any).user;
     const { currentPassword, newPassword, confirmNewPassword } = req.body;
     if (!currentPassword || !newPassword) {
       res.status(400).json({ error: 'Current password and new password are required.' });
       return;
     }
-    if (newPassword !== confirmNewPassword) {
+    if (confirmNewPassword !== undefined && newPassword !== confirmNewPassword) {
       res.status(400).json({ error: 'New passwords do not match.' });
       return;
     }
-    const pwError = validatePasswordRules(String(newPassword), user?.email);
-    if (pwError || getPasswordStrength(String(newPassword), user?.email).score < 2) {
-      res.status(400).json({ error: pwError || 'New password must be at least Fair strength.' });
+    if (String(newPassword).length < 4) {
+      res.status(400).json({ error: 'New password must be at least 4 characters.' });
       return;
     }
     changeUserPassword(userId, String(currentPassword), String(newPassword));

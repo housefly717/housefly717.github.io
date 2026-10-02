@@ -1,6 +1,6 @@
 import React from 'react';
 import { ShieldCheck } from 'lucide-react';
-import { APP_VERSION } from '../utils/i18n.js';
+import { SecretFooter } from './SecretFooter.js';
 
 interface LegalFooterProps {
   onOpenPrivacy?: () => void;
@@ -111,9 +111,7 @@ export const LegalFooter: React.FC<LegalFooterProps> = ({
           Contact
         </a>
       </div>
-      <div className="pt-1 text-[11px] font-mono text-zinc-400">
-        &copy; {new Date().getFullYear()} Calory {APP_VERSION}
-      </div>
+      <SecretFooter className="pt-1 text-[11px] font-mono text-zinc-400" />
     </footer>
   );
 };

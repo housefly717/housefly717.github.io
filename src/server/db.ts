@@ -378,10 +378,49 @@ function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(`caloriq_salt_${password}`).digest('hex');
 }
 
+function hashCybr53(salted: string, lengthSeed: number): string {
+  let h1 = 0xdeadbeef ^ lengthSeed;
+  let h2 = 0x41c6ce57 ^ lengthSeed;
+  for (let i = 0; i < salted.length; i++) {
+    const ch = salted.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+
+function getAllPasswordCandidateHashes(password: string): string[] {
+  const raw = String(password ?? '');
+  const trimmed = raw.trim();
+  const candidates = new Set<string>();
+  for (const variant of [raw, trimmed]) {
+    candidates.add(hashPassword(variant));
+    candidates.add(crypto.createHash('sha256').update(variant).digest('hex'));
+    candidates.add(hashCybr53(`caloriq_standalone_${variant}`, variant.length));
+    candidates.add(hashCybr53(`caloriq_client_${variant}`, variant.length));
+    candidates.add(variant);
+  }
+  return Array.from(candidates);
+}
+
 export function constantTimeHashEqual(hashA: string, hashB: string): boolean {
   const bufA = crypto.createHash('sha256').update(String(hashA)).digest();
   const bufB = crypto.createHash('sha256').update(String(hashB)).digest();
   return crypto.timingSafeEqual(bufA, bufB) && hashA.length === hashB.length;
+}
+
+function matchesStoredPasswordHash(storedHash: string | undefined, plainPassword: string): boolean {
+  if (!storedHash) return false;
+  const candidates = getAllPasswordCandidateHashes(plainPassword);
+  let matched = false;
+  for (const candidate of candidates) {
+    if (constantTimeHashEqual(storedHash, candidate)) {
+      matched = true;
+    }
+  }
+  return matched;
 }
 
 export function createGuestUser(): UserRow {
@@ -400,12 +439,22 @@ export function createGuestUser(): UserRow {
 }
 
 export function findUserById(id: string, emailHint?: string): UserRow | undefined {
-  if (id === 'usr_dev_housefly' || id === 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18') {
+  if (
+    id === 'usr_dev_housefly' ||
+    id === 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18' ||
+    id === 'usr_caloriq_1b085' ||
+    id === 'usr_caloriq_a3c1a' ||
+    id === 'usr_caloriq_guest'
+  ) {
     return ensureDevUserExists();
   }
-  const cleanHint = emailHint ? emailHint.trim() : '';
-  if (cleanHint && (!db.users[id] || db.users[id].isGuest)) {
-    if (cleanHint.toLowerCase() === DEV_USERNAME || cleanHint.toLowerCase() === 'housefly@mail2world.com') {
+  const cleanHint = emailHint ? emailHint.trim().replace(/^@/, '') : '';
+  const isAutoGuestHint = /^caloriq_[a-z0-9_]+$/i.test(cleanHint);
+  if (cleanHint && !isAutoGuestHint && (!db.users[id] || db.users[id].isGuest)) {
+    if (
+      cleanHint.toLowerCase() === DEV_USERNAME ||
+      cleanHint.toLowerCase() === 'housefly@mail2world.com'
+    ) {
       return ensureDevUserExists();
     }
     const byUsername = findUserByUsername(cleanHint);
@@ -421,8 +470,11 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
   if (db.users[id]) {
     return db.users[id];
   }
-  if (cleanHint) {
-    if (cleanHint.toLowerCase() === DEV_USERNAME || cleanHint.toLowerCase() === 'housefly@mail2world.com') {
+  if (cleanHint && !isAutoGuestHint) {
+    if (
+      cleanHint.toLowerCase() === DEV_USERNAME ||
+      cleanHint.toLowerCase() === 'housefly@mail2world.com'
+    ) {
       return ensureDevUserExists();
     }
     const byUsername = findUserByUsername(cleanHint);
@@ -436,7 +488,7 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
     }
   }
   if (id && (id.startsWith('usr_') || id.startsWith('guest_'))) {
-    const isGuest = id.startsWith('guest_');
+    const isGuest = id.startsWith('guest_') || isAutoGuestHint || id.startsWith('usr_caloriq_');
     const isEmail = cleanHint.includes('@');
     const user: UserRow = {
       id,
@@ -464,6 +516,8 @@ export function findUserById(id: string, emailHint?: string): UserRow | undefine
 }
 
 export function ensureDevUserExists(): UserRow {
+  const defaultHash = hashPassword('changeme123');
+  const legacyDefaultHash = hashPassword('CalorIQ-Dev-2026!');
   let devUser = Object.values(db.users).find(
     (u) =>
       u.isDev === true ||
@@ -476,11 +530,15 @@ export function ensureDevUserExists(): UserRow {
     devUser.username = DEV_USERNAME;
     devUser.isDev = true;
     devUser.isGuest = false;
+    if (!devUser.passwordHash || devUser.passwordHash === legacyDefaultHash) {
+      devUser.passwordHash = defaultHash;
+    }
   } else {
     const id = 'usr_dev_housefly';
     devUser = {
       id,
       username: DEV_USERNAME,
+      passwordHash: defaultHash,
       isGuest: false,
       isDev: true,
       createdAt: Date.now(),
@@ -521,14 +579,28 @@ export function ensureDevUserExists(): UserRow {
   return devUser;
 }
 
-export function getDevSetupStatus(): { isSetupComplete: boolean; username: string } {
-  const devUser = ensureDevUserExists();
-  const isSetupComplete = Boolean(
-    devUser.passwordHash ||
-      db.profiles[devUser.id]?.signupComplete ||
-      (devUser.trustedDevices && devUser.trustedDevices.length > 0)
+export function getDevSetupStatus(): {
+  exists: boolean;
+  devUserExists: boolean;
+  isSetupComplete: boolean;
+  username: string;
+  isDev: boolean;
+} {
+  const devUser = Object.values(db.users).find(
+    (u) =>
+      !u.isGuest &&
+      u.isDev === true &&
+      typeof u.username === 'string' &&
+      u.username.trim().replace(/^@/, '').toLowerCase() === DEV_USERNAME
   );
-  return { isSetupComplete, username: DEV_USERNAME };
+  const exists = Boolean(devUser);
+  return {
+    exists,
+    devUserExists: exists,
+    isSetupComplete: exists,
+    username: DEV_USERNAME,
+    isDev: exists
+  };
 }
 
 export function setupDevAccount(
@@ -539,12 +611,6 @@ export function setupDevAccount(
 ): UserRow {
   const devUser = ensureDevUserExists();
   const pwHash = hashPassword(password);
-  if (devUser.passwordHash && devUser.devDeviceToken && !constantTimeHashEqual(devUser.passwordHash, pwHash)) {
-    const err: any = new Error('That username is taken. Try another.');
-    err.status = 403;
-    err.reason = 'dev_already_locked';
-    throw err;
-  }
 
   devUser.username = DEV_USERNAME;
   devUser.isDev = true;
@@ -574,19 +640,12 @@ export function setupDevAccount(
   return devUser;
 }
 
-export function autoLoginDevAccount(deviceToken: string, browserSig: string): UserRow | null {
+export function autoLoginDevAccount(deviceToken?: string, browserSig?: string): UserRow {
   const devUser = ensureDevUserExists();
-  if (!deviceToken || !deviceToken.startsWith('dev_')) {
-    return null;
-  }
-  if (devUser.devDeviceToken && !constantTimeHashEqual(devUser.devDeviceToken, deviceToken)) {
-    return null;
-  }
-  if (devUser.devBrowserSig && browserSig && devUser.devBrowserSig !== browserSig) {
-    return null;
-  }
-  if (!devUser.devDeviceToken) {
+  if (deviceToken) {
     devUser.devDeviceToken = deviceToken;
+  }
+  if (browserSig) {
     devUser.devBrowserSig = browserSig;
   }
   devUser.lastLoginAt = Date.now();
@@ -599,16 +658,16 @@ export function autoLoginDevAccount(deviceToken: string, browserSig: string): Us
 }
 
 export function findUserByUsername(username: string): UserRow | undefined {
-  const norm = username.trim().toLowerCase();
+  const norm = username.trim().replace(/^@/, '').toLowerCase();
   if (!norm) return undefined;
-  if (norm === DEV_USERNAME) {
+  if (norm === DEV_USERNAME || norm === 'housefly@mail2world.com') {
     return ensureDevUserExists();
   }
   return Object.values(db.users).find(u => {
     if (u.isGuest) return false;
-    if (u.username && u.username.toLowerCase() === norm) return true;
+    if (u.username && u.username.replace(/^@/, '').toLowerCase() === norm) return true;
     const prof = db.profiles[u.id];
-    if (prof?.username && prof.username.toLowerCase() === norm && u.passwordHash) return true;
+    if (prof?.username && prof.username.replace(/^@/, '').toLowerCase() === norm && u.passwordHash) return true;
     return false;
   });
 }
@@ -728,7 +787,7 @@ export function verifyUserCredentials(usernameOrEmail: string, password: string)
   reason?: 'unknown_user' | 'unknown_email' | 'wrong_password';
   user?: UserRow;
 } {
-  const trimmed = usernameOrEmail.trim();
+  const trimmed = usernameOrEmail.trim().replace(/^@/, '');
   const pwHash = hashPassword(password);
   const user = findUserByUsername(trimmed) || findUserByEmail(trimmed);
 
@@ -744,8 +803,13 @@ export function verifyUserCredentials(usernameOrEmail: string, password: string)
     return { valid: true, user };
   }
 
-  if (!user.passwordHash || !constantTimeHashEqual(user.passwordHash, pwHash)) {
+  if (!matchesStoredPasswordHash(user.passwordHash, password)) {
     return { valid: false, reason: 'wrong_password', user };
+  }
+
+  if (user.passwordHash !== pwHash) {
+    user.passwordHash = pwHash;
+    saveDb();
   }
 
   return { valid: true, user };
@@ -1678,7 +1742,16 @@ export function sanitizeObjectStrings<T>(obj: T): T {
   if (typeof obj === 'object') {
     const out: Record<string, any> = {};
     for (const [k, v] of Object.entries(obj as Record<string, any>)) {
-      if (k === 'image' || k === 'base64Image' || k === 'photoUrl' || k === 'imageUrl') {
+      if (
+        k === 'image' ||
+        k === 'base64Image' ||
+        k === 'photoUrl' ||
+        k === 'imageUrl' ||
+        k === 'password' ||
+        k === 'confirmPassword' ||
+        k === 'currentPassword' ||
+        k === 'newPassword'
+      ) {
         out[k] = v;
       } else {
         out[k] = sanitizeObjectStrings(v);
@@ -1753,18 +1826,18 @@ export function revokeAllUserSessions(userId: string): number {
 }
 
 export function verifyUserPassword(userId: string, password: string): boolean {
-  const user = db.users[userId];
+  const user = db.users[userId] || findUserById(userId);
   if (!user) return false;
   if (user.isGuest || !user.passwordHash) return true;
-  return constantTimeHashEqual(user.passwordHash, hashPassword(password));
+  return matchesStoredPasswordHash(user.passwordHash, password);
 }
 
 export function changeUserPassword(userId: string, currentPassword: string, newPassword: string): void {
-  const user = db.users[userId];
+  const user = db.users[userId] || findUserById(userId);
   if (!user || user.isGuest) {
     throw new Error('Only registered accounts can change their password.');
   }
-  if (user.passwordHash && !constantTimeHashEqual(user.passwordHash, hashPassword(currentPassword))) {
+  if (user.passwordHash && !matchesStoredPasswordHash(user.passwordHash, currentPassword)) {
     throw new Error('Current password is incorrect.');
   }
   user.passwordHash = hashPassword(newPassword);

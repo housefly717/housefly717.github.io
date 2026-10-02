@@ -74,7 +74,7 @@ export const GuestExpiredOverlay: React.FC = () => {
         <div className="flex flex-col sm:flex-row gap-3">
           <button
             type="button"
-            onClick={openAuthModal}
+            onClick={() => openAuthModal()}
             aria-label="Create account"
             className="flex-1 min-h-[44px] bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs transition-colors"
           >

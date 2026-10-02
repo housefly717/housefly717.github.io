@@ -40,6 +40,7 @@ import {
 import { useApp } from '../context/AppContext.js';
 import { api } from '../services/api.js';
 import { APP_VERSION } from '../utils/i18n.js';
+import { SecretFooter } from './SecretFooter.js';
 import { validateAndMigrateBackup, CURRENT_BACKUP_SCHEMA_VERSION } from '../utils/backupMigration.js';
 import { WeeklyRecapModal } from './WeeklyRecapModal.js';
 import { SocialAccountabilitySection } from './SocialAccountabilitySection.js';
@@ -194,9 +195,26 @@ export const MeTab: React.FC<MeTabProps> = ({
     return d.toLocaleString();
   })();
 
+  // Form State
+  const [formData, setFormData] = useState<UserProfile>(profile);
+  const [heightFtInput, setHeightFtInput] = useState<string>(() => cmToFtIn(profile.heightCm).ft);
+  const [heightInInput, setHeightInInput] = useState<string>(() => cmToFtIn(profile.heightCm).in);
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [showProjectedWhy, setShowProjectedWhy] = useState(false);
+  const [localGoalSpeedOverride, setLocalGoalSpeedOverride] = useState(false);
+  const debouncedFormData = useDebounce(formData, 400);
+
   const activeUsername = (profile.username || formData.username || 'housefly')
     .replace(/^@/, '')
     .split('@')[0];
+
+  // "Why I started" pinned card state (#42)
+  const [whyText, setWhyText] = useState(profile.pinnedWhy || '');
+  const [isEditingWhy, setIsEditingWhy] = useState(!profile.pinnedWhy);
+
+  // Non-scale victories (#41)
+  const [newVictory, setNewVictory] = useState('');
 
   // #55 Username change flow state
   const [showUsernameChange, setShowUsernameChange] = useState(false);
@@ -225,23 +243,6 @@ export const MeTab: React.FC<MeTabProps> = ({
   const [friendCodeInput, setFriendCodeInput] = useState('');
   const [referralMsg, setReferralMsg] = useState<string | null>(null);
   const [copiedRef, setCopiedRef] = useState(false);
-
-  // Form State
-  const [formData, setFormData] = useState<UserProfile>(profile);
-  const [heightFtInput, setHeightFtInput] = useState<string>(() => cmToFtIn(profile.heightCm).ft);
-  const [heightInInput, setHeightInInput] = useState<string>(() => cmToFtIn(profile.heightCm).in);
-  const [saveStatus, setSaveStatus] = useState<string | null>(null);
-  const [profileError, setProfileError] = useState<string | null>(null);
-  const [showProjectedWhy, setShowProjectedWhy] = useState(false);
-  const [localGoalSpeedOverride, setLocalGoalSpeedOverride] = useState(false);
-  const debouncedFormData = useDebounce(formData, 400);
-
-  // "Why I started" pinned card state (#42)
-  const [whyText, setWhyText] = useState(profile.pinnedWhy || '');
-  const [isEditingWhy, setIsEditingWhy] = useState(!profile.pinnedWhy);
-
-  // Non-scale victories (#41)
-  const [newVictory, setNewVictory] = useState('');
 
   // Weight Log input
   const [newWeight, setNewWeight] = useState('');
@@ -615,7 +616,7 @@ export const MeTab: React.FC<MeTabProps> = ({
 
           <button
             type="button"
-            onClick={openAuthModal}
+            onClick={() => openAuthModal()}
             aria-label="Create your account"
             className="w-full min-h-[48px] py-3 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-xl text-sm transition-colors shadow-lg shadow-teal-500/20"
           >
@@ -823,7 +824,7 @@ export const MeTab: React.FC<MeTabProps> = ({
             ) : (
               <button
                 type="button"
-                onClick={openAuthModal}
+                onClick={() => openAuthModal()}
                 className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-semibold rounded-xl text-xs transition-colors"
               >
                 Finish profile questions
@@ -2063,9 +2064,7 @@ export const MeTab: React.FC<MeTabProps> = ({
             </div>
           )}
 
-          <div className="pt-2 text-center text-[11px] font-mono text-zinc-400">
-            Caloriq {APP_VERSION}
-          </div>
+          <SecretFooter className="pt-2 text-center text-[11px] font-mono text-zinc-400" />
         </div>
       </div>
 

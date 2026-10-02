@@ -564,7 +564,7 @@ export const CommunityTab: React.FC = () => {
                 <span className="text-xs text-zinc-400">Create an account to post.</span>
                 <button
                   type="button"
-                  onClick={openAuthModal}
+                  onClick={() => openAuthModal()}
                   className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-zinc-950 font-bold rounded-lg text-xs transition-colors"
                 >
                   Create account

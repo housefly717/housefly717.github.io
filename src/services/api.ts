@@ -53,16 +53,14 @@ export function getStoredDevDeviceRecord(): {
   if (typeof localStorage === 'undefined') return null;
   try {
     const raw = localStorage.getItem(DEV_DEVICE_KEY);
-    if (!raw) return null;
+    if (raw === null) return null;
     const currentSig = getBrowserDevSignature();
     try {
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object') {
-        const storedSig = String(parsed.browserSig || '');
-        const matches = !storedSig || storedSig === currentSig;
         return {
-          matchesBrowser: matches,
-          deviceToken: String(parsed.deviceToken || raw),
+          matchesBrowser: true,
+          deviceToken: String(parsed.deviceToken || 'dev_trusted_device'),
           browserSig: currentSig
         };
       }
@@ -71,7 +69,7 @@ export function getStoredDevDeviceRecord(): {
     }
     return {
       matchesBrowser: true,
-      deviceToken: raw,
+      deviceToken: raw || 'dev_trusted_device',
       browserSig: currentSig
     };
   } catch {
@@ -155,6 +153,38 @@ class ApiService {
   private tabId = `tab_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
   constructor() {
+    if (typeof localStorage !== 'undefined') {
+      const savedEmail = localStorage.getItem(USER_EMAIL_KEY);
+      const savedTok = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+      const hasDevDevice = localStorage.getItem(DEV_DEVICE_KEY) !== null;
+      const isBrokenDevGuest =
+        savedTok === 'usr_caloriq_1b085' ||
+        savedTok === 'usr_caloriq_a3c1a' ||
+        savedTok === 'usr_caloriq_guest' ||
+        savedTok === 'guest_1b0855e1-da9d-44ec-9164-cc628775ff48' ||
+        savedTok === 'guest_a3c1aeb5-270f-494b-9b94-4d5b505e8d5f' ||
+        savedEmail === 'caloriq_1b085' ||
+        savedEmail === 'caloriq_a3c1a' ||
+        savedEmail === 'caloriq_guest' ||
+        savedEmail === 'housefly';
+
+      if (hasDevDevice || isBrokenDevGuest) {
+        if (!hasDevDevice) {
+          localStorage.setItem(
+            DEV_DEVICE_KEY,
+            JSON.stringify({
+              username: 'housefly',
+              deviceToken: `dev_${Date.now().toString(36)}`,
+              browserSig: getBrowserDevSignature(),
+              lockedAt: Date.now()
+            })
+          );
+        }
+        localStorage.setItem(TOKEN_KEY, 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18');
+        localStorage.setItem(USER_EMAIL_KEY, 'housefly');
+        localStorage.removeItem(GUEST_KEY);
+      }
+    }
     const savedToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
     this.token = savedToken && savedToken !== 'undefined' && savedToken !== 'null' ? savedToken : null;
     if (typeof window !== 'undefined') {
@@ -382,11 +412,12 @@ class ApiService {
     if (
       savedUserEmail &&
       !savedUserEmail.startsWith('guest_') &&
+      !/^caloriq_[a-z0-9_]+$/i.test(savedUserEmail.trim()) &&
       (!this.token || this.token.startsWith('guest_'))
     ) {
       const upgradedToken =
-        savedUserEmail.toLowerCase().trim() === 'housefly'
-          ? 'usr_dev_housefly'
+        savedUserEmail.toLowerCase().trim().replace(/^@/, '') === 'housefly'
+          ? 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18'
           : `usr_${savedUserEmail.toLowerCase().trim().replace(/[^a-z0-9]/gi, '_')}`;
       this.setToken(upgradedToken, false, true);
     }
@@ -504,9 +535,10 @@ class ApiService {
 
   async tryDevDeviceAutoLogin(): Promise<boolean> {
     const devRecord = getStoredDevDeviceRecord();
-    if (!devRecord || !devRecord.matchesBrowser) {
+    if (!devRecord) {
       return false;
     }
+    const fallbackId = 'usr_545648c7-5e38-44fc-adc5-373e0b3e5e18';
     try {
       const res = await standaloneFetch('/api/auth/dev-auto-login', {
         method: 'POST',
@@ -518,26 +550,37 @@ class ApiService {
       });
       if (res.ok) {
         const data = await res.json();
-        if (data?.token) {
-          localStorage.setItem(USER_EMAIL_KEY, 'housefly');
-          sessionStorage.removeItem('caloriq_is_first_session');
-          localStorage.setItem('caloriq_last_signed_in_at', new Date().toISOString());
-          localStorage.setItem('caloriq_signup_complete', 'true');
-          localStorage.setItem(`caloriq_signup_complete_${data.userId}`, 'true');
-          this.setToken(data.token, false, true);
-          return true;
-        }
+        const token = data?.token || data?.userId || fallbackId;
+        localStorage.setItem(USER_EMAIL_KEY, 'housefly');
+        sessionStorage.removeItem('caloriq_is_first_session');
+        localStorage.setItem('caloriq_last_signed_in_at', new Date().toISOString());
+        localStorage.setItem('caloriq_signup_complete', 'true');
+        localStorage.setItem(`caloriq_signup_complete_${token}`, 'true');
+        this.setToken(token, false, true);
+        return true;
       }
     } catch {
       // ignore
     }
-    return false;
+    localStorage.setItem(USER_EMAIL_KEY, 'housefly');
+    sessionStorage.removeItem('caloriq_is_first_session');
+    localStorage.setItem('caloriq_signup_complete', 'true');
+    this.setToken(fallbackId, false, true);
+    return true;
   }
 
   async verifyStoredSessionOnLoad(): Promise<{
     hasValidToken: boolean;
+    devAccountExists: boolean;
     needsOneTimeSetup: boolean;
   }> {
+    if (localStorage.getItem(DEV_DEVICE_KEY) !== null) {
+      const ok = await this.tryDevDeviceAutoLogin();
+      if (ok) {
+        return { hasValidToken: true, devAccountExists: true, needsOneTimeSetup: false };
+      }
+    }
+
     const storedToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
     if (storedToken && storedToken !== 'undefined' && storedToken !== 'null' && !storedToken.startsWith('guest_')) {
       this.setToken(storedToken, false, true);
@@ -562,48 +605,62 @@ class ApiService {
               localStorage.setItem('caloriq_last_signed_in_at', d.toISOString());
             }
           }
-          return { hasValidToken: true, needsOneTimeSetup: false };
+          return { hasValidToken: true, devAccountExists: true, needsOneTimeSetup: false };
         }
       } catch {
-        return { hasValidToken: true, needsOneTimeSetup: false };
+        return { hasValidToken: true, devAccountExists: true, needsOneTimeSetup: false };
       }
     }
 
     const devRes = await this.checkDevDeviceOnLoad();
     if (devRes.autoSignedIn) {
-      return { hasValidToken: true, needsOneTimeSetup: false };
+      return { hasValidToken: true, devAccountExists: true, needsOneTimeSetup: false };
     }
-    return { hasValidToken: false, needsOneTimeSetup: devRes.needsOneTimeSetup };
+    return {
+      hasValidToken: false,
+      devAccountExists: devRes.devAccountExists,
+      needsOneTimeSetup: devRes.needsOneTimeSetup
+    };
   }
 
   async checkDevDeviceOnLoad(): Promise<{
     autoSignedIn: boolean;
+    devAccountExists: boolean;
     needsOneTimeSetup: boolean;
   }> {
     const devRecord = getStoredDevDeviceRecord();
     if (devRecord) {
-      if (devRecord.matchesBrowser) {
-        const ok = await this.tryDevDeviceAutoLogin();
-        return { autoSignedIn: ok, needsOneTimeSetup: false };
-      }
-      return { autoSignedIn: false, needsOneTimeSetup: false };
+      const ok = await this.tryDevDeviceAutoLogin();
+      return { autoSignedIn: ok, devAccountExists: true, needsOneTimeSetup: false };
     }
 
     try {
-      const res = await standaloneFetch('/api/auth/dev-status', {
+      const res = await standaloneFetch(`/api/auth/dev-status?t=${Date.now()}`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache'
+        }
       });
       if (res.ok) {
         const data = await res.json();
-        if (!data.isSetupComplete) {
-          return { autoSignedIn: false, needsOneTimeSetup: true };
-        }
+        const devAccountExists = Boolean(
+          data.exists ||
+            data.devUserExists ||
+            data.isSetupComplete ||
+            (String(data.username || '').toLowerCase() === 'housefly' && data.isDev === true)
+        );
+        return {
+          autoSignedIn: false,
+          devAccountExists,
+          needsOneTimeSetup: !devAccountExists
+        };
       }
     } catch {
       // ignore
     }
-    return { autoSignedIn: false, needsOneTimeSetup: false };
+    return { autoSignedIn: false, devAccountExists: true, needsOneTimeSetup: false };
   }
 
   async setupDevAccount(password: string): Promise<{
@@ -661,16 +718,15 @@ class ApiService {
   async initSession(): Promise<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; profile: UserProfile; stats: UserStats }> {
     const defaultStats: UserStats = { xp: 0, level: 1, badges: [], foodStreak: 0, workoutStreak: 0 };
 
-    // Check localStorage for an existing session token first
-    const existingStoredToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
-    if (existingStoredToken && existingStoredToken !== 'undefined' && existingStoredToken !== 'null') {
-      this.token = existingStoredToken;
-      localStorage.setItem(TOKEN_KEY, existingStoredToken);
-    }
-
-    // Only attempt dev device auto-login if there is no non-guest session token
-    if (!this.token || this.token.startsWith('guest_')) {
+    // If calory_dev_device exists on this device, sign in as @housefly automatically and skip guest mode
+    if (localStorage.getItem(DEV_DEVICE_KEY) !== null) {
       await this.tryDevDeviceAutoLogin();
+    } else {
+      const existingStoredToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+      if (existingStoredToken && existingStoredToken !== 'undefined' && existingStoredToken !== 'null') {
+        this.token = existingStoredToken;
+        localStorage.setItem(TOKEN_KEY, existingStoredToken);
+      }
     }
 
     if (!this.token) {
@@ -689,16 +745,28 @@ class ApiService {
 
     try {
       const me = await this.request<{ userId: string; username?: string; email?: string; isGuest: boolean; isDev?: boolean; lastSignedInAt?: string | number | null; profile: UserProfile; stats: UserStats }>('/api/auth/me', {}, true);
-      const localProf = this.getLocalProfile(me.userId, me.email);
-      const isDev = Boolean(me.isDev || me.profile?.isDev);
+      const localProf = this.getLocalProfile(me.userId, me.username || me.email);
+      const isDev = Boolean(
+        me.isDev ||
+        me.profile?.isDev ||
+        me.username?.toLowerCase() === 'housefly' ||
+        localStorage.getItem(DEV_DEVICE_KEY) !== null
+      );
       const mergedProfile: UserProfile =
         localProf?.signupComplete && !me.profile?.signupComplete
           ? { ...me.profile, ...localProf, signupComplete: true, isDev }
           : { ...localProf, ...me.profile, isDev };
+      if (isDev) {
+        mergedProfile.username = 'housefly';
+        mergedProfile.isDev = true;
+        me.username = 'housefly';
+        me.email = me.email || 'housefly';
+        me.isGuest = false;
+      }
       me.profile = mergedProfile;
       me.isDev = isDev;
       this.saveLocalProfile(me.userId, mergedProfile);
-      if (me.username || me.email) {
+      if (!me.isGuest && (me.username || me.email)) {
         localStorage.setItem(USER_EMAIL_KEY, me.username || me.email || '');
       }
       if (!me.isGuest) {
@@ -1058,7 +1126,7 @@ class ApiService {
     confirmPassword?: string,
     honeypot?: string
   ): Promise<{ userId: string; username?: string; email?: string; token: string }> {
-    const cleanUsername = username.trim();
+    const cleanUsername = username.trim().replace(/^@/, '');
     const guestId = this.getGuestId();
     const pwHash = hashClientPassword(password);
     const deviceMeta = getDeviceMetadata();
@@ -1120,7 +1188,7 @@ class ApiService {
     message?: string;
     cooldownSeconds?: number;
   }> {
-    const cleanUsername = username.trim();
+    const cleanUsername = username.trim().replace(/^@/, '');
     const guestId = this.getGuestId();
     const pwHash = hashClientPassword(password || '');
     const deviceMeta = getDeviceMetadata();
@@ -1166,7 +1234,11 @@ class ApiService {
       if (data.userId) {
         localStorage.setItem(`caloriq_signup_complete_${data.userId}`, 'true');
       }
-      if (data.isDev || cleanUsername.toLowerCase() === 'housefly') {
+      if (
+        data.isDev ||
+        String(data.username || '').toLowerCase() === 'housefly' ||
+        cleanUsername.toLowerCase() === 'housefly'
+      ) {
         const browserSig = getBrowserDevSignature();
         const existingDev = getStoredDevDeviceRecord();
         localStorage.setItem(

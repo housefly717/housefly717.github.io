@@ -34,7 +34,6 @@ import { AddFoodModal } from './components/AddFoodModal.js';
 import { DescriptionPage } from './components/DescriptionPage.js';
 import { PrivacyPolicyPage } from './components/PrivacyPolicyPage.js';
 import { TermsOfServicePage } from './components/TermsOfServicePage.js';
-import { AdminSetupPage } from './components/AdminSetupPage.js';
 import { api } from './services/api.js';
 import { trackPageview } from './utils/analytics.js';
 
@@ -108,7 +107,7 @@ const MainAppContent: React.FC<MainAppContentProps> = ({
 
   useEffect(() => {
     if (autoOpenAuth) {
-      openAuthModal();
+      openAuthModal('login');
       if (onAutoOpenAuthHandled) {
         onAutoOpenAuthHandled();
       }
@@ -412,6 +411,9 @@ type ViewType =
 
 function hasStoredNonGuestToken(): boolean {
   try {
+    if (localStorage.getItem('calory_dev_device') !== null) {
+      return true;
+    }
     const token =
       localStorage.getItem('caloriq_session_token') ||
       sessionStorage.getItem('caloriq_session_token');
@@ -446,7 +448,6 @@ function resolveViewFromLocation(): ViewType {
   if (path === '/faq') return 'faq';
   if (path === '/contact') return 'contact';
   if (path === '/press') return 'press';
-  if (path === '/admin-setup') return 'landing';
   return 'notfound';
 }
 
@@ -475,12 +476,7 @@ export default function App() {
   // #83 Maintenance mode check
   const [maintenanceInfo, setMaintenanceInfo] = useState<{ active: boolean; message: string } | null>(null);
 
-  // One-time dev account setup & device lock state
-  const [showDevSetupScreen, setShowDevSetupScreen] = useState(false);
-  const [devSetupPassword, setDevSetupPassword] = useState('');
-  const [showDevPassword, setShowDevPassword] = useState(false);
-  const [devSetupLoading, setDevSetupLoading] = useState(false);
-  const [devSetupError, setDevSetupError] = useState('');
+  // Session management state
   const [devSessionKey, setDevSessionKey] = useState(0);
 
   useEffect(() => {
@@ -489,7 +485,6 @@ export default function App() {
     api.verifyStoredSessionOnLoad().then((res) => {
       if (cancelled) return;
       if (res.hasValidToken) {
-        setShowDevSetupScreen(false);
         setAutoOpenAuth(false);
         if (!hadTokenSynchronously) {
           setDevSessionKey((k) => k + 1);
@@ -499,37 +494,19 @@ export default function App() {
           setPathname('/dashboard');
           window.history.replaceState({}, '', '/dashboard');
         }
-      } else if (res.needsOneTimeSetup) {
-        setShowDevSetupScreen(true);
+      } else if (res.devAccountExists) {
+        setAutoOpenAuth(true);
+        if (window.location.pathname === '/' || window.location.pathname === '/index.html') {
+          setActiveView('app');
+          setPathname('/dashboard');
+          window.history.replaceState({}, '', '/dashboard');
+        }
       }
     }).catch(() => {});
     return () => {
       cancelled = true;
     };
   }, []);
-
-  const handleCompleteDevSetup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!devSetupPassword) {
-      setDevSetupError('Please enter a password.');
-      return;
-    }
-    setDevSetupError('');
-    setDevSetupLoading(true);
-    try {
-      await api.setupDevAccount(devSetupPassword);
-      setDevSetupPassword('');
-      setShowDevSetupScreen(false);
-      setDevSessionKey((k) => k + 1);
-      setActiveView('app');
-      setPathname('/dashboard');
-      window.history.replaceState({}, '', '/dashboard');
-    } catch (err: any) {
-      setDevSetupError(err?.message || 'Could not set up dev account.');
-    } finally {
-      setDevSetupLoading(false);
-    }
-  };
 
   // #59 & #62 Capture global errors and console.error ring buffer for bug reports
   useEffect(() => {
@@ -648,15 +625,6 @@ export default function App() {
           <p className="text-xs text-zinc-300 leading-relaxed">{maintenanceInfo.message}</p>
         </div>
       </div>
-    );
-  }
-
-  // Hidden admin-setup route
-  if (pathname === '/admin-setup') {
-    return (
-      <Suspense fallback={<RouteSkeleton />}>
-        <AdminSetupPage />
-      </Suspense>
     );
   }
 
@@ -826,77 +794,6 @@ export default function App() {
           />
           <DesktopScrollbar />
         </AppProvider>
-      )}
-
-      {/* One-time Dev Account Setup Screen (shown only on this device before first lock) */}
-      {showDevSetupScreen && (
-        <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center text-teal-400 shrink-0">
-                <Shield className="w-4 h-4" />
-              </div>
-              <div>
-                <h2 className="text-base font-bold text-zinc-100">
-                  Set up your dev account
-                </h2>
-                <p className="text-xs text-zinc-400 font-mono">
-                  Username: <span className="text-teal-400 font-semibold">housefly</span>
-                </p>
-              </div>
-            </div>
-
-            {devSetupError && (
-              <div role="alert" className="p-2.5 bg-rose-950/60 border border-rose-900/60 rounded-xl text-xs text-rose-300">
-                {devSetupError}
-              </div>
-            )}
-
-            <form onSubmit={handleCompleteDevSetup} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  Password
-                </label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-zinc-500 absolute left-3 top-3" />
-                  <input
-                    type={showDevPassword ? 'text' : 'password'}
-                    value={devSetupPassword}
-                    onChange={(e) => setDevSetupPassword(e.target.value)}
-                    placeholder="Choose a password"
-                    autoComplete="new-password"
-                    autoFocus
-                    required
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-9 pr-10 py-2 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-teal-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowDevPassword((prev) => !prev)}
-                    aria-label={showDevPassword ? 'Hide password' : 'Show password'}
-                    className="absolute right-3 top-2.5 text-zinc-400 hover:text-zinc-200"
-                  >
-                    {showDevPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={devSetupLoading}
-                className="w-full bg-teal-500 hover:bg-teal-400 disabled:opacity-50 text-zinc-950 font-semibold py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition-colors shadow-lg shadow-teal-500/20"
-              >
-                {devSetupLoading ? (
-                  <>
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    Locking to this device...
-                  </>
-                ) : (
-                  'Lock to this device'
-                )}
-              </button>
-            </form>
-          </div>
-        </div>
       )}
 
       {/* #24 Service Worker Update Toast */}
